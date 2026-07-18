@@ -1,0 +1,185 @@
+---
+import "@fontsource-variable/inter/index.css";
+import "@fontsource/cormorant-garamond/latin-400-italic.css";
+import "@fontsource/cormorant-garamond/latin-500-italic.css";
+import "@fontsource/ibm-plex-mono/latin-300.css";
+import "@fontsource/ibm-plex-mono/latin-400.css";
+import "@fontsource/ibm-plex-mono/latin-500.css";
+
+import Brand from "../components/Brand.astro";
+import MemoryMap from "../components/MemoryMap.astro";
+
+const principles = [
+  ["01", "Agent-neutral", "No lock-in. Switch agents without starting over."],
+  ["02", "Local-first", "Your history remains under your control."],
+  ["03", "Failure-safe", "Memory never blocks the agent doing the work."],
+];
+---
+
+<!doctype html>
+<html lang="en" class="scroll-smooth motion-reduce:scroll-auto">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="description" content="Semafuse gives every coding agent access to the same local conversation memory." />
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <title>Semafuse — Memory that moves with your coding agents</title>
+  </head>
+  <body class="m-0 overflow-x-hidden bg-paper font-body text-ink antialiased [tap-highlight-color:transparent] selection:bg-jade selection:text-ink">
+    <div class="grain-texture pointer-events-none fixed inset-0 z-20 opacity-22 mix-blend-multiply" aria-hidden="true"></div>
+
+    <header class="absolute left-0 top-0 z-10 grid w-full grid-cols-[1fr_auto_1fr] items-center border-b border-ink/18 px-[4.5vw] py-7 lt-tablet:grid-cols-[1fr_auto] lt-mobile:px-5.5 lt-mobile:py-5">
+      <Brand />
+      <nav class="flex gap-9.5 font-mono text-[0.75rem] text-ink-soft lt-tablet:hidden" aria-label="Primary navigation">
+        <a class="transition-colors duration-180 hover:text-seal focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-seal" href="#how-it-works">How it works</a>
+        <a class="transition-colors duration-180 hover:text-seal focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-seal" href="#principles">Principles</a>
+        <a class="transition-colors duration-180 hover:text-seal focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-seal" href="https://github.com/reonokiy/semafuse">GitHub</a>
+      </nav>
+      <a class="group justify-self-end border-b border-ink pb-[0.1875rem] font-mono text-[0.75rem] focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-seal lt-mobile:hidden" href="#install">Get started <span class="ml-1.25 inline-block transition-transform duration-180 group-hover:translate-x-0.5 group-hover:-translate-y-0.5" aria-hidden="true">↗</span></a>
+    </header>
+
+    <main id="top">
+      <section class="relative grid min-h-[100svh] grid-cols-[minmax(23.75rem,.85fr)_minmax(31.875rem,1.15fr)] px-[4.5vw] pb-20 pt-[9.0625rem] lt-tablet:min-h-0 lt-tablet:grid-cols-1 lt-tablet:pt-40 lt-mobile:px-5.5 lt-mobile:pb-[4.0625rem] lt-mobile:pt-[7.8125rem]" aria-labelledby="hero-title">
+        <div class="hero-backdrop absolute inset-0 -z-1 lt-tablet:hero-backdrop-stacked"></div>
+        <div class="z-2 max-w-[40.625rem] self-center pb-[6vh] lt-tablet:pb-12.5 lt-mobile:pb-6.25">
+          <p class="section-label"><span class="h-px w-[1.4375rem] bg-current"></span> LOCAL · OPEN · AGENT-NEUTRAL</p>
+          <h1 id="hero-title" class="my-0 mb-7 mt-8.75 max-w-[46.875rem] text-[clamp(4rem,5.8vw,6.5rem)] font-400 leading-[.88] tracking-[-.02em] lt-tablet:max-w-[47.5rem] lt-tablet:text-[clamp(4.25rem,9.5vw,6.5rem)] lt-mobile:mt-[1.8125rem] lt-mobile:text-[clamp(3.25rem,13.6vw,4.125rem)] lt-mobile:leading-[.9]">
+            <span class="block">Memory that</span><span class="block">moves</span><em class="script-accent ml-[0.02em] mt-[0.04em] block text-[1.15em]">with you.</em>
+          </h1>
+          <p class="m-0 max-w-[31.25rem] text-4 leading-7 text-ink-soft">One continuous memory for every coding agent you work with. Private by default, stored locally, and ready when context matters.</p>
+          <div class="mt-[2.4375rem] flex items-center gap-[1.9375rem] lt-mobile:flex-col lt-mobile:items-start lt-mobile:gap-6">
+            <a class="inline-flex min-h-[3.1875rem] items-center justify-center bg-ink px-6 font-mono text-[0.75rem] text-paper shadow-[0.4375rem_0.4375rem_0_#b9d6c1] transition-[transform,background] duration-180 hover:-translate-x-0.5 hover:-translate-y-0.5 hover:bg-[#28372f] focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-seal" href="#install">Install Semafuse</a>
+            <a class="inline-flex items-center gap-2.25 font-mono text-[0.75rem] focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-seal" href="#how-it-works">See how it flows <span class="text-4 text-seal">↓</span></a>
+          </div>
+        </div>
+        <MemoryMap />
+        <div class="absolute bottom-[1.8125rem] right-[4.5vw] flex items-center gap-3.75 font-mono text-[0.625rem] uppercase tracking-[.08em] text-faded lt-tablet:hidden" aria-hidden="true">
+          <span>Scroll to trace the thread</span><i class="block h-px w-14 overflow-hidden bg-ink/18"><span class="block h-px w-[1.375rem] bg-seal animate-scroll-line motion-reduce:animate-none"></span></i>
+        </div>
+      </section>
+
+      <section class="grid min-h-[36.875rem] grid-cols-[.5fr_1.6fr_.9fr] gap-[6vw] bg-night px-[7vw] py-30 text-paper lt-tablet:grid-cols-[.5fr_1.5fr] lt-mobile:block lt-mobile:min-h-0 lt-mobile:px-5.5 lt-mobile:py-22.5" id="principles">
+        <p class="section-label self-start pt-3.75">THE IDEA</p>
+        <div class="reveal self-center lt-mobile:my-[4.6875rem]">
+          <p class="m-0 text-[clamp(2.8125rem,5.2vw,5.125rem)] font-400 leading-[1.04] tracking-[-.015em]">Your tools change.</p>
+          <p class="m-0 text-[clamp(2.8125rem,5.2vw,5.125rem)] font-400 leading-[1.08] tracking-[-.015em]">Your <em class="font-script text-[1.45em] font-500 italic tracking-normal text-jade">context</em> shouldn't.</p>
+        </div>
+        <div class="reveal max-w-85 self-end text-[0.875rem] leading-[1.75] text-[#aab4ad] lt-tablet:col-start-2 lt-mobile:ml-[20%]">
+          <span class="mb-6 block h-px w-full bg-paper/20"></span>
+          <p>Semafuse quietly captures conversations from the agents you already use, then brings the relevant decisions back—across tools, sessions, and repositories.</p>
+        </div>
+      </section>
+
+      <section class="px-[7vw] pb-[9.0625rem] pt-32.5 lt-mobile:px-5.5 lt-mobile:py-22.5" id="how-it-works" aria-labelledby="flow-title">
+        <div class="reveal mb-25 grid grid-cols-[1fr_2fr] lt-tablet:grid-cols-[.5fr_1.5fr] lt-mobile:mb-[4.6875rem] lt-mobile:block">
+          <p class="section-label self-start pt-3.75">A CONTINUOUS THREAD</p>
+          <h2 id="flow-title" class="display-heading lt-mobile:mt-12.5 lt-mobile:text-[clamp(3.125rem,15vw,4.375rem)]">Every agent in.<br /><em class="script-accent ml-[5vw] mt-[0.06em] inline-block text-[1.12em] lt-mobile:ml-0">One memory out.</em></h2>
+        </div>
+        <div class="relative grid grid-cols-3 border-t border-ink/18 before:absolute before:-top-[0.125rem] before:left-0 before:h-[0.1875rem] before:w-1/3 before:bg-seal before:content-empty lt-mobile:block lt-mobile:before:w-full">
+          <article class="flow-card reveal">
+            <div class="font-mono text-[0.6875rem] text-faded">01</div>
+            <svg class="my-0 mb-[1.6875rem] mt-[2.8125rem] h-25 w-27.5 fill-paper stroke-ink stroke-1 lt-mobile:mb-5 lt-mobile:mt-8.75 lt-mobile:origin-left lt-mobile:scale-85" viewBox="0 0 110 100" aria-hidden="true">
+              <path d="M55 12V88M17 50H93" fill="none"></path>
+              <rect x="16.5" y="11.5" width="17" height="17" transform="rotate(45 25 20)"></rect>
+              <rect x="76.5" y="11.5" width="17" height="17" transform="rotate(45 85 20)"></rect>
+              <rect x="16.5" y="71.5" width="17" height="17" transform="rotate(45 25 80)"></rect>
+              <rect x="76.5" y="71.5" width="17" height="17" transform="rotate(45 85 80)"></rect>
+            </svg>
+            <h3 class="mb-[0.8125rem] mt-0 text-[1.375rem] font-500">Capture</h3><p class="mb-6 min-h-17 max-w-[19.375rem] text-[0.875rem] leading-[1.7] text-ink-soft lt-mobile:min-h-0">Import existing sessions once. Lightweight hooks keep new conversations flowing in.</p><small class="font-mono text-[0.6875rem] uppercase tracking-[.05em] text-jade-dark">History + real time</small>
+          </article>
+          <article class="flow-card reveal pl-[4.5vw] lt-mobile:px-0">
+            <div class="font-mono text-[0.6875rem] text-faded">02</div>
+            <div class="relative my-0 mb-[1.6875rem] mt-[2.8125rem] h-25 w-27.5 lt-mobile:mb-5 lt-mobile:mt-8.75 lt-mobile:origin-left lt-mobile:scale-85" aria-hidden="true">
+              <span class="absolute left-[1.4375rem] top-0 h-[3.375rem] w-[5.25rem] border border-ink bg-paper"></span><span class="absolute left-4 top-3.5 h-[3.375rem] w-[5.25rem] border border-ink bg-paper"></span><span class="absolute left-[0.5625rem] top-7 h-[3.375rem] w-[5.25rem] border border-ink bg-paper"><i class="absolute right-[1.0625rem] top-[1.1875rem] h-2 w-2 rounded-full bg-seal"></i></span>
+            </div>
+            <h3 class="mb-[0.8125rem] mt-0 text-[1.375rem] font-500">Preserve</h3><p class="mb-6 min-h-17 max-w-[19.375rem] text-[0.875rem] leading-[1.7] text-ink-soft lt-mobile:min-h-0">Raw events remain immutable in local SQLite. Attachments are deduplicated by content.</p><small class="font-mono text-[0.6875rem] uppercase tracking-[.05em] text-jade-dark">Local + inspectable</small>
+          </article>
+          <article class="flow-card reveal border-r-0 pl-[4.5vw] lt-mobile:border-b-0 lt-mobile:px-0">
+            <div class="font-mono text-[0.6875rem] text-faded">03</div>
+            <div class="relative my-0 mb-[1.6875rem] mt-[2.8125rem] h-25 w-27.5 lt-mobile:mb-5 lt-mobile:mt-8.75 lt-mobile:origin-left lt-mobile:scale-85" aria-hidden="true">
+              <span class="absolute left-[0.875rem] top-[0.4375rem] h-[4.25rem] w-[4.25rem] rounded-full border border-ink"><i class="absolute inset-3 rounded-full border border-ink"></i></span><span class="absolute left-[3.0625rem] top-[2.5625rem] h-px w-[3.4375rem] origin-left -rotate-38 bg-seal"></span>
+            </div>
+            <h3 class="mb-[0.8125rem] mt-0 text-[1.375rem] font-500">Recall</h3><p class="mb-6 min-h-17 max-w-[19.375rem] text-[0.875rem] leading-[1.7] text-ink-soft lt-mobile:min-h-0">Every connected agent can find the decisions made before it entered the conversation.</p><small class="font-mono text-[0.6875rem] uppercase tracking-[.05em] text-jade-dark">Relevant + automatic</small>
+          </article>
+        </div>
+      </section>
+
+      <section class="grid min-h-150 grid-cols-[1.15fr_.85fr] border-y border-ink/18 lt-mobile:block" aria-label="Product principles">
+        <div class="reveal flex flex-col justify-center border-r border-ink/18 bg-jade p-[8vw] lt-mobile:min-h-[26.875rem] lt-mobile:border-r-0 lt-mobile:px-5.5 lt-mobile:py-17.5">
+          <svg class="mb-10.5 w-[4.6875rem] fill-none stroke-seal stroke-[1.5] [stroke-linecap:round]" viewBox="0 0 80 53" aria-hidden="true"><path d="M3 30C16 1 41-3 50 13c9 17-9 36-25 29-13-6-7-23 5-23 13 0 20 18 34 18 6 0 11-3 14-8"></path></svg>
+          <blockquote class="m-0 text-[clamp(2.0625rem,3.7vw,3.625rem)] font-400 leading-[1.18] tracking-[-.015em]">“Memory should belong to the work,<br />not the tool.”</blockquote>
+        </div>
+        <div class="reveal flex flex-col justify-center px-[7vw] py-[5vw] lt-mobile:px-5.5 lt-mobile:py-11.25">
+          {principles.map(([index, title, copy], i) => (
+            <div class:list={["grid grid-cols-[2.8125rem_1fr] border-ink/18 py-[1.8125rem]", i < principles.length - 1 && "border-b"]}>
+              <span class="row-span-2 pt-1.25 font-mono text-[0.625rem] text-seal">{index}</span><strong class="text-[1.0625rem] font-500">{title}</strong><p class="mb-0 mt-2 text-3.5 leading-[1.55] text-ink-soft">{copy}</p>
+            </div>
+          ))}
+        </div>
+      </section>
+
+      <section class="grid grid-cols-[1.1fr_.9fr] gap-[6vw] bg-night px-[7vw] py-[9.0625rem] text-paper lt-tablet:grid-cols-[1fr_1fr] lt-tablet:gap-[5vw] lt-mobile:block lt-mobile:px-5.5 lt-mobile:py-22.5" id="install" aria-labelledby="install-title">
+        <div class="reveal self-center lt-mobile:mb-[4.0625rem]">
+          <p class="section-label self-start pt-3.75">BEGIN THE THREAD</p>
+          <h2 id="install-title" class="display-heading mb-8.75 mt-7 text-[clamp(3.25rem,5.2vw,5rem)] leading-[1.08] lt-mobile:text-[clamp(3.125rem,15vw,4.375rem)]">Carry the context<br /><em class="script-accent mt-[0.08em] block text-[1.12em]">forward.</em></h2>
+          <p class="max-w-105 text-4 leading-[1.7] text-[#aab4ad]">Install the CLI, import your histories, and give every agent the full story.</p>
+        </div>
+        <div class="reveal self-center border border-paper/19 bg-[#0b110e] shadow-[1.25rem_1.25rem_0_rgba(185,214,193,.08)] lt-mobile:shadow-[0.625rem_0.625rem_0_rgba(185,214,193,.08)]">
+          <div class="flex h-12 items-center justify-between border-b border-paper/14 px-4.5 font-mono text-[0.625rem] tracking-[.14em] text-[#77847d]">
+            <span>QUICK START</span><button class="copy-button inline-flex cursor-pointer items-center gap-[0.4375rem] border-0 bg-transparent p-1.5 font-inherit text-[#89958e] hover:text-paper focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-seal" type="button" aria-label="Copy install commands"><svg class="w-3.5 fill-none stroke-current stroke-1" viewBox="0 0 20 20" aria-hidden="true"><rect x="6" y="6" width="9" height="10" rx="1"></rect><path d="M4 13H3V3h9v1"></path></svg><span>Copy</span></button>
+          </div>
+          <pre class="m-0 min-h-[23.125rem] overflow-x-auto px-9.5 py-8.75 font-mono text-[clamp(0.6875rem,1vw,0.8125rem)] font-300 leading-[1.85] text-[#d9ded9] lt-mobile:min-h-[20.625rem] lt-mobile:px-[1.0625rem] lt-mobile:py-7 lt-mobile:text-[0.6875rem]"><code><span class="text-[#8fbca0]">$</span> cargo install --path . --locked
+
+<span class="text-[#8fbca0]">$</span> semafuse init
+<span class="text-[#8fbca0]">$</span> semafuse import --agent amp
+<span class="text-[#8fbca0]">$</span> semafuse import --agent codex
+<span class="text-[#8fbca0]">$</span> semafuse import --agent claude-code
+<span class="text-[#8fbca0]">$</span> semafuse import --agent opencode
+
+<span class="text-[#54625b]"># One search. Every conversation.</span>
+<span class="text-[#8fbca0]">$</span> semafuse search <span class="text-[#d88d76]">"why did we choose SQLite?"</span></code></pre>
+          <div class="flex h-11.25 items-center gap-2.25 border-t border-paper/14 px-4.5 font-mono text-[0.625rem] text-[#77847d]"><span class="h-1.25 w-1.25 rounded-full bg-[#7fb98e] shadow-[0_0_0.5rem_#7fb98e]"></span> Memory ready · Agents connected</div>
+        </div>
+      </section>
+    </main>
+
+    <footer class="grid grid-cols-[1fr_auto_1fr] items-center border-t border-paper/12 bg-night px-[4.5vw] py-11.25 font-mono text-[0.625rem] text-[#aab4ad] lt-mobile:grid-cols-[1fr_auto] lt-mobile:px-5.5 lt-mobile:py-9.5">
+      <Brand class="font-body text-paper" />
+      <p class="lt-mobile:hidden">Local memory for agents that move fast.</p>
+      <div class="flex justify-self-end gap-6.25 lt-mobile:gap-3.5"><a class="transition-colors duration-180 hover:text-seal" href="https://github.com/reonokiy/semafuse">GitHub</a><a class="transition-colors duration-180 hover:text-seal" href="https://github.com/reonokiy/semafuse#readme">Documentation</a><span class="lt-mobile:hidden">MIT License</span></div>
+    </footer>
+
+    <script>
+      const revealObserver = new IntersectionObserver(
+        (entries) => entries.forEach((entry) => {
+          if (entry.isIntersecting) {
+            entry.target.classList.add("reveal-visible");
+            revealObserver.unobserve(entry.target);
+          }
+        }),
+        { threshold: 0.15 },
+      );
+      document.querySelectorAll(".reveal").forEach((element) => revealObserver.observe(element));
+
+      const copyButton = document.querySelector<HTMLButtonElement>(".copy-button");
+      const commands = `cargo install --path . --locked
+semafuse init
+semafuse import --agent amp
+semafuse import --agent codex
+semafuse import --agent claude-code
+semafuse import --agent opencode
+semafuse search "why did we choose SQLite?"`;
+      copyButton?.addEventListener("click", async () => {
+        const label = copyButton.querySelector("span");
+        if (!label) return;
+        try {
+          await navigator.clipboard.writeText(commands);
+          label.textContent = "Copied";
+        } catch {
+          label.textContent = "Copy failed";
+        }
+        window.setTimeout(() => { label.textContent = "Copy"; }, 1800);
+      });
+    </script>
+  </body>
+</html>
