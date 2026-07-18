@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO strategy_checkpoints(strategy,last_seq,last_error,attempts,updated_at_ms) VALUES(?,?,NULL,0,?) ON CONFLICT(strategy) DO UPDATE SET last_seq=excluded.last_seq,last_error=NULL,attempts=0,updated_at_ms=excluded.updated_at_ms",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 3
+    },
+    "nullable": []
+  },
+  "hash": "4443f7f2b230d65ba4542d1c6057319e4c7d27fbfd891fa8be35b0397672bcd1"
+}

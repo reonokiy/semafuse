@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO memories(namespace,id,content,metadata_json,source_event_ids_json,created_at_ms,updated_at_ms) VALUES(?,?,?,?,?,?,?)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 7
+    },
+    "nullable": []
+  },
+  "hash": "f0f9ea93841cf32e107fecc43955d8c0b8c0e74917daa57ce90dd1854d4b6a18"
+}

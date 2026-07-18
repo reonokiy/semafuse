@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "DELETE FROM memories WHERE namespace=? AND id=?",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": []
+  },
+  "hash": "7f7dfbb8da76d9492006e7c0c741cba35820b12a98329cff45bfb99fb50175a8"
+}

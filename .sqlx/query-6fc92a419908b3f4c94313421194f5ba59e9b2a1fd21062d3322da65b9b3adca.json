@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO strategy_failures(strategy,domain_event_seq,error,created_at_ms) SELECT strategy,last_seq,?,? FROM strategy_checkpoints WHERE strategy=?",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 3
+    },
+    "nullable": []
+  },
+  "hash": "6fc92a419908b3f4c94313421194f5ba59e9b2a1fd21062d3322da65b9b3adca"
+}

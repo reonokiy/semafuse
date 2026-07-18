@@ -1,0 +1,2 @@
+{"uuid":"claude-user-1","sessionId":"claude-session-1","type":"user","cwd":"/workspace/demo","message":{"role":"user","content":"Remember that image blobs live outside SQLite."}}
+{"uuid":"claude-assistant-1","sessionId":"claude-session-1","type":"assistant","cwd":"/workspace/demo","message":{"role":"assistant","content":[{"type":"text","text":"Store binary attachments with OpenDAL."}]}}

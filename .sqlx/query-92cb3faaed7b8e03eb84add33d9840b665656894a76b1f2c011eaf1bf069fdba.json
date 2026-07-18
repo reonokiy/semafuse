@@ -1,0 +1,32 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT last_seq,last_error,attempts FROM strategy_checkpoints WHERE strategy=?",
+  "describe": {
+    "columns": [
+      {
+        "name": "last_seq",
+        "ordinal": 0,
+        "type_info": "Integer"
+      },
+      {
+        "name": "last_error",
+        "ordinal": 1,
+        "type_info": "Text"
+      },
+      {
+        "name": "attempts",
+        "ordinal": 2,
+        "type_info": "Integer"
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      false,
+      true,
+      false
+    ]
+  },
+  "hash": "92cb3faaed7b8e03eb84add33d9840b665656894a76b1f2c011eaf1bf069fdba"
+}

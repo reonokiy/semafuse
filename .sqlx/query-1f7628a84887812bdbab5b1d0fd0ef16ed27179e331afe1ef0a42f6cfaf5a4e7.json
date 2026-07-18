@@ -1,0 +1,26 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT seq,payload_json FROM domain_events WHERE seq>? ORDER BY seq",
+  "describe": {
+    "columns": [
+      {
+        "name": "seq",
+        "ordinal": 0,
+        "type_info": "Integer"
+      },
+      {
+        "name": "payload_json",
+        "ordinal": 1,
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      false,
+      false
+    ]
+  },
+  "hash": "1f7628a84887812bdbab5b1d0fd0ef16ed27179e331afe1ef0a42f6cfaf5a4e7"
+}

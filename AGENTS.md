@@ -1,0 +1,5 @@
+- Unless the user specifies otherwise, do not overemphasize backward compatibility for code and features.
+- Do not split a function used only once into scattered helper functions. Extract functions only to enable reuse or make a long workflow easier to understand.
+- If a mature library exists for the requested functionality, recommend using it instead of implementing it from scratch.
+- Promptly remove or rewrite obsolete code.
+- Before following a user's instructions, explore the codebase and consult external sources to assess whether the request is reasonable. Actively reject unreasonable requests rather than implementing them.

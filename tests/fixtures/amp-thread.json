@@ -1,0 +1,29 @@
+{
+  "id": "T-amp-session-1",
+  "created": 1750000000000,
+  "env": {
+    "initial": {
+      "trees": [{"uri": "file:///workspace/demo"}]
+    }
+  },
+  "messages": [
+    {
+      "messageId": 0,
+      "role": "user",
+      "content": [{"type": "text", "text": "How should agent memory be queried?"}]
+    },
+    {
+      "messageId": 1,
+      "role": "assistant",
+      "content": [
+        {"type": "text", "text": "Use Semafuse through its MCP search tools."},
+        {"type": "tool_use", "id": "tool-1", "name": "finder", "input": {"query": "memory retrieval"}}
+      ]
+    },
+    {
+      "messageId": 2,
+      "role": "user",
+      "content": [{"type": "tool_result", "toolUseID": "tool-1", "run": {"status": "done", "result": "Found the retrieval module."}}]
+    }
+  ]
+}

@@ -1,0 +1,738 @@
+{
+  "$defs": {
+    "AgentKind": {
+      "description": "Identifies the coding agent that produced an event.",
+      "oneOf": [
+        {
+          "const": "amp",
+          "description": "An Amp event.",
+          "type": "string"
+        },
+        {
+          "const": "codex",
+          "description": "A Codex event.",
+          "type": "string"
+        },
+        {
+          "const": "claude-code",
+          "description": "A Claude Code event.",
+          "type": "string"
+        },
+        {
+          "const": "opencode",
+          "description": "An OpenCode event.",
+          "type": "string"
+        }
+      ]
+    },
+    "ArchiveSpecVersion": {
+      "description": "Version of the persisted raw-to-canonical archive contract.",
+      "oneOf": [
+        {
+          "const": "semafuse.archive/v1",
+          "description": "The first formal archive schema.",
+          "type": "string"
+        }
+      ]
+    },
+    "AttachmentRef": {
+      "additionalProperties": false,
+      "description": "A content-addressed reference to a binary attachment.",
+      "properties": {
+        "digest": {
+          "description": "The SHA-256 digest of the attachment contents.",
+          "type": "string"
+        },
+        "media_type": {
+          "description": "The attachment's media type.",
+          "type": "string"
+        },
+        "name": {
+          "description": "The source file name, when available.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "object_key": {
+          "description": "The backend-specific object key.",
+          "type": "string"
+        },
+        "size": {
+          "description": "The attachment size in bytes.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "object_key",
+        "digest",
+        "media_type",
+        "size"
+      ],
+      "type": "object"
+    },
+    "ContentPart": {
+      "description": "Structured content retained without flattening every value into text.",
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "description": "Plain searchable text.",
+          "properties": {
+            "text": {
+              "description": "Text body.",
+              "type": "string"
+            },
+            "type": {
+              "const": "text",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "text"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Structured JSON such as tool arguments or results.",
+          "properties": {
+            "type": {
+              "const": "json",
+              "type": "string"
+            },
+            "value": {
+              "description": "JSON value."
+            }
+          },
+          "required": [
+            "type",
+            "value"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Content-addressed binary or file attachment.",
+          "properties": {
+            "attachment": {
+              "$ref": "#/$defs/AttachmentRef",
+              "description": "Durable attachment reference."
+            },
+            "type": {
+              "const": "attachment",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "attachment"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "A reasoning summary intentionally exposed by the native agent.",
+          "properties": {
+            "text": {
+              "description": "Summary text; encrypted or hidden reasoning is never copied here.",
+              "type": "string"
+            },
+            "type": {
+              "const": "reasoning_summary",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "text"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "ConversionDiagnostic": {
+      "additionalProperties": false,
+      "description": "Durable validation or normalization problem linked to one raw record.",
+      "properties": {
+        "code": {
+          "description": "Stable machine-readable code.",
+          "type": "string"
+        },
+        "created_at_ms": {
+          "description": "Creation time in Unix milliseconds.",
+          "format": "int64",
+          "type": "integer"
+        },
+        "id": {
+          "description": "Stable diagnostic ID.",
+          "type": "string"
+        },
+        "message": {
+          "description": "Human-readable explanation.",
+          "type": "string"
+        },
+        "raw_record_id": {
+          "description": "Raw record that caused the diagnostic.",
+          "type": "string"
+        },
+        "severity": {
+          "$ref": "#/$defs/DiagnosticSeverity",
+          "description": "Diagnostic severity."
+        }
+      },
+      "required": [
+        "id",
+        "raw_record_id",
+        "severity",
+        "code",
+        "message",
+        "created_at_ms"
+      ],
+      "type": "object"
+    },
+    "DiagnosticSeverity": {
+      "description": "Severity of a normalization diagnostic.",
+      "oneOf": [
+        {
+          "const": "warning",
+          "description": "Conversion retained a usable event with degraded information.",
+          "type": "string"
+        },
+        {
+          "const": "error",
+          "description": "Conversion could not produce a valid canonical event.",
+          "type": "string"
+        }
+      ]
+    },
+    "ErrorInfo": {
+      "additionalProperties": false,
+      "description": "Structured error information.",
+      "properties": {
+        "code": {
+          "description": "Optional stable native error code.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "details": {
+          "description": "Optional structured details that are safe to retain canonically."
+        },
+        "message": {
+          "description": "Human-readable error message.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "message"
+      ],
+      "type": "object"
+    },
+    "EventData": {
+      "description": "Fully typed payload of a canonical conversation event.",
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "description": "Session lifecycle start.",
+          "properties": {
+            "type": {
+              "const": "session_started",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Session lifecycle end.",
+          "properties": {
+            "reason": {
+              "description": "Native termination reason.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "type": {
+              "const": "session_ended",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "User, assistant, system, developer, or tool message.",
+          "properties": {
+            "content": {
+              "description": "Ordered message content.",
+              "items": {
+                "$ref": "#/$defs/ContentPart"
+              },
+              "type": "array"
+            },
+            "role": {
+              "$ref": "#/$defs/MessageRole",
+              "description": "Formal message author."
+            },
+            "type": {
+              "const": "message",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "role",
+            "content"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Tool invocation.",
+          "properties": {
+            "arguments": {
+              "description": "Structured native arguments."
+            },
+            "attachments": {
+              "default": [],
+              "description": "Attachments supplied with the invocation.",
+              "items": {
+                "$ref": "#/$defs/AttachmentRef"
+              },
+              "type": "array"
+            },
+            "call_id": {
+              "description": "Native call identifier when exposed.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "tool": {
+              "description": "Tool name.",
+              "type": "string"
+            },
+            "type": {
+              "const": "tool_call",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "tool",
+            "arguments"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Tool execution outcome.",
+          "properties": {
+            "call_id": {
+              "description": "Native call identifier when exposed.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "error": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/ErrorInfo"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Structured failure when status is not successful."
+            },
+            "output": {
+              "description": "Ordered result content.",
+              "items": {
+                "$ref": "#/$defs/ContentPart"
+              },
+              "type": "array"
+            },
+            "status": {
+              "$ref": "#/$defs/ToolStatus",
+              "description": "Formal execution status."
+            },
+            "tool": {
+              "description": "Tool name when exposed by the source or correlated call.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "type": {
+              "const": "tool_result",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "status",
+            "output"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Context compaction or summary boundary.",
+          "properties": {
+            "details": {
+              "description": "Structured compaction details when available."
+            },
+            "summary": {
+              "description": "Searchable compacted summary when available.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "type": {
+              "const": "compaction",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Non-tool failure.",
+          "properties": {
+            "error": {
+              "$ref": "#/$defs/ErrorInfo",
+              "description": "Structured failure."
+            },
+            "type": {
+              "const": "error",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "error"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Native record deliberately retained only through raw provenance.",
+          "properties": {
+            "native_type": {
+              "description": "Native discriminator; raw payload lives in [`RawRecord`].",
+              "type": "string"
+            },
+            "type": {
+              "const": "unknown",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "native_type"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "EventEnvelope": {
+      "additionalProperties": false,
+      "description": "Versioned, agent-neutral event produced by normalization.",
+      "properties": {
+        "data": {
+          "$ref": "#/$defs/EventData",
+          "description": "Fully typed event payload."
+        },
+        "fingerprint": {
+          "description": "SHA-256 of normalized identity fields.",
+          "type": "string"
+        },
+        "id": {
+          "description": "`evt_` followed by the first 24 fingerprint characters.",
+          "type": "string"
+        },
+        "ingested_at_ms": {
+          "description": "Time this canonical projection was built.",
+          "format": "int64",
+          "type": "integer"
+        },
+        "occurred_at_ms": {
+          "description": "Native occurrence time; absent when the source does not provide one.",
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "raw_record_ids": {
+          "default": [],
+          "description": "Raw records from which this event was projected.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "source": {
+          "$ref": "#/$defs/EventSource",
+          "description": "Native source identity and workspace context."
+        },
+        "spec_version": {
+          "$ref": "#/$defs/EventSpecVersion",
+          "description": "Canonical contract version."
+        }
+      },
+      "required": [
+        "spec_version",
+        "id",
+        "fingerprint",
+        "source",
+        "ingested_at_ms",
+        "data"
+      ],
+      "type": "object"
+    },
+    "EventSource": {
+      "additionalProperties": false,
+      "description": "Provenance fields shared by every canonical event.",
+      "properties": {
+        "agent": {
+          "$ref": "#/$defs/AgentKind",
+          "description": "Coding agent that emitted the native record."
+        },
+        "cwd": {
+          "description": "Working directory reported by the source.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "native_event": {
+          "description": "Native event discriminator used by the adapter.",
+          "type": "string"
+        },
+        "native_id": {
+          "description": "Native event, message, or tool-call identifier.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "repository": {
+          "description": "Explicit or locally detected repository/worktree.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "session_id": {
+          "description": "Native session identifier or an explicit import fallback.",
+          "type": "string"
+        },
+        "turn_id": {
+          "description": "Native turn or message grouping identifier.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "agent",
+        "session_id",
+        "native_event"
+      ],
+      "type": "object"
+    },
+    "EventSpecVersion": {
+      "description": "Version of the stable Semafuse canonical-event contract.",
+      "oneOf": [
+        {
+          "const": "semafuse.event/v1",
+          "description": "The first formal event schema.",
+          "type": "string"
+        }
+      ]
+    },
+    "MessageRole": {
+      "description": "Closed set of message authors represented by the canonical schema.",
+      "oneOf": [
+        {
+          "const": "user",
+          "description": "Human input.",
+          "type": "string"
+        },
+        {
+          "const": "assistant",
+          "description": "Model output.",
+          "type": "string"
+        },
+        {
+          "const": "system",
+          "description": "System instruction.",
+          "type": "string"
+        },
+        {
+          "const": "developer",
+          "description": "Developer instruction.",
+          "type": "string"
+        },
+        {
+          "const": "tool",
+          "description": "Tool-authored message.",
+          "type": "string"
+        },
+        {
+          "const": "unknown",
+          "description": "A native role that cannot be represented more precisely.",
+          "type": "string"
+        }
+      ]
+    },
+    "RawRecord": {
+      "additionalProperties": false,
+      "description": "Immutable parsed native input retained independently from normalization.",
+      "properties": {
+        "agent": {
+          "$ref": "#/$defs/AgentKind",
+          "description": "Agent owning the native format."
+        },
+        "digest": {
+          "description": "SHA-256 digest of the normalized JSON representation.",
+          "type": "string"
+        },
+        "id": {
+          "description": "Stable content-and-source-derived raw record ID.",
+          "type": "string"
+        },
+        "ingested_at_ms": {
+          "description": "Local observation time in Unix milliseconds.",
+          "format": "int64",
+          "type": "integer"
+        },
+        "native_type": {
+          "description": "Best-effort native discriminator.",
+          "type": "string"
+        },
+        "payload": {
+          "description": "Parsed JSON record with every representable native field retained."
+        },
+        "record_index": {
+          "description": "Zero-based record position within the source.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "source": {
+          "description": "File, protocol, or hook source identifier.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "digest",
+        "agent",
+        "source",
+        "record_index",
+        "native_type",
+        "payload",
+        "ingested_at_ms"
+      ],
+      "type": "object"
+    },
+    "ToolStatus": {
+      "description": "Terminal or intermediate outcome of a tool execution.",
+      "oneOf": [
+        {
+          "const": "pending",
+          "description": "Tool has not started.",
+          "type": "string"
+        },
+        {
+          "const": "running",
+          "description": "Tool is executing.",
+          "type": "string"
+        },
+        {
+          "const": "succeeded",
+          "description": "Tool completed successfully.",
+          "type": "string"
+        },
+        {
+          "const": "failed",
+          "description": "Tool failed.",
+          "type": "string"
+        },
+        {
+          "const": "cancelled",
+          "description": "Tool was cancelled.",
+          "type": "string"
+        },
+        {
+          "const": "rejected",
+          "description": "Tool execution was rejected.",
+          "type": "string"
+        },
+        {
+          "const": "unknown",
+          "description": "Native status was unavailable.",
+          "type": "string"
+        }
+      ]
+    }
+  },
+  "$id": "https://semafuse.dev/schemas/canonical-archive-v1.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "Self-contained formal output of an external-history conversion.",
+  "properties": {
+    "diagnostics": {
+      "description": "Records that could not be projected without violating the contract.",
+      "items": {
+        "$ref": "#/$defs/ConversionDiagnostic"
+      },
+      "type": "array"
+    },
+    "events": {
+      "description": "Valid canonical projections.",
+      "items": {
+        "$ref": "#/$defs/EventEnvelope"
+      },
+      "type": "array"
+    },
+    "raw_records": {
+      "description": "Immutable parsed native input records.",
+      "items": {
+        "$ref": "#/$defs/RawRecord"
+      },
+      "type": "array"
+    },
+    "spec_version": {
+      "$ref": "#/$defs/ArchiveSpecVersion",
+      "description": "Archive contract version."
+    }
+  },
+  "required": [
+    "spec_version",
+    "raw_records",
+    "events",
+    "diagnostics"
+  ],
+  "title": "CanonicalArchive",
+  "type": "object"
+}

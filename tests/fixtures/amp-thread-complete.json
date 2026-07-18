@@ -1,0 +1,62 @@
+{
+  "v": 9252,
+  "id": "T-amp-complete-session",
+  "title": "Complete parser fixture",
+  "created": 1784350800000,
+  "agentMode": "free",
+  "nextMessageId": 6,
+  "env": {
+    "initial": {
+      "trees": [
+        {"uri":"file:///workspace/fixture-repo","repository":{"type":"git","url":"https://example.invalid/fixture.git","ref":"refs/heads/main","sha":"0000000000000000000000000000000000000000"}}
+      ]
+    }
+  },
+  "messages": [
+    {
+      "messageId": 0,
+      "role": "user",
+      "agentMode": "free",
+      "meta": {"sentAt": 1784350800000},
+      "userState": {"currentlyVisibleFiles": []},
+      "content": [{"type":"text","text":"Inspect successful and failed Amp tools."}]
+    },
+    {
+      "messageId": 1,
+      "role": "assistant",
+      "state": {"type":"complete","stopReason":"tool_use"},
+      "usage": {"model":"test-model","inputTokens":10,"outputTokens":5,"cacheReadInputTokens":0,"cacheCreationInputTokens":0,"totalInputTokens":10,"maxInputTokens":1000,"credits":0,"creditsSinceLastUserMessage":0},
+      "content": [
+        {"type":"thinking","thinking":"Read the adapter first.","signature":"redacted","provider":"test"},
+        {"type":"tool_use","id":"amp-tool-1","name":"Read","input":{"path":"src/adapters/amp.rs"},"complete":true}
+      ]
+    },
+    {
+      "messageId": 2,
+      "role": "user",
+      "content": [{"type":"tool_result","toolUseID":"amp-tool-1","run":{"status":"done","result":{"content":"Found the Amp history mapper."},"trackFiles":[]}}]
+    },
+    {
+      "messageId": 3,
+      "role": "assistant",
+      "state": {"type":"complete","stopReason":"tool_use"},
+      "usage": {"model":"test-model","inputTokens":20,"outputTokens":8,"cacheReadInputTokens":0,"cacheCreationInputTokens":0,"totalInputTokens":20,"maxInputTokens":1000,"credits":0,"creditsSinceLastUserMessage":0},
+      "content": [
+        {"type":"text","text":"Now exercise a failed command."},
+        {"type":"tool_use","id":"amp-tool-2","name":"Bash","input":{"cmd":"false"},"complete":true}
+      ]
+    },
+    {
+      "messageId": 4,
+      "role": "user",
+      "content": [{"type":"tool_result","toolUseID":"amp-tool-2","run":{"status":"error","error":"command exited with status 1"}}]
+    },
+    {
+      "messageId": 5,
+      "role": "assistant",
+      "state": {"type":"complete","stopReason":"end_turn"},
+      "usage": {"model":"test-model","inputTokens":30,"outputTokens":12,"cacheReadInputTokens":0,"cacheCreationInputTokens":0,"totalInputTokens":30,"maxInputTokens":1000,"credits":0,"creditsSinceLastUserMessage":0},
+      "content": [{"type":"text","text":"Both Amp tool outcomes were preserved."}]
+    }
+  ]
+}

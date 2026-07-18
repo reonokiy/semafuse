@@ -1,0 +1,4 @@
+{"type":"session_meta","payload":{"id":"codex-session-1","cwd":"/workspace/demo"}}
+{"type":"turn_context","payload":{"turn_id":"codex-turn-1"}}
+{"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"Which database layer should this project use?"}]}}
+{"type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"Use sqlx for the database query layer."}]}}

@@ -1,0 +1,56 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT m.namespace AS 'namespace!', m.id AS 'id!', m.content AS 'content!', m.metadata_json AS 'metadata_json!', m.source_event_ids_json AS 'source_event_ids_json!', m.created_at_ms AS 'created_at_ms!', m.updated_at_ms AS 'updated_at_ms!' FROM memories_fts JOIN memories m ON m.rowid=memories_fts.rowid WHERE memories_fts MATCH ? AND m.namespace=? ORDER BY bm25(memories_fts),m.updated_at_ms DESC LIMIT ?",
+  "describe": {
+    "columns": [
+      {
+        "name": "namespace!",
+        "ordinal": 0,
+        "type_info": "Text"
+      },
+      {
+        "name": "id!",
+        "ordinal": 1,
+        "type_info": "Text"
+      },
+      {
+        "name": "content!",
+        "ordinal": 2,
+        "type_info": "Text"
+      },
+      {
+        "name": "metadata_json!",
+        "ordinal": 3,
+        "type_info": "Text"
+      },
+      {
+        "name": "source_event_ids_json!",
+        "ordinal": 4,
+        "type_info": "Text"
+      },
+      {
+        "name": "created_at_ms!",
+        "ordinal": 5,
+        "type_info": "Integer"
+      },
+      {
+        "name": "updated_at_ms!",
+        "ordinal": 6,
+        "type_info": "Integer"
+      }
+    ],
+    "parameters": {
+      "Right": 3
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "9db4dfa51ba3bec84efc40954a3139a902df790855af08ca1dd1d1745ba67a0e"
+}

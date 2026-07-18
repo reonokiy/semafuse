@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO memories(namespace,id,content,metadata_json,source_event_ids_json,created_at_ms,updated_at_ms) VALUES(?,?,?,?,?,?,?) ON CONFLICT(namespace,id) DO UPDATE SET content=excluded.content,metadata_json=excluded.metadata_json,source_event_ids_json=excluded.source_event_ids_json,updated_at_ms=excluded.updated_at_ms",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 7
+    },
+    "nullable": []
+  },
+  "hash": "13af3d9a17b34960fe29f5c9c39df84e52747eb3a8c736e91679e237c38cce2b"
+}

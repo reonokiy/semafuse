@@ -1,0 +1,4 @@
+{"type":"user","timestamp":"2026-07-18T03:30:00.000Z","content":"Trace the local transcript format."}
+{"type":"tool_use","timestamp":"2026-07-18T03:30:01.000Z","tool_name":"Read","tool_input":{"file_path":"src/importer.rs"}}
+{"type":"tool_result","timestamp":"2026-07-18T03:30:02.000Z","tool_name":"Read","tool_input":{"file_path":"src/importer.rs"},"tool_output":"The importer assigns the filename as a fallback session ID."}
+{"type":"user","timestamp":"2026-07-18T03:30:03.000Z","content":"Keep that fallback stable."}

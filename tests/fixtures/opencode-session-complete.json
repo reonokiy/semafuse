@@ -1,0 +1,87 @@
+{
+  "info": {
+    "id": "opencode-complete-session",
+    "projectID": "fixture-project",
+    "directory": "/workspace/fixture-repo",
+    "title": "Complete parser fixture",
+    "version": "1.18.3",
+    "time": {"created": 1784347200000, "updated": 1784347206000}
+  },
+  "messages": [
+    {
+      "info": {
+        "id": "opencode-user-1",
+        "sessionID": "opencode-complete-session",
+        "role": "user",
+        "time": {"created": 1784347200000},
+        "agent": "build",
+        "model": {"providerID": "openai", "modelID": "test-model"}
+      },
+      "parts": [
+        {"id":"part-user-text","sessionID":"opencode-complete-session","messageID":"opencode-user-1","type":"text","text":"Check completed and failed tool states."},
+        {"id":"part-user-file","sessionID":"opencode-complete-session","messageID":"opencode-user-1","type":"file","mime":"text/plain","filename":"note.txt","url":"data:text/plain;base64,Zml4dHVyZQ=="}
+      ]
+    },
+    {
+      "info": {
+        "id": "opencode-assistant-1",
+        "sessionID": "opencode-complete-session",
+        "role": "assistant",
+        "parentID": "opencode-user-1",
+        "time": {"created": 1784347201000, "completed": 1784347203000},
+        "modelID": "test-model",
+        "providerID": "openai",
+        "mode": "build",
+        "agent": "build",
+        "path": {"cwd":"/workspace/fixture-repo","root":"/workspace/fixture-repo"},
+        "cost": 0,
+        "tokens": {"input":10,"output":10,"reasoning":2,"cache":{"read":0,"write":0}}
+      },
+      "parts": [
+        {"id":"part-step-1","sessionID":"opencode-complete-session","messageID":"opencode-assistant-1","type":"step-start"},
+        {"id":"part-reasoning-1","sessionID":"opencode-complete-session","messageID":"opencode-assistant-1","type":"reasoning","text":"Inspect the adapter.","time":{"start":1784347201000,"end":1784347201100}},
+        {"id":"part-tool-1","sessionID":"opencode-complete-session","messageID":"opencode-assistant-1","type":"tool","callID":"opencode-call-1","tool":"read","state":{"status":"completed","input":{"filePath":"src/adapters/opencode.rs"},"output":"Found the tool-state mapper.","title":"Read adapter","metadata":{},"time":{"start":1784347201200,"end":1784347201300}}},
+        {"id":"part-assistant-text-1","sessionID":"opencode-complete-session","messageID":"opencode-assistant-1","type":"text","text":"Completed tools produce a call and a result.","time":{"start":1784347202000,"end":1784347202100}},
+        {"id":"part-step-finish-1","sessionID":"opencode-complete-session","messageID":"opencode-assistant-1","type":"step-finish","reason":"tool-calls","cost":0,"tokens":{"input":10,"output":10,"reasoning":2,"cache":{"read":0,"write":0}}}
+      ]
+    },
+    {
+      "info": {
+        "id": "opencode-assistant-2",
+        "sessionID": "opencode-complete-session",
+        "role": "assistant",
+        "parentID": "opencode-user-1",
+        "time": {"created": 1784347204000, "completed": 1784347205000},
+        "modelID": "test-model",
+        "providerID": "openai",
+        "mode": "build",
+        "agent": "build",
+        "path": {"cwd":"/workspace/fixture-repo","root":"/workspace/fixture-repo"},
+        "cost": 0,
+        "tokens": {"input":5,"output":5,"reasoning":0,"cache":{"read":0,"write":0}}
+      },
+      "parts": [
+        {"id":"part-tool-2","sessionID":"opencode-complete-session","messageID":"opencode-assistant-2","type":"tool","callID":"opencode-call-2","tool":"bash","state":{"status":"error","input":{"command":"false"},"error":"command exited with status 1","metadata":{},"time":{"start":1784347204000,"end":1784347204100}}}
+      ]
+    },
+    {
+      "info": {
+        "id": "opencode-assistant-3",
+        "sessionID": "opencode-complete-session",
+        "role": "assistant",
+        "parentID": "opencode-user-1",
+        "time": {"created": 1784347206000},
+        "modelID": "test-model",
+        "providerID": "openai",
+        "mode": "build",
+        "agent": "build",
+        "path": {"cwd":"/workspace/fixture-repo","root":"/workspace/fixture-repo"},
+        "cost": 0,
+        "tokens": {"input":1,"output":1,"reasoning":0,"cache":{"read":0,"write":0}}
+      },
+      "parts": [
+        {"id":"part-compact-1","sessionID":"opencode-complete-session","messageID":"opencode-assistant-3","type":"compaction","auto":true,"overflow":false}
+      ]
+    }
+  ]
+}
