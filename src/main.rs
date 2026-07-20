@@ -4,7 +4,7 @@ use indicatif::{ProgressBar, ProgressStyle};
 use semafuse::{
     AgentKind, QueryMode, SearchQuery,
     adapters::adapter,
-    blob::{BlobStore, OpenDalBlobStore},
+    blob::{BlobStore, DryRunBlobStore, OpenDalBlobStore},
     canonical_archive_schema, config, hooks, importer, mcp,
     storage::{EventStore, IngestBatch, SqliteStore},
     strategy,
@@ -257,24 +257,25 @@ async fn run(cli: Cli) -> Result<()> {
             let adapter = adapter(agent);
             let mut progress = TerminalProgress::new("Discovering import sources");
             let runtime_config = if dry_run { None } else { Some(config::load()?) };
+            let dry_run_blobs = DryRunBlobStore;
             let blob_store = runtime_config
                 .as_ref()
                 .map(|config| OpenDalBlobStore::from_config(&config.blob))
                 .transpose()?;
+            let blobs: Option<&dyn BlobStore> = if dry_run {
+                Some(&dry_run_blobs)
+            } else {
+                blob_store.as_ref().map(|store| store as &dyn BlobStore)
+            };
             let report = if let Some(source) = source {
-                importer::import_path(
-                    &*adapter,
-                    &source,
-                    blob_store.as_ref().map(|store| store as &dyn BlobStore),
-                    &mut |current, total, item| progress.update(current, total, item),
-                )
+                importer::import_path(&*adapter, &source, blobs, &mut |current, total, item| {
+                    progress.update(current, total, item)
+                })
                 .await?
             } else {
-                importer::import_default(
-                    &*adapter,
-                    blob_store.as_ref().map(|store| store as &dyn BlobStore),
-                    &mut |current, total, item| progress.update(current, total, item),
-                )
+                importer::import_default(&*adapter, blobs, &mut |current, total, item| {
+                    progress.update(current, total, item)
+                })
                 .await?
             };
             let event_count = report.events.len();

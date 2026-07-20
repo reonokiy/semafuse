@@ -1,6 +1,6 @@
 use super::{
-    AgentAdapter, ImportContext, ImportedEvent, event_metadata, recall_text, scalar_string,
-    text_content, timestamp_ms, value_text,
+    AgentAdapter, ImportContext, ImportedEvent, event_metadata, non_null_sources, recall_text,
+    scalar_string, text_content, timestamp_ms, value_text,
 };
 use crate::model::{AgentKind, CanonicalEvent, EventKind, SearchHit};
 use anyhow::Result;
@@ -311,6 +311,21 @@ impl AgentAdapter for AmpAdapter {
             timestamp_ms(payload),
             event_metadata(event_name),
         )])
+    }
+
+    fn hook_attachment_sources(&self, event_name: &str, payload: &Value) -> Vec<Value> {
+        match event_name {
+            "agent.start" | "agent.end" => non_null_sources([payload.get("messages")]),
+            "tool.call" => non_null_sources([payload.get("input")]),
+            "tool.result" => {
+                non_null_sources([payload.get("output").or_else(|| payload.get("error"))])
+            }
+            _ => Vec::new(),
+        }
+    }
+
+    fn supports_recall(&self, event_name: &str) -> bool {
+        event_name == "agent.start"
     }
 
     fn recall_response(&self, event_name: &str, hits: &[SearchHit]) -> Option<Value> {

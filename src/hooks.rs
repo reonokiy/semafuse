@@ -54,6 +54,7 @@ pub async fn process_hook(
     .await?;
     // Recall before ingesting this hook so the current prompt cannot consume
     // one of its own historical-context slots.
+    let recall = recall && adapter.supports_recall(event_name);
     let response = if recall {
         let prompt = payload
             .get("prompt")
@@ -125,7 +126,10 @@ async fn normalize_hook(
         event.attach_raw_record(raw_record.id.clone());
     }
     if let Some(blobs) = blobs {
-        let attachments = extract_attachments(payload, blobs).await?;
+        let mut attachments = Vec::new();
+        for source in adapter.hook_attachment_sources(event_name, payload) {
+            attachments.extend(extract_attachments(&source, blobs).await?);
+        }
         if !attachments.is_empty()
             && let Some(event) = events.last_mut()
         {

@@ -95,6 +95,14 @@ pub trait AgentAdapter: Send + Sync {
     ) -> Result<Vec<ImportedEvent>>;
     /// Maps one named real-time hook payload into zero or more events.
     fn hook_event(&self, event_name: &str, payload: &Value) -> Result<Vec<CanonicalEvent>>;
+    /// Returns the trusted native subtrees whose attachments belong to the hook event.
+    fn hook_attachment_sources(&self, _event_name: &str, _payload: &Value) -> Vec<Value> {
+        Vec::new()
+    }
+    /// Returns true when this hook event can consume recall output.
+    fn supports_recall(&self, _event_name: &str) -> bool {
+        false
+    }
     /// Formats retrieval hits for the named native hook, if it supports recall injection.
     fn recall_response(&self, event_name: &str, hits: &[SearchHit]) -> Option<Value>;
     /// Returns installable hook artifact names and contents for this agent.
@@ -153,6 +161,17 @@ pub(crate) fn value_text(value: Option<&Value>) -> String {
             }
         })
         .unwrap_or_default()
+}
+
+pub(crate) fn non_null_sources<'a>(
+    values: impl IntoIterator<Item = Option<&'a Value>>,
+) -> Vec<Value> {
+    values
+        .into_iter()
+        .flatten()
+        .filter(|value| !value.is_null())
+        .cloned()
+        .collect()
 }
 
 pub(crate) fn timestamp_ms(value: &Value) -> Option<i64> {

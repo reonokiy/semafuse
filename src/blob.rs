@@ -30,6 +30,9 @@ pub struct OpenDalBlobStore {
     operator: Operator,
 }
 
+/// A non-persistent blob store used by dry-run imports to preserve conversion semantics.
+pub struct DryRunBlobStore;
+
 impl OpenDalBlobStore {
     /// Builds a backend from an OpenDAL scheme and service options.
     pub fn from_config(config: &BlobConfig) -> Result<Self> {
@@ -72,6 +75,33 @@ impl BlobStore for OpenDalBlobStore {
     async fn delete(&self, key: &str) -> Result<()> {
         self.operator.delete(key).await?;
         Ok(())
+    }
+}
+
+#[async_trait]
+impl BlobStore for DryRunBlobStore {
+    async fn put(
+        &self,
+        bytes: Vec<u8>,
+        media_type: &str,
+        name: Option<String>,
+    ) -> Result<AttachmentRef> {
+        let digest = hex::encode(Sha256::digest(&bytes));
+        Ok(AttachmentRef {
+            object_key: format!("dry-run/sha256/{digest}"),
+            digest,
+            media_type: media_type.to_owned(),
+            size: bytes.len() as u64,
+            name,
+        })
+    }
+
+    async fn get(&self, key: &str) -> Result<Vec<u8>> {
+        anyhow::bail!("dry-run blob {key} was not persisted")
+    }
+
+    async fn delete(&self, key: &str) -> Result<()> {
+        anyhow::bail!("dry-run blob {key} was not persisted")
     }
 }
 

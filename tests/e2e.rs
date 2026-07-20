@@ -484,6 +484,43 @@ fn hooks_preserve_native_fields_and_normalize_repository_and_tool_events() {
 }
 
 #[test]
+fn hook_attachments_only_use_adapter_trusted_sources() {
+    let temp = TempDir::new().unwrap();
+    let db = temp.path().join("hook-attachments.db");
+    let blob_dir = temp.path().join("blobs");
+    let stray = temp.path().join("stray-secret.txt");
+    fs::write(&stray, b"do not ingest from arbitrary nested payload").unwrap();
+
+    let payload = serde_json::json!({
+        "session_id":"trusted-attachments",
+        "prompt_id":"prompt-1",
+        "prompt":"inspect this image",
+        "content":[{"type":"image","source":{"type":"base64","media_type":"image/png","data":"aGVsbG8="}}],
+        "untrusted_nested":{"type":"file","source":{"path":stray,"media_type":"text/plain"}}
+    });
+    bin()
+        .env("SEMAFUSE_BLOB_DIR", &blob_dir)
+        .args([
+            "hook",
+            "--agent",
+            "claude-code",
+            "--event",
+            "UserPromptSubmit",
+            "--db",
+        ])
+        .arg(&db)
+        .write_stdin(payload.to_string())
+        .assert()
+        .success();
+
+    let session = session_json(&db, "trusted-attachments");
+    let attachments = event_attachments(&session["events"][0]);
+    assert_eq!(attachments.len(), 1);
+    assert_eq!(attachments[0]["media_type"], "image/png");
+    assert_ne!(attachments[0]["name"], "stray-secret.txt");
+}
+
+#[test]
 fn opencode_history_normalizes_structured_tool_parts() {
     let temp = TempDir::new().unwrap();
     let source = temp.path().join("opencode-tool.json");
@@ -868,9 +905,14 @@ fn generated_integrations_have_agent_native_locations() {
             .unwrap();
     assert!(codex_hooks["hooks"].get("SessionEnd").is_none());
     assert!(codex_hooks["hooks"].get("StopFailure").is_none());
-    for entries in codex_hooks["hooks"].as_object().unwrap().values() {
+    for (name, entries) in codex_hooks["hooks"].as_object().unwrap() {
         let handler = &entries[0]["hooks"][0];
-        assert!(handler["command"].as_str().unwrap().contains("--protocol"));
+        let command = handler["command"].as_str().unwrap();
+        assert!(command.contains("--protocol"));
+        assert_eq!(
+            command.contains("--recall"),
+            matches!(name.as_str(), "SessionStart" | "UserPromptSubmit")
+        );
         assert!(handler.get("args").is_none());
     }
     assert!(
@@ -891,6 +933,13 @@ fn generated_integrations_have_agent_native_locations() {
     assert!(claude_settings["hooks"]["PreToolUse"].is_array());
     assert!(claude_settings["hooks"]["PreCompact"].is_array());
     assert!(claude_settings["hooks"]["PostCompact"].is_array());
+    for (name, entries) in claude_settings["hooks"].as_object().unwrap() {
+        let args = entries[0]["hooks"][0]["args"].as_array().unwrap();
+        assert_eq!(
+            args.iter().any(|arg| arg == "--recall"),
+            matches!(name.as_str(), "SessionStart" | "UserPromptSubmit")
+        );
+    }
 
     bin()
         .args(["hooks", "install", "--agent", "codex", "--target"])
@@ -1214,6 +1263,39 @@ fn codex_image_only_messages_preserve_local_and_inline_images() {
     let session = session_json(&db, "codex-image-only");
     assert_eq!(session["count"], 1);
     assert_eq!(event_attachments(&session["events"][0]).len(), 2);
+}
+
+#[test]
+fn dry_run_preserves_image_only_event_counts_without_writing_blobs() {
+    let temp = TempDir::new().unwrap();
+    let source = temp.path().join("codex-images-dry-run.json");
+    let blob_dir = temp.path().join("dry-run-blobs");
+    fs::write(
+        &source,
+        serde_json::json!({"thread":{
+            "id":"codex-image-dry-run", "turns":[{"id":"turn-1","items":[{
+                "id":"message-1", "type":"userMessage", "content":[
+                    {"type":"image","url":"data:image/png;base64,aW5saW5l"}
+                ]
+            }]}]
+        }})
+        .to_string(),
+    )
+    .unwrap();
+
+    let output = bin()
+        .env("SEMAFUSE_BLOB_DIR", &blob_dir)
+        .args(["import", "--agent", "codex", "--source"])
+        .arg(&source)
+        .arg("--dry-run")
+        .arg("--json")
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    let output: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(output["events"], 1);
+    assert_eq!(output["diagnostics"], 0);
+    assert!(!blob_dir.exists());
 }
 
 #[test]

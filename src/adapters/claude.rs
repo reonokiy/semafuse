@@ -1,6 +1,6 @@
 use super::{
-    AgentAdapter, ImportContext, ImportedEvent, event_metadata, recall_text, scalar_string,
-    text_content, timestamp_ms, value_text,
+    AgentAdapter, ImportContext, ImportedEvent, event_metadata, non_null_sources, recall_text,
+    scalar_string, text_content, timestamp_ms, value_text,
 };
 use crate::model::{AgentKind, CanonicalEvent, EventKind, SearchHit};
 use anyhow::Result;
@@ -360,11 +360,30 @@ impl AgentAdapter for ClaudeAdapter {
         )])
     }
 
-    fn recall_response(&self, event_name: &str, hits: &[SearchHit]) -> Option<Value> {
-        if !matches!(
+    fn hook_attachment_sources(&self, event_name: &str, p: &Value) -> Vec<Value> {
+        match event_name.to_ascii_lowercase().as_str() {
+            "userpromptsubmit" | "user_prompt_submit" => {
+                non_null_sources([p.get("content"), p.get("prompt")])
+            }
+            "pretooluse" | "pre_tool_use" => {
+                non_null_sources([p.get("tool_input"), p.get("content")])
+            }
+            "posttooluse" | "post_tool_use" => non_null_sources([p.get("tool_response")]),
+            "posttoolusefailure" | "post_tool_use_failure" => non_null_sources([p.get("error")]),
+            "stop" => non_null_sources([p.get("last_assistant_message"), p.get("content")]),
+            _ => Vec::new(),
+        }
+    }
+
+    fn supports_recall(&self, event_name: &str) -> bool {
+        matches!(
             event_name.to_ascii_lowercase().as_str(),
             "sessionstart" | "session_start" | "userpromptsubmit" | "user_prompt_submit"
-        ) {
+        )
+    }
+
+    fn recall_response(&self, event_name: &str, hits: &[SearchHit]) -> Option<Value> {
+        if !self.supports_recall(event_name) {
             return None;
         }
         let text = recall_text(hits);
@@ -379,7 +398,7 @@ impl AgentAdapter for ClaudeAdapter {
 
     fn hook_artifacts(&self, binary: &Path, database: &Path) -> Vec<(String, String)> {
         let command = binary.display().to_string();
-        let args = [
+        let base_args = [
             "hook",
             "--agent",
             "claude-code",
@@ -387,7 +406,6 @@ impl AgentAdapter for ClaudeAdapter {
             "auto",
             "--db",
             database.to_str().unwrap_or_default(),
-            "--recall",
             "--protocol",
         ];
         let mut hooks = serde_json::Map::new();
@@ -403,6 +421,10 @@ impl AgentAdapter for ClaudeAdapter {
             "PreCompact",
             "PostCompact",
         ] {
+            let mut args = base_args.to_vec();
+            if self.supports_recall(name) {
+                args.push("--recall");
+            }
             hooks.insert(
                 name.into(),
                 json!([{"hooks":[{"type":"command","command":command,"args":args}]}]),

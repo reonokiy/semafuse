@@ -1,6 +1,6 @@
 use super::{
-    AgentAdapter, ImportContext, ImportedEvent, event_metadata, recall_text, scalar_string,
-    text_content, timestamp_ms, value_text,
+    AgentAdapter, ImportContext, ImportedEvent, event_metadata, non_null_sources, recall_text,
+    scalar_string, text_content, timestamp_ms, value_text,
 };
 use crate::model::{AgentKind, CanonicalEvent, EventKind, SearchHit};
 use anyhow::Result;
@@ -400,11 +400,34 @@ impl AgentAdapter for CodexAdapter {
         )])
     }
 
-    fn recall_response(&self, event_name: &str, hits: &[SearchHit]) -> Option<Value> {
-        if !matches!(
+    fn hook_attachment_sources(&self, event_name: &str, p: &Value) -> Vec<Value> {
+        match event_name.to_ascii_lowercase().as_str() {
+            "userpromptsubmit" | "user_prompt_submit" => {
+                non_null_sources([p.get("content"), p.get("prompt")])
+            }
+            "pretooluse" | "pre_tool_use" => {
+                non_null_sources([p.get("tool_input"), p.get("content")])
+            }
+            "posttooluse" | "post_tool_use" => {
+                non_null_sources([p.get("tool_response").or_else(|| p.get("tool_output"))])
+            }
+            "posttoolusefailure" | "post_tool_use_failure" => {
+                non_null_sources([p.get("error").or_else(|| p.get("tool_response"))])
+            }
+            "stop" => non_null_sources([p.get("last_assistant_message"), p.get("content")]),
+            _ => Vec::new(),
+        }
+    }
+
+    fn supports_recall(&self, event_name: &str) -> bool {
+        matches!(
             event_name.to_ascii_lowercase().as_str(),
             "sessionstart" | "session_start" | "userpromptsubmit" | "user_prompt_submit"
-        ) {
+        )
+    }
+
+    fn recall_response(&self, event_name: &str, hits: &[SearchHit]) -> Option<Value> {
+        if !self.supports_recall(event_name) {
             return None;
         }
         let text = recall_text(hits);
@@ -418,7 +441,7 @@ impl AgentAdapter for CodexAdapter {
     }
 
     fn hook_artifacts(&self, binary: &Path, database: &Path) -> Vec<(String, String)> {
-        let command = [
+        let base_command = [
             binary.display().to_string(),
             "hook".into(),
             "--agent".into(),
@@ -427,7 +450,6 @@ impl AgentAdapter for CodexAdapter {
             "auto".into(),
             "--db".into(),
             database.display().to_string(),
-            "--recall".into(),
             "--protocol".into(),
         ]
         .iter()
@@ -444,6 +466,11 @@ impl AgentAdapter for CodexAdapter {
             "PreCompact",
             "PostCompact",
         ] {
+            let command = if self.supports_recall(name) {
+                format!("{base_command} --recall")
+            } else {
+                base_command.clone()
+            };
             hooks.insert(
                 name.into(),
                 json!([{"hooks":[{"type":"command","command":command}]}]),

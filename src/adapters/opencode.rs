@@ -1,6 +1,6 @@
 use super::{
-    AgentAdapter, ImportContext, ImportedEvent, event_metadata, scalar_string, text_content,
-    timestamp_at, timestamp_ms, value_text,
+    AgentAdapter, ImportContext, ImportedEvent, event_metadata, non_null_sources, scalar_string,
+    text_content, timestamp_at, timestamp_ms, value_text,
 };
 use crate::model::{AgentKind, CanonicalEvent, EventKind, SearchHit};
 use anyhow::Result;
@@ -374,6 +374,35 @@ impl AgentAdapter for OpenCodeAdapter {
             timestamp,
             event_metadata(event_type),
         )])
+    }
+
+    fn hook_attachment_sources(&self, event_name: &str, p: &Value) -> Vec<Value> {
+        let event = p.get("event").unwrap_or(p);
+        let props = event.get("properties").unwrap_or(event);
+        let part = props.get("part");
+        let tool_state = part.and_then(|part| part.get("state"));
+        let event_type = if event_name == "auto" {
+            event.get("type").and_then(Value::as_str).unwrap_or("other")
+        } else {
+            event_name
+        };
+        match event_type {
+            "message.part.updated" => match part
+                .and_then(|part| part.get("type"))
+                .and_then(Value::as_str)
+            {
+                Some("tool") => non_null_sources([
+                    tool_state.and_then(|state| state.get("input")),
+                    tool_state.and_then(|state| state.get("output")),
+                    tool_state.and_then(|state| state.get("error")),
+                ]),
+                Some("text") => non_null_sources([part]),
+                _ => Vec::new(),
+            },
+            "tool.execute.before" => non_null_sources([props.get("input")]),
+            "tool.execute.after" => non_null_sources([props.get("output")]),
+            _ => Vec::new(),
+        }
     }
 
     fn recall_response(&self, _event_name: &str, _hits: &[SearchHit]) -> Option<Value> {
