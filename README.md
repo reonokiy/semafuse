@@ -41,6 +41,23 @@ cargo doc --no-deps --open
 
 ## Build and Install
 
+Install a prebuilt release with mise:
+
+```bash
+# Latest release
+mise use -g github:reonokiy/semafuse
+
+# A specific release
+mise use -g github:reonokiy/semafuse@0.1.0
+```
+
+Because this repository is private, authenticate mise through the GitHub CLI or set
+`MISE_GITHUB_TOKEN` to a token with read access to the repository. The release workflow
+publishes platform-specific archives and a `SHA256SUMS` file that mise uses to select and
+verify the download.
+
+To build and install from source instead:
+
 ```bash
 cargo install --path . --locked
 ```
