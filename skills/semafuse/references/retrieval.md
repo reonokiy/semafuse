@@ -11,6 +11,7 @@ Pass global `--json` for agent-driven CLI calls. Successful commands emit a JSON
 ```bash
 semafuse search "authentication token rotation" \
   --repository "$PWD" \
+  --since 2d \
   --limit 10 \
   --json
 ```
@@ -20,6 +21,8 @@ Options:
 - `--repository REPOSITORY`: restrict to a repository/worktree identifier. Retry without it only when cross-project context is plausible.
 - `--agent amp|codex|claude-code|opencode`: restrict to one source agent.
 - `--mode hybrid|lexical|recent`: `hybrid` is the default; `lexical` uses only FTS relevance; `recent` sorts by recency and ignores query text for ranking.
+- `--since TIME`: include only events at or after this bound. Accepts relative durations such as `48h`, `2d`, or `1w`, RFC3339 timestamps, or Unix milliseconds.
+- `--until TIME`: include only events at or before this bound. Accepts the same formats as `--since`.
 - `--limit N`: result limit, clamped to 1 through 100.
 - `--db PATH`: use a non-default SQLite database.
 
@@ -35,13 +38,14 @@ This returns normalized events in chronological order. Read the session when sur
 
 ## Inspect recent events
 
-Prefer MCP `semafuse_recent` when available. The CLI equivalent is:
+Use the CLI for recent events:
 
 ```bash
 semafuse search "recent" --mode recent --repository "$PWD" --limit 20 --json
 ```
 
 The placeholder query is required syntactically but does not affect ranking in `recent` mode.
+Use `--since` for bounded recent activity, for example `--since 2d` to inspect the last two days without over-fetching and post-filtering.
 
 ## Paths and overrides
 

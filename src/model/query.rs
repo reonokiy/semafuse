@@ -12,6 +12,10 @@ pub struct SearchQuery {
     pub repository: Option<String>,
     /// Exact source-agent filter, or all agents when absent.
     pub agent: Option<AgentKind>,
+    /// Inclusive lower bound for `ordering_timestamp_ms`.
+    pub since_ms: Option<i64>,
+    /// Inclusive upper bound for `ordering_timestamp_ms`.
+    pub until_ms: Option<i64>,
     /// Maximum number of results requested.
     pub limit: usize,
 }

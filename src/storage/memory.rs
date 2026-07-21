@@ -17,11 +17,14 @@ pub struct MemoryStore {
 }
 
 fn matches(event: &CanonicalEvent, query: &SearchQuery) -> bool {
+    let timestamp_ms = event.ordering_timestamp_ms();
     query.agent.is_none_or(|a| a == event.source.agent)
         && query
             .repository
             .as_ref()
             .is_none_or(|r| event.source.repository.as_ref() == Some(r))
+        && query.since_ms.is_none_or(|since| timestamp_ms >= since)
+        && query.until_ms.is_none_or(|until| timestamp_ms <= until)
 }
 
 #[async_trait]

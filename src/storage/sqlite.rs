@@ -196,13 +196,17 @@ impl EventStore for SqliteStore {
         let agent = query.agent.map(|a| a.as_str());
         let limit = query.limit as i64;
         let rows = sqlx::query(
-            "SELECT e.event_json,bm25(events_fts) AS rank FROM events_fts JOIN events e ON e.rowid=events_fts.rowid WHERE events_fts MATCH ? AND (? IS NULL OR e.repository=?) AND (? IS NULL OR e.agent=?) ORDER BY rank,e.ordering_timestamp_ms DESC LIMIT ?",
+            "SELECT e.event_json,bm25(events_fts) AS rank FROM events_fts JOIN events e ON e.rowid=events_fts.rowid WHERE events_fts MATCH ? AND (? IS NULL OR e.repository=?) AND (? IS NULL OR e.agent=?) AND (? IS NULL OR e.ordering_timestamp_ms>=?) AND (? IS NULL OR e.ordering_timestamp_ms<=?) ORDER BY rank,e.ordering_timestamp_ms DESC LIMIT ?",
         )
         .bind(expression)
         .bind(query.repository.as_deref())
         .bind(query.repository.as_deref())
         .bind(agent)
         .bind(agent)
+        .bind(query.since_ms)
+        .bind(query.since_ms)
+        .bind(query.until_ms)
+        .bind(query.until_ms)
         .bind(limit)
         .fetch_all(&self.pool)
         .await?;
@@ -222,12 +226,16 @@ impl EventStore for SqliteStore {
         let agent = query.agent.map(|a| a.as_str());
         let limit = query.limit as i64;
         let rows = sqlx::query(
-            "SELECT event_json FROM events WHERE (? IS NULL OR repository=?) AND (? IS NULL OR agent=?) ORDER BY ordering_timestamp_ms DESC LIMIT ?",
+            "SELECT event_json FROM events WHERE (? IS NULL OR repository=?) AND (? IS NULL OR agent=?) AND (? IS NULL OR ordering_timestamp_ms>=?) AND (? IS NULL OR ordering_timestamp_ms<=?) ORDER BY ordering_timestamp_ms DESC LIMIT ?",
         )
         .bind(query.repository.as_deref())
         .bind(query.repository.as_deref())
         .bind(agent)
         .bind(agent)
+        .bind(query.since_ms)
+        .bind(query.since_ms)
+        .bind(query.until_ms)
+        .bind(query.until_ms)
         .bind(limit)
         .fetch_all(&self.pool)
         .await?;

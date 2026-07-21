@@ -40,10 +40,10 @@ pub async fn serve(store: &SqliteStore) -> Result<()> {
             "initialize" => json!({"protocolVersion":"2025-06-18","capabilities":{"tools":{}},"serverInfo":{"name":"semafuse","version":env!("CARGO_PKG_VERSION")}}),
             "ping" => json!({}),
             "tools/list" => json!({"tools":[
-                {"name":"semafuse_search","description":"Search raw coding-agent history with provenance","inputSchema":{"type":"object","properties":{"query":{"type":"string"},"repository":{"type":"string"},"mode":{"type":"string","enum":["lexical","recent","hybrid"]},"limit":{"type":"integer"}},"required":["query"]}},
+                {"name":"semafuse_search","description":"Search raw coding-agent history with provenance","inputSchema":{"type":"object","properties":{"query":{"type":"string"},"repository":{"type":"string"},"mode":{"type":"string","enum":["lexical","recent","hybrid"]},"since_ms":{"type":"integer"},"until_ms":{"type":"integer"},"limit":{"type":"integer"}},"required":["query"]}},
                 {"name":"semafuse_recall","description":"Recall context through the configured memory strategy","inputSchema":{"type":"object","properties":{"query":{"type":"string"},"repository":{"type":"string"},"limit":{"type":"integer"}},"required":["query"]}},
                 {"name":"semafuse_session","description":"Read normalized events for a prior session","inputSchema":{"type":"object","properties":{"session_id":{"type":"string"}},"required":["session_id"]}},
-                {"name":"semafuse_recent","description":"List recent normalized coding-agent events","inputSchema":{"type":"object","properties":{"repository":{"type":"string"},"limit":{"type":"integer"}}}}
+                {"name":"semafuse_recent","description":"List recent normalized coding-agent events","inputSchema":{"type":"object","properties":{"repository":{"type":"string"},"since_ms":{"type":"integer"},"until_ms":{"type":"integer"},"limit":{"type":"integer"}}}}
             ]}),
             "tools/call" => tool_call(store, request.get("params").unwrap_or(&Value::Null)).await.unwrap_or_else(|error| json!({"content":[{"type":"text","text":format!("Semafuse error: {error:#}")}],"isError":true})),
             _ => {
@@ -81,6 +81,8 @@ async fn tool_call(store: &SqliteStore, params: &Value) -> Result<Value> {
                 text: String::new(),
                 repository: nonempty(args.get("repository")),
                 agent: None,
+                since_ms: time_bound(args.get("since_ms")),
+                until_ms: time_bound(args.get("until_ms")),
                 limit: limit(args),
             };
             serde_json::to_value(store.recent(&query).await?)?
@@ -94,6 +96,8 @@ async fn tool_call(store: &SqliteStore, params: &Value) -> Result<Value> {
                     .to_owned(),
                 repository: nonempty(args.get("repository")),
                 agent: None,
+                since_ms: time_bound(args.get("since_ms")),
+                until_ms: time_bound(args.get("until_ms")),
                 limit: limit(args),
             };
             let mode = args.get("mode").and_then(Value::as_str).unwrap_or("hybrid");
@@ -122,4 +126,8 @@ fn limit(args: &Value) -> usize {
         .and_then(Value::as_u64)
         .unwrap_or(10)
         .clamp(1, 100) as usize
+}
+
+fn time_bound(value: Option<&Value>) -> Option<i64> {
+    value.and_then(Value::as_i64)
 }

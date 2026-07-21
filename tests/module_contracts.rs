@@ -181,6 +181,8 @@ async fn assert_store_contract(store: &dyn EventStore) {
         text: "sqlx".into(),
         repository: Some("/workspace/demo".into()),
         agent: None,
+        since_ms: None,
+        until_ms: None,
         limit: 10,
     };
     assert_eq!(
@@ -208,6 +210,31 @@ async fn assert_store_contract(store: &dyn EventStore) {
             .await
             .unwrap()
             .is_empty()
+    );
+    let recent_only = SearchQuery {
+        since_ms: Some(2),
+        ..query.clone()
+    };
+    let hits = retrieval::strategy("recent")
+        .unwrap()
+        .retrieve(store, &recent_only)
+        .await
+        .unwrap();
+    assert_eq!(hits.len(), 1);
+    assert_eq!(hits[0].event.search_text(), "keep the durable spool");
+
+    let first_only = SearchQuery {
+        until_ms: Some(1),
+        ..query
+    };
+    assert_eq!(
+        retrieval::strategy("lexical")
+            .unwrap()
+            .retrieve(store, &first_only)
+            .await
+            .unwrap()
+            .len(),
+        1
     );
 }
 

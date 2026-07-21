@@ -245,6 +245,8 @@ semafuse search QUERY \
   [--repository REPOSITORY] \
   [--agent AGENT] \
   [--mode hybrid|lexical|recent] \
+  [--since TIME] \
+  [--until TIME] \
   [--limit N] \
   [--json] \
   [--db PATH]
@@ -255,13 +257,15 @@ semafuse search QUERY \
 - `recent`: returns the most recent events matching the filters; query text does not affect ranking.
 - `--repository`: searches only events whose normalized `repository` exactly matches the specified Git repository/worktree identifier; it does not filter by `cwd`.
 - `--agent`: searches only events from a specific agent.
+- `--since`: includes only events at or after the given bound. It accepts relative durations such as `48h`, `2d`, or `1w`, RFC3339 timestamps, or Unix milliseconds.
+- `--until`: includes only events at or before the given bound, using the same formats as `--since`.
 - `--limit`: defaults to 10; constrained by the program to 1 through 100.
 - `--json`: outputs the standard envelope; complete matches are in `results`, including sources, fingerprints, attachments, and scores.
 
 ```bash
 semafuse search "Cloudflare authentication" --mode lexical --limit 20
 semafuse search "deployment" --agent codex --repository /work/api --json
-semafuse search "ignored for recent" --mode recent
+semafuse search "ignored for recent" --mode recent --since 2d
 ```
 
 `--mode` controls only the basic query method for raw history; it does not select a memory strategy. The built-in `history`

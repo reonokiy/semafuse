@@ -170,6 +170,76 @@ fn imports_four_agents_deduplicates_and_searches() {
 }
 
 #[test]
+fn search_accepts_time_window_filters() {
+    let temp = TempDir::new().unwrap();
+    let db = temp.path().join("time-window.db");
+    bin()
+        .args([
+            "import",
+            "--agent",
+            "codex",
+            "--source",
+            "tests/fixtures/codex-rollout-complete.jsonl",
+            "--db",
+        ])
+        .arg(&db)
+        .assert()
+        .success();
+
+    let after_window = bin()
+        .args([
+            "search",
+            "parser",
+            "--mode",
+            "recent",
+            "--since",
+            "2026-07-18T02:01:00Z",
+            "--db",
+        ])
+        .arg(&db)
+        .arg("--json")
+        .output()
+        .unwrap();
+    assert!(after_window.status.success());
+    let after_window: Value = serde_json::from_slice(&after_window.stdout).unwrap();
+    assert_eq!(after_window["count"], 3);
+    assert_eq!(
+        after_window["since_ms"],
+        serde_json::json!(1_784_340_060_000_i64)
+    );
+    assert!(after_window["results"].to_string().contains("Compacted"));
+    assert!(!after_window["results"].to_string().contains("read_file"));
+
+    let before_window = bin()
+        .args([
+            "search",
+            "parser",
+            "--mode",
+            "lexical",
+            "--until",
+            "1784340003000",
+            "--db",
+        ])
+        .arg(&db)
+        .arg("--json")
+        .output()
+        .unwrap();
+    assert!(before_window.status.success());
+    let before_window: Value = serde_json::from_slice(&before_window.stdout).unwrap();
+    assert_eq!(before_window["count"], 1);
+    assert_eq!(
+        before_window["until_ms"],
+        serde_json::json!(1_784_340_003_000_i64)
+    );
+    assert!(
+        before_window["results"]
+            .to_string()
+            .contains("Find the parser decision")
+    );
+    assert!(!before_window["results"].to_string().contains("read_file"));
+}
+
+#[test]
 fn imports_realistic_complete_histories_and_preserves_native_outcomes() {
     let temp = TempDir::new().unwrap();
     let db = temp.path().join("memory.db");

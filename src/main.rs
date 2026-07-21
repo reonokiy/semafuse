@@ -1,4 +1,5 @@
 use anyhow::{Context, Result, bail};
+use chrono::DateTime;
 use clap::{Parser, Subcommand};
 use indicatif::{ProgressBar, ProgressStyle};
 use semafuse::{
@@ -10,7 +11,11 @@ use semafuse::{
     strategy,
 };
 use serde_json::{Value, json};
-use std::{io::Read, path::PathBuf, time::Duration};
+use std::{
+    io::Read,
+    path::PathBuf,
+    time::{Duration, SystemTime, UNIX_EPOCH},
+};
 
 #[derive(Parser)]
 #[command(version, about)]
@@ -81,6 +86,12 @@ enum Commands {
         /// Raw event query mode: hybrid, lexical, or recent
         #[arg(long, default_value = "hybrid")]
         mode: String,
+        /// Include only events at or after this time (for example `2d`, `48h`, RFC3339, or Unix milliseconds)
+        #[arg(long)]
+        since: Option<String>,
+        /// Include only events at or before this time (for example `2026-07-21T00:00:00Z` or Unix milliseconds)
+        #[arg(long)]
+        until: Option<String>,
         /// Maximum result count (clamped to 1..=100)
         #[arg(long, default_value_t = 10)]
         limit: usize,
@@ -417,6 +428,8 @@ async fn run(cli: Cli) -> Result<()> {
             repository,
             agent,
             mode,
+            since,
+            until,
             limit,
         } => {
             let store = SqliteStore::open(&db_path(db)).await?;
@@ -424,14 +437,30 @@ async fn run(cli: Cli) -> Result<()> {
                 text: query,
                 repository: repository.filter(|s| !s.is_empty()),
                 agent,
+                since_ms: since
+                    .as_deref()
+                    .map(parse_time_bound)
+                    .transpose()
+                    .context("parse --since")?,
+                until_ms: until
+                    .as_deref()
+                    .map(parse_time_bound)
+                    .transpose()
+                    .context("parse --until")?,
                 limit: limit.clamp(1, 100),
             };
+            if let (Some(since), Some(until)) = (query.since_ms, query.until_ms) {
+                if since > until {
+                    bail!("--since must be earlier than or equal to --until");
+                }
+            }
             let mode: QueryMode = mode.parse()?;
             let hits = store.query(mode, &query).await?;
             if json_output {
                 print_json(&json!({
                     "ok":true, "command":"search", "query":query.text,
-                    "mode":mode.as_str(), "count":hits.len(), "results":hits,
+                    "mode":mode.as_str(), "since_ms":query.since_ms,
+                    "until_ms":query.until_ms, "count":hits.len(), "results":hits,
                 }))?;
             } else {
                 if hits.is_empty() {
@@ -708,9 +737,55 @@ fn db_path(path: Option<PathBuf>) -> PathBuf {
     path.unwrap_or_else(config::default_db_path)
 }
 
+fn parse_time_bound(value: &str) -> Result<i64> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        bail!("time bound cannot be empty");
+    }
+    if let Some(amount) = trimmed.strip_suffix("ms") {
+        let amount: i64 = amount.parse().context("parse millisecond duration")?;
+        return Ok(now_ms().saturating_sub(amount));
+    }
+    if let Some(unit) = trimmed
+        .chars()
+        .last()
+        .filter(|c| matches!(c, 's' | 'm' | 'h' | 'd' | 'w'))
+    {
+        let amount = &trimmed[..trimmed.len() - unit.len_utf8()];
+        if !amount.chars().all(|c| c.is_ascii_digit()) {
+            bail!("duration amount must be an integer in {trimmed:?}");
+        }
+        let amount: i64 = amount
+            .parse()
+            .with_context(|| format!("parse duration amount in {trimmed:?}"))?;
+        let multiplier: i64 = match unit {
+            's' => 1_000,
+            'm' => 60_000,
+            'h' => 3_600_000,
+            'd' => 86_400_000,
+            'w' => 604_800_000,
+            _ => unreachable!("duration units are filtered above"),
+        };
+        return Ok(now_ms().saturating_sub(amount.saturating_mul(multiplier)));
+    }
+    if trimmed.chars().all(|c| c.is_ascii_digit()) {
+        return trimmed.parse().context("parse Unix millisecond timestamp");
+    }
+    DateTime::parse_from_rfc3339(trimmed)
+        .map(|timestamp| timestamp.timestamp_millis())
+        .context("parse RFC3339 timestamp")
+}
+
 fn print_json(value: &Value) -> Result<()> {
     println!("{}", serde_json::to_string_pretty(value)?);
     Ok(())
+}
+
+fn now_ms() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as i64
 }
 
 fn artifacts(

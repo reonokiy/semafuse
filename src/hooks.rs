@@ -71,6 +71,8 @@ pub async fn process_hook(
             text: prompt.to_owned(),
             repository: normalize_repository(cwd.as_deref(), None),
             agent: None,
+            since_ms: None,
+            until_ms: None,
             limit: 5,
         };
         let hits = match strategy::recall(store, config, query).await {
