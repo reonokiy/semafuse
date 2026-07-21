@@ -1,9 +1,16 @@
 use super::{
-    AgentAdapter, ImportContext, ImportedEvent, event_metadata, non_null_sources, recall_text,
-    scalar_string, text_content, timestamp_ms, value_text,
+    HistoryImporter, HookInstaller, HookProjector, ImportContext, NativeHistoryProjection,
+    ProjectedEvent, event_source, message_role, non_null_sources, project_native_history,
+    recall_text, scalar_string, text_content, timestamp_ms, value_text,
 };
-use crate::model::{AgentKind, CanonicalEvent, EventKind, SearchHit};
-use anyhow::Result;
+use crate::{
+    blob::BlobStore,
+    importer::{ImportReport, NativeSource, json_source_files, read_json_values},
+    model::{AgentKind, CanonicalEvent, EventKind, MessageRole, SearchHit, ToolStatus},
+};
+use anyhow::{Context, Result};
+use async_trait::async_trait;
+use serde::Deserialize;
 use serde_json::{Value, json};
 use std::{collections::HashMap, path::Path};
 
@@ -44,156 +51,479 @@ use std::{collections::HashMap, path::Path};
 /// removed. Message time is preferred over thread `created`.
 pub struct AmpAdapter;
 
-impl AgentAdapter for AmpAdapter {
-    fn kind(&self) -> AgentKind {
-        AgentKind::Amp
+struct AmpHistory {
+    thread: AmpThread,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct AmpThread {
+    id: Option<Value>,
+    created: Option<Value>,
+    env: Option<AmpThreadEnv>,
+    #[serde(default)]
+    messages: Vec<AmpHistoryMessage>,
+    #[serde(skip)]
+    raw: Value,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct AmpThreadEnv {
+    initial: Option<AmpInitialEnv>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct AmpInitialEnv {
+    #[serde(default)]
+    trees: Vec<AmpTree>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct AmpTree {
+    uri: Option<Value>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct AmpHistoryMessage {
+    #[serde(rename = "messageId")]
+    message_id: Option<Value>,
+    role: Option<Value>,
+    #[serde(skip)]
+    parts: Vec<AmpHistoryPart>,
+    #[serde(skip)]
+    raw: Value,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct AmpHistoryPart {
+    #[serde(default, rename = "type")]
+    part_type: String,
+    id: Option<Value>,
+    name: Option<Value>,
+    #[serde(rename = "toolUseID")]
+    tool_use_id: Option<Value>,
+    input: Option<Value>,
+    run: Option<AmpHistoryRun>,
+    #[serde(skip)]
+    raw: Value,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct AmpHistoryRun {
+    status: Option<String>,
+    result: Option<Value>,
+    error: Option<Value>,
+    reason: Option<Value>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct AmpHookPayload {
+    thread: Option<AmpHookThread>,
+    id: Option<Value>,
+    #[serde(rename = "toolUseID")]
+    tool_use_id: Option<Value>,
+    cwd: Option<Value>,
+    message: Option<Value>,
+    #[serde(default)]
+    messages: Vec<AmpHookMessage>,
+    status: Option<Value>,
+    input: Option<Value>,
+    output: Option<Value>,
+    error: Option<Value>,
+    tool: Option<Value>,
+    #[serde(skip)]
+    raw: Value,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct AmpHookThread {
+    id: Option<Value>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct AmpHookMessage {
+    id: Option<Value>,
+    #[serde(rename = "messageId")]
+    message_id: Option<Value>,
+    role: Option<Value>,
+    #[serde(default)]
+    content: Value,
+    #[serde(skip)]
+    raw: Value,
+}
+
+impl TryFrom<&Value> for AmpHookPayload {
+    type Error = anyhow::Error;
+
+    fn try_from(value: &Value) -> Result<Self, Self::Error> {
+        let mut payload: Self = serde_json::from_value(value.clone())?;
+        if let Some(raw_messages) = value.get("messages").and_then(Value::as_array) {
+            for (message, raw_message) in payload.messages.iter_mut().zip(raw_messages) {
+                message.raw = raw_message.clone();
+            }
+        }
+        payload.raw = value.clone();
+        Ok(payload)
+    }
+}
+
+impl AmpHookPayload {
+    fn session(&self) -> String {
+        self.thread
+            .as_ref()
+            .and_then(|thread| scalar_string(thread.id.as_ref()))
+            .unwrap_or_else(|| "amp-unknown".into())
     }
 
-    fn import_values(
-        &self,
-        values: &[Value],
-        context: &ImportContext,
-    ) -> Result<Vec<ImportedEvent>> {
-        let thread = values.first().unwrap_or(&Value::Null);
-        let session =
-            scalar_string(thread.get("id")).unwrap_or_else(|| context.fallback_session_id.clone());
-        let tree = thread
-            .pointer("/env/initial/trees/0")
-            .unwrap_or(&Value::Null);
-        let cwd = scalar_string(tree.get("uri"))
-            .and_then(|uri| uri.strip_prefix("file://").map(str::to_owned).or(Some(uri)))
-            .or_else(|| context.cwd.clone());
-        let created = timestamp_ms(thread);
-        let mut tool_names = HashMap::new();
-        let mut out = Vec::new();
+    fn cwd(&self) -> Option<String> {
+        scalar_string(self.cwd.as_ref())
+    }
 
-        for message in thread
-            .get("messages")
+    fn turn(&self) -> Option<String> {
+        scalar_string(self.id.as_ref())
+    }
+
+    fn native_id(&self) -> Option<String> {
+        scalar_string(self.tool_use_id.as_ref()).or_else(|| self.turn())
+    }
+
+    fn message_text(&self) -> String {
+        scalar_string(self.message.as_ref()).unwrap_or_default()
+    }
+
+    fn tool(&self) -> Option<String> {
+        scalar_string(self.tool.as_ref())
+    }
+
+    fn input(&self) -> Option<&Value> {
+        self.input.as_ref()
+    }
+
+    fn output_or_error(&self) -> Option<&Value> {
+        self.output.as_ref().or(self.error.as_ref())
+    }
+
+    fn is_error(&self) -> bool {
+        self.status.as_ref().and_then(Value::as_str) == Some("error")
+    }
+
+    fn last_assistant_message(&self) -> Option<&AmpHookMessage> {
+        self.messages
+            .iter()
+            .rev()
+            .find(|message| message.role() == Some("assistant"))
+    }
+
+    fn last_assistant_message_id(&self) -> Option<String> {
+        self.last_assistant_message()
+            .and_then(AmpHookMessage::native_id)
+    }
+
+    fn last_assistant_text(&self) -> String {
+        self.last_assistant_message()
+            .map(AmpHookMessage::content_text)
+            .filter(|text| !text.is_empty())
+            .unwrap_or_default()
+    }
+
+    fn messages_source(&self) -> Vec<Value> {
+        (!self.messages.is_empty())
+            .then(|| {
+                Value::Array(
+                    self.messages
+                        .iter()
+                        .map(|message| message.raw.clone())
+                        .collect(),
+                )
+            })
+            .into_iter()
+            .collect()
+    }
+
+    fn raw_value(&self) -> &Value {
+        &self.raw
+    }
+}
+
+impl AmpHookMessage {
+    fn role(&self) -> Option<&str> {
+        self.role.as_ref().and_then(Value::as_str)
+    }
+
+    fn native_id(&self) -> Option<String> {
+        scalar_string(self.id.as_ref()).or_else(|| scalar_string(self.message_id.as_ref()))
+    }
+
+    fn content_text(&self) -> String {
+        text_content(&self.content)
+    }
+}
+
+impl TryFrom<Value> for AmpThread {
+    type Error = anyhow::Error;
+
+    fn try_from(value: Value) -> Result<Self, Self::Error> {
+        let mut thread: Self = serde_json::from_value(value.clone())?;
+        if let Some(raw_messages) = value.get("messages").and_then(Value::as_array) {
+            for (message, raw_message) in thread.messages.iter_mut().zip(raw_messages) {
+                message.attach_raw(raw_message.clone())?;
+            }
+        }
+        thread.raw = value;
+        Ok(thread)
+    }
+}
+
+impl AmpThread {
+    fn session(&self, fallback: &str) -> String {
+        scalar_string(self.id.as_ref()).unwrap_or_else(|| fallback.into())
+    }
+
+    fn cwd(&self) -> Option<String> {
+        self.env
+            .as_ref()
+            .and_then(|env| env.initial.as_ref())
+            .and_then(|initial| initial.trees.first())
+            .and_then(|tree| scalar_string(tree.uri.as_ref()))
+            .and_then(|uri| uri.strip_prefix("file://").map(str::to_owned).or(Some(uri)))
+    }
+
+    fn created_at_ms(&self) -> Option<i64> {
+        self.created
+            .as_ref()
+            .and_then(timestamp_ms)
+            .or_else(|| timestamp_ms(&self.raw))
+    }
+}
+
+impl AmpHistoryMessage {
+    fn attach_raw(&mut self, value: Value) -> Result<()> {
+        self.parts = value
+            .get("content")
             .and_then(Value::as_array)
             .into_iter()
             .flatten()
-        {
-            let mut recognized = false;
-            let role = scalar_string(message.get("role"));
-            let message_id = scalar_string(message.get("messageId"));
-            let timestamp = timestamp_ms(message).or(created);
-            let parts = message
-                .get("content")
-                .and_then(Value::as_array)
-                .into_iter()
-                .flatten();
+            .cloned()
+            .map(AmpHistoryPart::try_from)
+            .collect::<Result<Vec<_>>>()?;
+        self.raw = value;
+        Ok(())
+    }
 
-            let text = parts
-                .clone()
-                .filter(|part| part.get("type").and_then(Value::as_str) == Some("text"))
-                .map(text_content)
-                .filter(|text| !text.is_empty())
-                .collect::<Vec<_>>()
-                .join("\n");
+    fn role(&self) -> Option<String> {
+        scalar_string(self.role.as_ref())
+    }
+
+    fn message_id(&self) -> Option<String> {
+        scalar_string(self.message_id.as_ref())
+    }
+
+    fn timestamp_ms(&self, thread_created: Option<i64>) -> Option<i64> {
+        timestamp_ms(&self.raw).or(thread_created)
+    }
+
+    fn text(&self) -> String {
+        self.parts
+            .iter()
+            .filter(|part| part.part_type() == Some("text"))
+            .map(|part| text_content(part.raw_value()))
+            .filter(|text| !text.is_empty())
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    fn attachment_source(&self) -> Value {
+        Value::Array(
+            self.parts
+                .iter()
+                .filter(|part| !matches!(part.part_type(), Some("tool_use" | "tool_result")))
+                .map(|part| part.raw_value().clone())
+                .collect(),
+        )
+    }
+
+    fn parts(&self) -> &[AmpHistoryPart] {
+        &self.parts
+    }
+
+    fn raw_value(&self) -> &Value {
+        &self.raw
+    }
+}
+
+impl TryFrom<Value> for AmpHistoryPart {
+    type Error = anyhow::Error;
+
+    fn try_from(value: Value) -> Result<Self, Self::Error> {
+        let mut part: Self = serde_json::from_value(value.clone())?;
+        part.raw = value;
+        Ok(part)
+    }
+}
+
+impl AmpHistoryPart {
+    fn part_type(&self) -> Option<&str> {
+        (!self.part_type.is_empty()).then_some(self.part_type.as_str())
+    }
+
+    fn id(&self) -> Option<String> {
+        scalar_string(self.id.as_ref())
+    }
+
+    fn name(&self) -> Option<String> {
+        scalar_string(self.name.as_ref())
+    }
+
+    fn tool_use_id(&self) -> Option<String> {
+        scalar_string(self.tool_use_id.as_ref())
+    }
+
+    fn input(&self) -> Option<&Value> {
+        self.input.as_ref()
+    }
+
+    fn run(&self) -> Option<&AmpHistoryRun> {
+        self.run.as_ref()
+    }
+
+    fn raw_value(&self) -> &Value {
+        &self.raw
+    }
+}
+
+impl AmpHistoryRun {
+    fn status(&self) -> Option<&str> {
+        self.status.as_deref()
+    }
+
+    fn result(&self) -> Option<&Value> {
+        self.result
+            .as_ref()
+            .or(self.error.as_ref())
+            .or(self.reason.as_ref())
+    }
+}
+
+impl NativeHistoryProjection for AmpHistory {
+    fn decode_native(values: &[Value], _context: &ImportContext) -> Result<Self> {
+        Ok(Self {
+            thread: values.first().cloned().unwrap_or(Value::Null).try_into()?,
+        })
+    }
+
+    fn project_native(&self, context: &ImportContext) -> Result<Vec<ProjectedEvent>> {
+        let thread = &self.thread;
+        let session = thread.session(&context.fallback_session_id);
+        let cwd = thread.cwd().or_else(|| context.cwd.clone());
+        let created = thread.created_at_ms();
+        let mut tool_names = HashMap::new();
+        let mut out = Vec::new();
+
+        for message in &thread.messages {
+            let mut recognized = false;
+            let role = message.role();
+            let message_id = message.message_id();
+            let timestamp = message.timestamp_ms(created);
+            let text = message.text();
             if !text.is_empty() {
                 recognized = true;
-                let attachment_source = Value::Array(
-                    parts
-                        .clone()
-                        .filter(|part| {
-                            !matches!(
-                                part.get("type").and_then(Value::as_str),
-                                Some("tool_use" | "tool_result")
-                            )
-                        })
-                        .cloned()
-                        .collect(),
-                );
+                let attachment_source = message.attachment_source();
                 let kind = if role.as_deref() == Some("user") {
                     EventKind::UserMessage
                 } else {
                     EventKind::AssistantMessage
                 };
-                out.push(ImportedEvent::new(
-                    CanonicalEvent::new(
-                        AgentKind::Amp,
-                        &session,
-                        message_id.clone(),
-                        message_id.clone(),
-                        kind,
-                        role.clone(),
-                        text,
-                        None,
-                        cwd.clone(),
-                        None,
-                        timestamp,
-                        event_metadata("message"),
-                    ),
+                let source = event_source(
+                    AgentKind::Amp,
+                    &session,
+                    message_id.clone(),
+                    message_id.clone(),
+                    "message",
+                    cwd.clone(),
+                    None,
+                );
+                let role = message_role(
+                    role.as_deref(),
+                    if matches!(kind, EventKind::UserMessage) {
+                        MessageRole::User
+                    } else {
+                        MessageRole::Assistant
+                    },
+                );
+                out.push(ProjectedEvent::new(
+                    CanonicalEvent::message_from_text(source, role, text, timestamp),
                     &attachment_source,
                     context.raw_record_id(0),
                 ));
             }
 
-            for part in parts {
-                match part.get("type").and_then(Value::as_str) {
+            for part in message.parts() {
+                match part.part_type() {
                     Some("tool_use") => {
                         recognized = true;
-                        let native_id = scalar_string(part.get("id"));
-                        let tool = scalar_string(part.get("name"));
+                        let native_id = part.id();
+                        let tool = part.name();
                         if let (Some(id), Some(name)) = (&native_id, &tool) {
                             tool_names.insert(id.clone(), name.clone());
                         }
-                        out.push(ImportedEvent::new(
-                            CanonicalEvent::new(
-                                AgentKind::Amp,
-                                &session,
-                                message_id.clone(),
-                                native_id,
-                                EventKind::ToolCall,
-                                Some("assistant".into()),
-                                value_text(part.get("input")),
-                                tool,
-                                cwd.clone(),
-                                None,
+                        let source = event_source(
+                            AgentKind::Amp,
+                            &session,
+                            message_id.clone(),
+                            native_id,
+                            "tool_use",
+                            cwd.clone(),
+                            None,
+                        );
+                        out.push(ProjectedEvent::new(
+                            CanonicalEvent::tool_call_from_content(
+                                source,
+                                tool.unwrap_or_else(|| "unknown".into()),
+                                value_text(part.input()),
                                 timestamp,
-                                event_metadata("tool_use"),
                             ),
-                            part.get("input").unwrap_or(&Value::Null),
+                            &part.input().cloned().unwrap_or(Value::Null),
                             context.raw_record_id(0),
                         ));
                     }
                     Some("tool_result") => {
                         recognized = true;
-                        let native_id = scalar_string(part.get("toolUseID"));
+                        let native_id = part.tool_use_id();
                         let tool = native_id
                             .as_ref()
                             .and_then(|id| tool_names.get(id))
                             .cloned();
-                        let run = part.get("run").unwrap_or(&Value::Null);
-                        let status = run.get("status").and_then(Value::as_str);
+                        let run = part.run();
+                        let status = run.and_then(AmpHistoryRun::status);
                         let result = run
-                            .get("result")
-                            .or_else(|| run.get("error"))
-                            .or_else(|| run.get("reason"))
-                            .unwrap_or(&Value::Null);
-                        out.push(ImportedEvent::new(
-                            CanonicalEvent::new(
-                                AgentKind::Amp,
-                                &session,
-                                message_id.clone(),
-                                native_id,
-                                if matches!(
-                                    status,
-                                    Some("error" | "cancelled" | "rejected-by-user")
-                                ) {
-                                    EventKind::Error
-                                } else {
-                                    EventKind::ToolResult
-                                },
-                                Some("tool".into()),
-                                value_text(Some(result)),
-                                tool,
-                                cwd.clone(),
-                                None,
-                                timestamp,
-                                event_metadata("tool_result"),
-                            ),
-                            result,
+                            .and_then(AmpHistoryRun::result)
+                            .cloned()
+                            .unwrap_or(Value::Null);
+                        let source = event_source(
+                            AgentKind::Amp,
+                            &session,
+                            message_id.clone(),
+                            native_id,
+                            "tool_result",
+                            cwd.clone(),
+                            None,
+                        );
+                        let content = value_text(Some(&result));
+                        let event =
+                            if matches!(status, Some("error" | "cancelled" | "rejected-by-user")) {
+                                CanonicalEvent::failed_tool_result(source, tool, content, timestamp)
+                            } else {
+                                CanonicalEvent::tool_result_from_content(
+                                    source,
+                                    tool,
+                                    ToolStatus::Succeeded,
+                                    content,
+                                    None,
+                                    timestamp,
+                                )
+                            };
+                        out.push(ProjectedEvent::new(
+                            event,
+                            &result,
                             context.raw_record_id(0),
                         ));
                     }
@@ -201,129 +531,159 @@ impl AgentAdapter for AmpAdapter {
                 }
             }
             if !recognized {
-                out.push(ImportedEvent::new(
-                    CanonicalEvent::new(
-                        AgentKind::Amp,
-                        &session,
-                        message_id.clone(),
-                        message_id,
-                        EventKind::Other,
-                        role,
-                        message.to_string(),
-                        None,
-                        cwd.clone(),
-                        None,
-                        timestamp,
-                        event_metadata("message"),
-                    ),
-                    message,
+                let source = event_source(
+                    AgentKind::Amp,
+                    &session,
+                    message_id.clone(),
+                    message_id,
+                    "message",
+                    cwd.clone(),
+                    None,
+                );
+                out.push(ProjectedEvent::new(
+                    CanonicalEvent::unknown(source, "message", timestamp),
+                    message.raw_value(),
                     context.raw_record_id(0),
                 ));
             }
         }
         Ok(out)
     }
+}
+
+#[async_trait]
+impl HistoryImporter for AmpAdapter {
+    async fn import_default(&self, blobs: Option<&dyn BlobStore>) -> Result<ImportReport> {
+        let root = dirs::data_local_dir()
+            .context("local data directory not found")?
+            .join("amp/threads");
+        self.import_path(&root, blobs).await
+    }
+
+    async fn import_path(
+        &self,
+        path: &Path,
+        blobs: Option<&dyn BlobStore>,
+    ) -> Result<ImportReport> {
+        let mut report = ImportReport::default();
+        let files = json_source_files(path);
+        for file in files {
+            match read_json_values(&file) {
+                Ok(values) => {
+                    let fallback = file
+                        .file_stem()
+                        .and_then(|s| s.to_str())
+                        .unwrap_or("unknown")
+                        .to_owned();
+                    report
+                        .add_native_source(
+                            NativeSource {
+                                agent: AgentKind::Amp,
+                                source: file.display().to_string(),
+                                fallback_session_id: fallback,
+                                cwd: None,
+                                values,
+                            },
+                            blobs,
+                            |values, context| self.import_values(values, context),
+                        )
+                        .await;
+                }
+                Err(error) => report.errors.push(format!("{}: {error:#}", file.display())),
+            }
+        }
+        Ok(report)
+    }
+
+    fn import_values(
+        &self,
+        values: &[Value],
+        context: &ImportContext,
+    ) -> Result<Vec<ProjectedEvent>> {
+        project_native_history::<AmpHistory>(values, context)
+    }
+}
+
+impl HookProjector for AmpAdapter {
+    fn kind(&self) -> AgentKind {
+        AgentKind::Amp
+    }
 
     fn hook_event(&self, event_name: &str, payload: &Value) -> Result<Vec<CanonicalEvent>> {
-        let session =
-            scalar_string(payload.pointer("/thread/id")).unwrap_or_else(|| "amp-unknown".into());
-        let cwd = scalar_string(payload.get("cwd"));
-        let mut turn = scalar_string(payload.get("id"));
-        let mut native_id = scalar_string(payload.get("toolUseID")).or_else(|| turn.clone());
+        let payload: AmpHookPayload = payload.try_into()?;
+        let session = payload.session();
+        let cwd = payload.cwd();
+        let mut turn = payload.turn();
+        let mut native_id = payload.native_id();
         if event_name == "agent.end"
-            && let Some(message) =
-                payload
-                    .get("messages")
-                    .and_then(Value::as_array)
-                    .and_then(|messages| {
-                        messages.iter().rev().find(|message| {
-                            message.get("role").and_then(Value::as_str) == Some("assistant")
-                        })
-                    })
-            && let Some(message_id) =
-                scalar_string(message.get("id")).or_else(|| scalar_string(message.get("messageId")))
+            && let Some(message_id) = payload.last_assistant_message_id()
         {
             turn = Some(message_id.clone());
             native_id = Some(message_id);
         }
-        let (kind, role, content, tool) = match event_name {
-            "session.start" => (EventKind::SessionStart, None, String::new(), None),
-            "agent.start" => (
-                EventKind::UserMessage,
-                Some("user".into()),
-                scalar_string(payload.get("message")).unwrap_or_default(),
-                None,
-            ),
-            "agent.end" => {
-                let content = payload
-                    .get("messages")
-                    .and_then(Value::as_array)
-                    .and_then(|messages| {
-                        messages.iter().rev().find_map(|message| {
-                            (message.get("role").and_then(Value::as_str) == Some("assistant"))
-                                .then(|| {
-                                    text_content(message.get("content").unwrap_or(&Value::Null))
-                                })
-                                .filter(|text| !text.is_empty())
-                        })
-                    })
-                    .unwrap_or_default();
-                (
-                    if payload.get("status").and_then(Value::as_str) == Some("error") {
-                        EventKind::Error
-                    } else {
-                        EventKind::AssistantMessage
-                    },
-                    Some("assistant".into()),
-                    content,
-                    None,
-                )
-            }
-            "tool.call" => (
-                EventKind::ToolCall,
-                Some("assistant".into()),
-                value_text(payload.get("input")),
-                scalar_string(payload.get("tool")),
-            ),
-            "tool.result" => (
-                if payload.get("status").and_then(Value::as_str) == Some("error") {
-                    EventKind::Error
-                } else {
-                    EventKind::ToolResult
-                },
-                Some("tool".into()),
-                value_text(payload.get("output").or_else(|| payload.get("error"))),
-                scalar_string(payload.get("tool")),
-            ),
-            _ => (EventKind::Other, None, payload.to_string(), None),
-        };
-        Ok(vec![CanonicalEvent::new(
+        let source = event_source(
             AgentKind::Amp,
             session,
             turn,
             native_id,
-            kind,
-            role,
-            content,
-            tool,
+            event_name,
             cwd.clone(),
             None,
-            timestamp_ms(payload),
-            event_metadata(event_name),
-        )])
+        );
+        let timestamp = timestamp_ms(payload.raw_value());
+        let event = match event_name {
+            "session.start" => CanonicalEvent::session_started(source, timestamp),
+            "agent.start" => CanonicalEvent::message_from_text(
+                source,
+                MessageRole::User,
+                payload.message_text(),
+                timestamp,
+            ),
+            "agent.end" if payload.is_error() => {
+                CanonicalEvent::error_message(source, payload.last_assistant_text(), timestamp)
+            }
+            "agent.end" => CanonicalEvent::message_from_text(
+                source,
+                MessageRole::Assistant,
+                payload.last_assistant_text(),
+                timestamp,
+            ),
+            "tool.call" => CanonicalEvent::tool_call_from_content(
+                source,
+                payload.tool().unwrap_or_else(|| "unknown".into()),
+                value_text(payload.input()),
+                timestamp,
+            ),
+            "tool.result" if payload.is_error() => CanonicalEvent::failed_tool_result(
+                source,
+                payload.tool(),
+                value_text(payload.output_or_error()),
+                timestamp,
+            ),
+            "tool.result" => CanonicalEvent::tool_result_from_content(
+                source,
+                payload.tool(),
+                ToolStatus::Succeeded,
+                value_text(payload.output_or_error()),
+                None,
+                timestamp,
+            ),
+            _ => CanonicalEvent::unknown(source, event_name, timestamp),
+        };
+        Ok(vec![event])
     }
 
     fn hook_attachment_sources(&self, event_name: &str, payload: &Value) -> Vec<Value> {
+        let Ok(payload) = AmpHookPayload::try_from(payload) else {
+            return Vec::new();
+        };
         match event_name {
-            "agent.start" | "agent.end" => non_null_sources([payload.get("messages")]),
-            "tool.call" => non_null_sources([payload.get("input")]),
-            "tool.result" => {
-                non_null_sources([payload.get("output").or_else(|| payload.get("error"))])
-            }
+            "agent.start" | "agent.end" => payload.messages_source(),
+            "tool.call" => non_null_sources([payload.input()]),
+            "tool.result" => non_null_sources([payload.output_or_error()]),
             _ => Vec::new(),
         }
     }
-
     fn supports_recall(&self, event_name: &str) -> bool {
         event_name == "agent.start"
     }
@@ -335,7 +695,9 @@ impl AgentAdapter for AmpAdapter {
         let text = recall_text(hits);
         (!text.is_empty()).then(|| json!({"additionalContext":text}))
     }
+}
 
+impl HookInstaller for AmpAdapter {
     fn hook_artifacts(&self, binary: &Path, database: &Path) -> Vec<(String, String)> {
         let code = format!(
             r#"// Generated by Semafuse. Amp loads project plugins automatically.

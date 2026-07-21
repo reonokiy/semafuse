@@ -1,98 +1,57 @@
-//! Conversion of agent-native history and hook payloads into canonical events.
+//! Agent-specific capabilities for native history, hooks, and installation.
 //!
-//! [`AgentAdapter`] is the common contract. Each concrete adapter documents its
-//! native-to-canonical mapping on the adapter type itself.
+//! Each concrete adapter can implement the capabilities it supports. History
+//! import, hook projection, and hook artifact generation are separate contracts
+//! so their source-specific details do not collapse into one class-like API.
 
 mod amp;
 mod claude;
 mod codex;
+mod history;
 mod opencode;
 
 pub use amp::AmpAdapter;
 pub use claude::ClaudeAdapter;
 pub use codex::CodexAdapter;
+pub use history::{ImportContext, NativeHistoryProjection, ProjectedEvent, project_native_history};
 pub use opencode::OpenCodeAdapter;
 
-use crate::model::{AgentKind, CanonicalEvent, SearchHit};
+use crate::{
+    blob::BlobStore,
+    importer::ImportReport,
+    model::{AgentKind, CanonicalEvent, EventSource, MessageRole, SearchHit},
+};
 use anyhow::Result;
+use async_trait::async_trait;
 use chrono::DateTime;
-use serde_json::{Map, Value};
+use serde_json::Value;
 use std::path::Path;
 
-/// Source context supplied while importing an agent history file or session.
-#[derive(Debug, Clone)]
-pub struct ImportContext {
-    /// Human-readable source identifier, normally the input path or remote session.
-    pub source: String,
-    /// Session ID to use when the native records provide none.
-    pub fallback_session_id: String,
-    /// Working directory supplied by the source as session-level context.
-    pub cwd: Option<String>,
-    /// Raw record IDs in the same order as values supplied to the adapter.
-    pub raw_record_ids: Vec<String>,
-}
-
-impl ImportContext {
-    pub(crate) fn raw_record_id(&self, index: usize) -> &str {
-        self.raw_record_ids
-            .get(index)
-            .or_else(|| self.raw_record_ids.first())
-            .map(String::as_str)
-            .unwrap_or("raw_missing")
-    }
-}
-
-/// A canonical imported event paired with the exact native value from which
-/// attachments must be extracted.
-///
-/// Keeping attachment ownership at this boundary prevents attachments from all
-/// being assigned to the final event in a session. If attachment processing
-/// fails, the importer rejects that source instead of writing an event with
-/// silently missing attachments.
-#[derive(Debug, Clone)]
-pub struct ImportedEvent {
-    /// Normalized event to ingest after attachment extraction.
-    pub event: CanonicalEvent,
-    /// Native subtree whose attachments belong specifically to `event`.
-    pub attachment_source: Value,
-}
-
-impl ImportedEvent {
-    pub(crate) fn new(
-        mut event: CanonicalEvent,
-        attachment_source: &Value,
-        raw_record_id: &str,
-    ) -> Self {
-        event.attach_raw_record(raw_record_id);
-        Self {
-            event,
-            attachment_source: attachment_source.clone(),
-        }
-    }
-}
-
-/// Converts one agent's native protocols into [`CanonicalEvent`] values.
-///
-/// History imports and real-time hooks share the canonical model but have
-/// separate mapping rules because agents persist different structures from the
-/// payloads emitted by lifecycle hooks. Unrecognized input is generally kept as
-/// [`crate::model::EventKind::Other`] with serialized native JSON in `content`
-/// and the original sanitized payload in metadata.
-///
-/// Missing real-time session IDs use `<agent>-unknown`; import callers supply a
-/// fallback derived from the source. A missing timestamp is replaced with event
-/// construction time. Native IDs are preferred over turn IDs for deduplication,
-/// but history and hook records can remain distinct when their sources expose no
-/// common ID.
-pub trait AgentAdapter: Send + Sync {
-    /// Returns the agent protocol implemented by this adapter.
-    fn kind(&self) -> AgentKind;
-    /// Maps native history values using source-level fallback context.
+/// Imports one agent's native persisted history into canonical projections.
+#[async_trait]
+pub trait HistoryImporter: Send + Sync {
+    /// Imports this adapter's conventional history source.
+    async fn import_default(&self, blobs: Option<&dyn BlobStore>) -> Result<ImportReport>;
+    /// Imports one explicit native source path using this adapter's source semantics.
+    async fn import_path(&self, path: &Path, blobs: Option<&dyn BlobStore>)
+    -> Result<ImportReport>;
+    /// Projects native history values using source-level fallback context.
     fn import_values(
         &self,
         values: &[Value],
         context: &ImportContext,
-    ) -> Result<Vec<ImportedEvent>>;
+    ) -> Result<Vec<ProjectedEvent>>;
+}
+
+/// Projects one agent's real-time hook payloads into canonical events.
+///
+/// Missing real-time session IDs use `<agent>-unknown`. A missing timestamp is
+/// replaced with event construction time. Native IDs are preferred over turn IDs
+/// for deduplication, but history and hook records can remain distinct when
+/// their sources expose no common ID.
+pub trait HookProjector: Send + Sync {
+    /// Returns the agent protocol implemented by this hook projector.
+    fn kind(&self) -> AgentKind;
     /// Maps one named real-time hook payload into zero or more events.
     fn hook_event(&self, event_name: &str, payload: &Value) -> Result<Vec<CanonicalEvent>>;
     /// Returns the trusted native subtrees whose attachments belong to the hook event.
@@ -105,12 +64,36 @@ pub trait AgentAdapter: Send + Sync {
     }
     /// Formats retrieval hits for the named native hook, if it supports recall injection.
     fn recall_response(&self, event_name: &str, hits: &[SearchHit]) -> Option<Value>;
+}
+
+/// Generates installation artifacts for one agent's hooks and integrations.
+pub trait HookInstaller: Send + Sync {
     /// Returns installable hook artifact names and contents for this agent.
     fn hook_artifacts(&self, binary: &Path, database: &Path) -> Vec<(String, String)>;
 }
 
-/// Constructs the adapter for an agent kind.
-pub fn adapter(kind: AgentKind) -> Box<dyn AgentAdapter> {
+/// Constructs the history importer for an agent kind.
+pub fn history_importer(kind: AgentKind) -> Box<dyn HistoryImporter> {
+    match kind {
+        AgentKind::Amp => Box::new(AmpAdapter),
+        AgentKind::Codex => Box::new(CodexAdapter),
+        AgentKind::ClaudeCode => Box::new(ClaudeAdapter),
+        AgentKind::OpenCode => Box::new(OpenCodeAdapter),
+    }
+}
+
+/// Constructs the hook projector for an agent kind.
+pub fn hook_projector(kind: AgentKind) -> Box<dyn HookProjector> {
+    match kind {
+        AgentKind::Amp => Box::new(AmpAdapter),
+        AgentKind::Codex => Box::new(CodexAdapter),
+        AgentKind::ClaudeCode => Box::new(ClaudeAdapter),
+        AgentKind::OpenCode => Box::new(OpenCodeAdapter),
+    }
+}
+
+/// Constructs the hook installer for an agent kind.
+pub fn hook_installer(kind: AgentKind) -> Box<dyn HookInstaller> {
     match kind {
         AgentKind::Amp => Box::new(AmpAdapter),
         AgentKind::Codex => Box::new(CodexAdapter),
@@ -216,10 +199,35 @@ fn parse_timestamp(value: &Value) -> Option<i64> {
         .map(|value| value.timestamp_millis())
 }
 
-pub(crate) fn event_metadata(native_event: &str) -> Map<String, Value> {
-    let mut metadata = Map::new();
-    metadata.insert("native_event".into(), Value::String(native_event.into()));
-    metadata
+pub(crate) fn event_source(
+    agent: AgentKind,
+    session_id: impl Into<String>,
+    turn_id: Option<String>,
+    native_id: Option<String>,
+    native_event: &str,
+    cwd: Option<String>,
+    repository: Option<String>,
+) -> EventSource {
+    EventSource::new(
+        agent,
+        session_id,
+        turn_id,
+        native_id,
+        native_event,
+        cwd,
+        repository,
+    )
+}
+
+pub(crate) fn message_role(role: Option<&str>, default: MessageRole) -> MessageRole {
+    match role {
+        Some("user") => MessageRole::User,
+        Some("assistant") => MessageRole::Assistant,
+        Some("system") => MessageRole::System,
+        Some("developer") => MessageRole::Developer,
+        Some("tool") => MessageRole::Tool,
+        _ => default,
+    }
 }
 
 pub(crate) fn recall_text(hits: &[SearchHit]) -> String {

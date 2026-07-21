@@ -1,7 +1,7 @@
 //! Real-time hook processing and crash-safe local spooling.
 
 use crate::{
-    adapters::AgentAdapter,
+    adapters::HookProjector,
     blob::{BlobStore, extract_attachments},
     config::Config,
     model::{
@@ -35,7 +35,7 @@ struct SpoolRecord {
 /// selected adapter performs the native mapping. Attachments are bound to the
 /// resulting event and its identity is refreshed before ingestion.
 pub async fn process_hook(
-    adapter: &dyn AgentAdapter,
+    adapter: &dyn HookProjector,
     store: &SqliteStore,
     configured_event: &str,
     payload: &Value,
@@ -114,7 +114,7 @@ fn resolve_event_name<'a>(configured_event: &'a str, payload: &'a Value) -> &'a 
 }
 
 async fn normalize_hook(
-    adapter: &dyn AgentAdapter,
+    adapter: &dyn HookProjector,
     event_name: &str,
     payload: &Value,
     blobs: Option<&dyn BlobStore>,
@@ -245,7 +245,7 @@ pub async fn replay_spool(
         let text = fs::read_to_string(&generation)?;
         for line in text.lines().filter(|line| !line.trim().is_empty()) {
             let record: SpoolRecord = serde_json::from_str(line)?;
-            let adapter = crate::adapters::adapter(record.agent);
+            let adapter = crate::adapters::hook_projector(record.agent);
             // Resolve again for spool files written by older versions that stored
             // the literal "auto" value.
             let event_name = resolve_event_name(&record.event, &record.payload);

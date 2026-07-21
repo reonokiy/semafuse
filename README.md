@@ -17,8 +17,13 @@ enabling retrieval across agents and sessions.
 History ingestion has three explicit layers:
 
 1. `RawRecord` retains the complete parsed native JSON record, its source position, digest, and agent without assigning canonical meaning.
-2. An agent adapter converts that record into a versioned `EventEnvelope` whose `data` is a closed tagged union: session lifecycle, message, tool call, tool result, compaction, error, or unknown.
+2. An agent adapter parses records with its own native history schema and projects them into a versioned `EventEnvelope` whose `data` is a closed tagged union: session lifecycle, message, tool call, tool result, compaction, error, or unknown.
 3. Validation either accepts the projection or emits a durable `ConversionDiagnostic`. Unknown native records remain available through raw provenance even when their payload is deliberately excluded from searchable canonical data.
+
+There is intentionally no shared native import record type across adapters. The
+shared contract begins at `RawRecord` for provenance and `EventEnvelope` /
+`CanonicalArchive` for normalized output; each adapter owns the schema needed to
+understand its own persisted history and hook payloads.
 
 SQLite writes raw records, canonical projections, provenance links, and diagnostics in one transaction. Full-text retrieval indexes only the explicit `search_text` projection; it never treats arbitrary native JSON as conversational text. The Rust types are the implementation source of truth, while [the checked-in JSON Schema](schemas/canonical-archive-v1.schema.json) is the language-neutral contract using JSON Schema Draft 2020-12.
 

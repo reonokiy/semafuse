@@ -62,7 +62,8 @@ export default defineConfig({
     "section-label": "mono-label m-0 flex items-center gap-3",
     "display-heading": "m-0 font-400 tracking-[-.015em] leading-[.98] text-[clamp(3.25rem,6vw,5.75rem)]",
     "script-accent": "font-script text-seal italic font-500 tracking-normal leading-[1]",
-    reveal: "opacity-0 translate-y-6 transition-[opacity,transform] duration-800 ease-[cubic-bezier(.22,1,.36,1)] motion-reduce:opacity-100 motion-reduce:translate-y-0 motion-reduce:transition-none",
+    reveal:
+      "opacity-100 translate-y-0 transition-[opacity,transform] duration-800 ease-[cubic-bezier(.22,1,.36,1)] motion-reduce:transition-none",
     "agent-card": "absolute flex min-w-[9.875rem] items-center gap-3 border border-ink/20 bg-paper/80 p-2.5 backdrop-blur-[0.5rem] animate-agent-in animate-delay-900 [animation-fill-mode:both] lt-mobile:min-w-0 lt-mobile:p-[0.4375rem]",
     "agent-mark": "grid h-10 w-10 shrink-0 place-items-center bg-ink text-paper lt-mobile:h-8 lt-mobile:w-8",
     "flow-card": "relative min-h-[24.375rem] border-r border-ink/18 pt-[1.9375rem] pr-[4.5vw] lt-mobile:min-h-0 lt-mobile:border-r-0 lt-mobile:border-b lt-mobile:border-ink/18 lt-mobile:px-0 lt-mobile:pt-7 lt-mobile:pb-[3.4375rem]",
@@ -88,6 +89,5 @@ export default defineConfig({
           "radial-gradient(circle at 50% 69%,rgba(185,214,193,.45),transparent 28%)",
       },
     ],
-    ["reveal-visible", { opacity: "1", transform: "translateY(0)" }],
   ],
 });

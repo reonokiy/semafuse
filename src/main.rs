@@ -3,9 +3,9 @@ use clap::{Parser, Subcommand};
 use indicatif::{ProgressBar, ProgressStyle};
 use semafuse::{
     AgentKind, QueryMode, SearchQuery,
-    adapters::adapter,
+    adapters::{history_importer, hook_installer, hook_projector},
     blob::{BlobStore, DryRunBlobStore, OpenDalBlobStore},
-    canonical_archive_schema, config, hooks, importer, mcp,
+    canonical_archive_schema, config, hooks, mcp,
     storage::{EventStore, IngestBatch, SqliteStore},
     strategy,
 };
@@ -254,7 +254,7 @@ async fn run(cli: Cli) -> Result<()> {
             db,
             dry_run,
         } => {
-            let adapter = adapter(agent);
+            let importer = history_importer(agent);
             let mut progress = TerminalProgress::new("Discovering import sources");
             let runtime_config = if dry_run { None } else { Some(config::load()?) };
             let dry_run_blobs = DryRunBlobStore;
@@ -268,15 +268,14 @@ async fn run(cli: Cli) -> Result<()> {
                 blob_store.as_ref().map(|store| store as &dyn BlobStore)
             };
             let report = if let Some(source) = source {
-                importer::import_path(&*adapter, &source, blobs, &mut |current, total, item| {
-                    progress.update(current, total, item)
-                })
-                .await?
+                progress.spinner(format!(
+                    "Importing {agent} history from {}",
+                    source.display()
+                ));
+                importer.import_path(&source, blobs).await?
             } else {
-                importer::import_default(&*adapter, blobs, &mut |current, total, item| {
-                    progress.update(current, total, item)
-                })
-                .await?
+                progress.spinner(format!("Importing {agent} default history"));
+                importer.import_default(blobs).await?
             };
             let event_count = report.events.len();
             let raw_count = report.raw_records.len();
@@ -360,7 +359,7 @@ async fn run(cli: Cli) -> Result<()> {
                 serde_json::from_str(&input).context("parse hook JSON from stdin")?
             };
             let path = db_path(db);
-            let adapter = adapter(agent);
+            let adapter = hook_projector(agent);
             let spool_path = spool_dir.unwrap_or_else(config::default_spool_dir);
             let result: Result<Option<Value>> = async {
                 let runtime_config = config::load()?;
@@ -721,7 +720,7 @@ fn artifacts(
 ) -> Result<Vec<(String, String)>> {
     let binary = binary.unwrap_or(std::env::current_exe()?);
     let database = db_path(db);
-    let mut artifacts = adapter(agent).hook_artifacts(&binary, &database);
+    let mut artifacts = hook_installer(agent).hook_artifacts(&binary, &database);
     let mcp_command = binary.display().to_string();
     let args = vec!["mcp", "--db", database.to_str().unwrap_or_default()];
     match agent {
@@ -746,25 +745,6 @@ impl TerminalProgress {
         Self { bar: Some(bar) }
     }
 
-    fn update(&mut self, current: usize, total: usize, item: &str) {
-        if total == 0 {
-            return;
-        }
-        if self.bar.as_ref().and_then(ProgressBar::length) != Some(total as u64) {
-            if let Some(previous) = self.bar.take() {
-                previous.finish_and_clear();
-            }
-            let bar = ProgressBar::new(total as u64);
-            bar.set_style(progress_style());
-            bar.set_prefix("Reading");
-            bar.enable_steady_tick(Duration::from_millis(80));
-            self.bar = Some(bar);
-        }
-        let bar = self.bar.as_ref().expect("progress bar initialized");
-        bar.set_message(item.to_owned());
-        bar.set_position(current as u64);
-    }
-
     fn spinner(&mut self, message: String) {
         if let Some(previous) = self.bar.take() {
             previous.finish_and_clear();
@@ -787,15 +767,6 @@ fn spinner_style() -> ProgressStyle {
     ProgressStyle::with_template("{spinner:.cyan} {msg}")
         .expect("static spinner template is valid")
         .tick_strings(&["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"])
-}
-
-fn progress_style() -> ProgressStyle {
-    ProgressStyle::with_template(
-        "{spinner:.cyan} [{bar:30.cyan/blue}] {pos:>3}/{len:3} {prefix} {msg:.36}",
-    )
-    .expect("static progress template is valid")
-    .progress_chars("=> ")
-    .tick_strings(&["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"])
 }
 
 impl Drop for TerminalProgress {

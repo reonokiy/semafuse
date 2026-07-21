@@ -1,13 +1,13 @@
 use async_trait::async_trait;
 use opendal::{Operator, services::Memory};
 use semafuse::{
-    AgentKind, AttachmentRef, CanonicalEvent, DomainEventSequence, EventKind, MemoryMutation,
-    MemoryQuery, MemoryRecord, RawRecord, SearchQuery,
-    adapters::adapter,
+    AgentKind, AttachmentRef, CanonicalEvent, ContentPart, DomainEventSequence, EventSource,
+    MemoryMutation, MemoryQuery, MemoryRecord, MessageRole, RawRecord, SearchQuery,
+    adapters::history_importer,
     blob::{BlobStore, OpenDalBlobStore},
     canonical_archive_schema,
     config::{BlobConfig, Config},
-    hooks, importer, retrieval,
+    hooks, retrieval,
     storage::{EventStore, IngestBatch, MemoryRepository, MemoryStore, SqliteStore},
 };
 use serde_json::Map;
@@ -16,19 +16,21 @@ use tempfile::TempDir;
 use tokio::sync::Notify;
 
 fn event(content: &str, timestamp_ms: i64) -> CanonicalEvent {
-    CanonicalEvent::new(
-        AgentKind::Codex,
-        "contract-session",
-        Some("turn-1".into()),
-        None,
-        EventKind::AssistantMessage,
-        Some("assistant".into()),
-        content,
-        None,
-        Some("/workspace/demo".into()),
-        Some("/workspace/demo".into()),
+    CanonicalEvent::message(
+        EventSource::new(
+            AgentKind::Codex,
+            "contract-session",
+            Some("turn-1".into()),
+            None,
+            "assistant_message",
+            Some("/workspace/demo".into()),
+            Some("/workspace/demo".into()),
+        ),
+        MessageRole::Assistant,
+        vec![ContentPart::Text {
+            text: content.into(),
+        }],
         Some(timestamp_ms),
-        Map::new(),
     )
 }
 
@@ -90,14 +92,10 @@ async fn four_external_formats_convert_to_valid_formal_archives() {
             "tests/fixtures/opencode-session-complete.json",
         ),
     ] {
-        let report = importer::import_path(
-            &*adapter(agent),
-            std::path::Path::new(fixture),
-            None,
-            &mut |_, _, _| {},
-        )
-        .await
-        .unwrap();
+        let report = history_importer(agent)
+            .import_path(std::path::Path::new(fixture), None)
+            .await
+            .unwrap();
         assert!(report.errors.is_empty(), "{agent}: {:?}", report.errors);
         let archive = report.canonical_archive();
         assert!(!archive.raw_records.is_empty());

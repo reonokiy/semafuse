@@ -150,17 +150,6 @@ const principles = [
     </footer>
 
     <script>
-      const revealObserver = new IntersectionObserver(
-        (entries) => entries.forEach((entry) => {
-          if (entry.isIntersecting) {
-            entry.target.classList.add("reveal-visible");
-            revealObserver.unobserve(entry.target);
-          }
-        }),
-        { threshold: 0.15 },
-      );
-      document.querySelectorAll(".reveal").forEach((element) => revealObserver.observe(element));
-
       const copyButton = document.querySelector<HTMLButtonElement>(".copy-button");
       const commands = `cargo install --path . --locked
 semafuse init
