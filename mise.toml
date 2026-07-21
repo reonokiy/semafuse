@@ -4,3 +4,8 @@ min_version = "2026.7.5"
 pnpm = "11.13.1"
 node = "24.18.0"
 rust = "1.97.1"
+
+[tasks.install-skills]
+description = "Install local dev skills using `skills`"
+run = "npx skills add ."
+

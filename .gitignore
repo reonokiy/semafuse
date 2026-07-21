@@ -3,3 +3,7 @@ web/.astro/
 web/dist/
 web/node_modules/
 web/.pnpm-store/
+# Agent skills
+.agents/
+.claude/
+skills-lock.json
