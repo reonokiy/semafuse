@@ -4,11 +4,11 @@ use semafuse::{
     AgentKind, AttachmentRef, CanonicalEvent, ContentPart, DomainEventSequence, EventSource,
     MemoryMutation, MemoryQuery, MemoryRecord, MessageRole, RawRecord, SearchQuery,
     adapters::history_importer,
-    blob::{BlobStore, OpenDalBlobStore},
+    blob::{BlobStore, OpenDalBlobStore, drain_blob_gc},
     canonical_archive_schema,
     config::{BlobConfig, Config},
     hooks, retrieval,
-    storage::{EventStore, IngestBatch, MemoryRepository, MemoryStore, SqliteStore},
+    storage::{EventStore, ForgetFilter, IngestBatch, MemoryRepository, MemoryStore, SqliteStore},
 };
 use serde_json::Map;
 use std::sync::Arc;
@@ -34,6 +34,25 @@ fn event(content: &str, timestamp_ms: i64) -> CanonicalEvent {
     )
 }
 
+async fn persist_event_with_raw(store: &SqliteStore, event: &mut CanonicalEvent) {
+    let raw = RawRecord::new(
+        event.source.agent,
+        format!("contract:{}.json", event.id),
+        0,
+        serde_json::to_value(&*event).unwrap(),
+    );
+    event.attach_raw_record(raw.id.clone());
+    store
+        .ingest_batch(IngestBatch {
+            raw_records: std::slice::from_ref(&raw),
+            raw_contexts: &[],
+            events: std::slice::from_ref(event),
+            diagnostics: &[],
+        })
+        .await
+        .unwrap();
+}
+
 #[tokio::test]
 async fn sqlite_persists_raw_source_truth_and_event_provenance() {
     let store = SqliteStore::open_memory().await.unwrap();
@@ -48,6 +67,7 @@ async fn sqlite_persists_raw_source_truth_and_event_provenance() {
     let stats = store
         .ingest_batch(IngestBatch {
             raw_records: std::slice::from_ref(&raw),
+            raw_contexts: &[],
             events: std::slice::from_ref(&projected),
             diagnostics: &[],
         })
@@ -100,6 +120,14 @@ async fn four_external_formats_convert_to_valid_formal_archives() {
         let archive = report.canonical_archive();
         assert!(!archive.raw_records.is_empty());
         assert!(!archive.events.is_empty());
+        assert_eq!(report.raw_contexts.len(), archive.raw_records.len());
+        assert!(
+            report
+                .raw_contexts
+                .iter()
+                .all(|context| context.session_id.is_some()),
+            "{agent} left raw records without session ownership"
+        );
         archive.validate().unwrap();
     }
 }
@@ -285,6 +313,88 @@ async fn opendal_backend_is_created_from_dynamic_config() {
     );
 }
 
+#[tokio::test]
+async fn blob_gc_preserves_references_and_isolates_databases_sharing_one_backend() {
+    let temp = TempDir::new().unwrap();
+    let config = BlobConfig {
+        scheme: "fs".into(),
+        config: [(
+            "root".into(),
+            temp.path().join("blobs").display().to_string(),
+        )]
+        .into_iter()
+        .collect(),
+    };
+    let store_a = SqliteStore::open(&temp.path().join("a.db")).await.unwrap();
+    let blobs_a = OpenDalBlobStore::from_config_for_store(&config, &store_a)
+        .await
+        .unwrap();
+    let attachment_a = blobs_a
+        .put(b"shared bytes".to_vec(), "application/octet-stream", None)
+        .await
+        .unwrap();
+    let mut old = event("old attachment", 10);
+    old.source.session_id = "old-attachment-session".into();
+    old.add_attachments(vec![attachment_a.clone()]);
+    persist_event_with_raw(&store_a, &mut old).await;
+    store_a
+        .forget(&ForgetFilter {
+            session_id: Some("old-attachment-session".into()),
+            ..ForgetFilter::default()
+        })
+        .await
+        .unwrap();
+    assert_eq!(store_a.pending_blob_gc_count().await.unwrap(), 1);
+
+    let attachment_reused = blobs_a
+        .put(b"shared bytes".to_vec(), "application/octet-stream", None)
+        .await
+        .unwrap();
+    assert_eq!(attachment_reused.object_key, attachment_a.object_key);
+    let mut current = event("current attachment", 20);
+    current.source.session_id = "current-attachment-session".into();
+    current.add_attachments(vec![attachment_reused]);
+    persist_event_with_raw(&store_a, &mut current).await;
+    assert_eq!(store_a.pending_blob_gc_count().await.unwrap(), 0);
+    assert_eq!(
+        drain_blob_gc(&store_a, &blobs_a, 10).await.unwrap().deleted,
+        0
+    );
+    assert_eq!(
+        blobs_a.get(&attachment_a.object_key).await.unwrap(),
+        b"shared bytes"
+    );
+
+    let store_b = SqliteStore::open(&temp.path().join("b.db")).await.unwrap();
+    let blobs_b = OpenDalBlobStore::from_config_for_store(&config, &store_b)
+        .await
+        .unwrap();
+    let attachment_b = blobs_b
+        .put(b"shared bytes".to_vec(), "application/octet-stream", None)
+        .await
+        .unwrap();
+    assert_ne!(attachment_a.object_key, attachment_b.object_key);
+    let mut event_b = event("database B attachment", 30);
+    event_b.source.session_id = "database-b-session".into();
+    event_b.add_attachments(vec![attachment_b.clone()]);
+    persist_event_with_raw(&store_b, &mut event_b).await;
+
+    store_a
+        .forget(&ForgetFilter {
+            session_id: Some("current-attachment-session".into()),
+            ..ForgetFilter::default()
+        })
+        .await
+        .unwrap();
+    let report = drain_blob_gc(&store_a, &blobs_a, 10).await.unwrap();
+    assert_eq!(report.deleted, 1);
+    assert!(blobs_a.get(&attachment_a.object_key).await.is_err());
+    assert_eq!(
+        blobs_b.get(&attachment_b.object_key).await.unwrap(),
+        b"shared bytes"
+    );
+}
+
 struct BlockingBlobStore {
     entered: Arc<Notify>,
     release: Arc<Notify>,
@@ -315,6 +425,14 @@ impl BlobStore for BlockingBlobStore {
 
     async fn delete(&self, _key: &str) -> anyhow::Result<()> {
         unreachable!()
+    }
+
+    fn backend_id(&self) -> &str {
+        "blocking-test"
+    }
+
+    fn manages_key(&self, _key: &str) -> bool {
+        true
     }
 }
 

@@ -1,0 +1,40 @@
+[
+  {
+    "sample_id": "conv-48",
+    "conversation": {},
+    "qa": []
+  },
+  {
+    "sample_id": "conv-49",
+    "conversation": {
+      "speaker_a": "Ada",
+      "speaker_b": "Ben",
+      "session_1_date_time": "1 January 2026",
+      "session_1": [
+        {"speaker": "Ada", "dia_id": "D1:1", "text": "I bought apples.", "blip_caption": "a basket of red apples"},
+        {"speaker": "Ben", "dia_id": "D1:2", "text": "Nice."}
+      ]
+    },
+    "qa": [
+      {"question": "What was bought?", "answer": "apples", "evidence": ["D1:1"], "category": 1},
+      {"question": "Adversarial?", "answer": "no", "evidence": [], "category": 5}
+    ]
+  },
+  {
+    "sample_id": "conv-50",
+    "conversation": {
+      "speaker_a": "Cid",
+      "speaker_b": "Dee",
+      "session_1_date_time": "2 January 2026",
+      "session_1": [
+        {"speaker": "Cid", "dia_id": "D2:1", "text": "I ran yesterday."},
+        {"speaker": "Dee", "dia_id": "D2:2", "text": "Well done."}
+      ]
+    },
+    "qa": [
+      {"question": "When was the run?", "answer": "yesterday", "evidence": ["D2:1"], "category": 2},
+      {"question": "What follows?", "answer": "rest", "evidence": ["D2:1", "D2:2"], "category": 3},
+      {"question": "What is running?", "answer": "exercise", "evidence": [], "category": 4}
+    ]
+  }
+]

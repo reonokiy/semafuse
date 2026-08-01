@@ -7,6 +7,7 @@
 mod amp;
 mod claude;
 mod codex;
+pub mod executable;
 mod history;
 mod opencode;
 
@@ -19,7 +20,8 @@ pub use opencode::OpenCodeAdapter;
 use crate::{
     blob::BlobStore,
     importer::ImportReport,
-    model::{AgentKind, CanonicalEvent, EventSource, MessageRole, SearchHit},
+    model::{AgentKind, CanonicalEvent, EventSource, MessageRole, normalize_repository},
+    strategy::RecallItem,
 };
 use anyhow::Result;
 use async_trait::async_trait;
@@ -62,8 +64,8 @@ pub trait HookProjector: Send + Sync {
     fn supports_recall(&self, _event_name: &str) -> bool {
         false
     }
-    /// Formats retrieval hits for the named native hook, if it supports recall injection.
-    fn recall_response(&self, event_name: &str, hits: &[SearchHit]) -> Option<Value>;
+    /// Formats strategy recall items for the named native hook, if supported.
+    fn recall_response(&self, event_name: &str, items: &[RecallItem]) -> Option<Value>;
 }
 
 /// Generates installation artifacts for one agent's hooks and integrations.
@@ -172,6 +174,98 @@ pub(crate) fn timestamp_ms(value: &Value) -> Option<i64> {
     )
 }
 
+/// Deletion-relevant fields that can be recovered without fully decoding a
+/// native history record. This deliberately uses agent-specific paths so a
+/// message or tool `id` can never be mistaken for a session identifier.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct NativeRawContext {
+    pub(crate) session_id: Option<String>,
+    pub(crate) repository: Option<String>,
+    pub(crate) occurred_at_ms: Option<i64>,
+}
+
+pub(crate) fn native_raw_context(agent: AgentKind, value: &Value) -> NativeRawContext {
+    let common_session = [
+        "/session_id",
+        "/sessionId",
+        "/conversation_id",
+        "/thread_id",
+        "/session/id",
+    ];
+    let agent_sessions: &[&str] = match agent {
+        AgentKind::Amp => &["/thread/id", "/id"],
+        AgentKind::Codex => &["/result/thread/id", "/thread/id", "/payload/session_id"],
+        AgentKind::ClaudeCode => &[],
+        AgentKind::OpenCode => &[
+            "/info/id",
+            "/event/properties/info/sessionID",
+            "/event/properties/sessionID",
+            "/event/properties/part/sessionID",
+        ],
+    };
+    let session_id = common_session
+        .iter()
+        .chain(agent_sessions)
+        .find_map(|pointer| nonempty_pointer(value, pointer))
+        .or_else(|| {
+            (agent == AgentKind::Codex
+                && value.get("type").and_then(Value::as_str) == Some("session_meta"))
+            .then(|| nonempty_pointer(value, "/payload/id"))
+            .flatten()
+        });
+
+    let common_cwds = ["/cwd", "/worktree", "/directory"];
+    let agent_cwds: &[&str] = match agent {
+        AgentKind::Amp => &[
+            "/env/initial/trees/0/uri",
+            "/thread/env/initial/trees/0/uri",
+        ],
+        AgentKind::Codex => &["/result/thread/cwd", "/thread/cwd", "/payload/cwd"],
+        AgentKind::ClaudeCode => &[],
+        AgentKind::OpenCode => &["/info/worktree", "/info/directory"],
+    };
+    let cwd = common_cwds
+        .iter()
+        .chain(agent_cwds)
+        .find_map(|pointer| nonempty_pointer(value, pointer))
+        .map(|value| value.strip_prefix("file://").unwrap_or(&value).to_owned());
+    // These values come from an agent's explicit source/worktree metadata, so
+    // retain unavailable paths instead of requiring the repository to exist on
+    // the machine performing an import or governance operation.
+    let repository = cwd
+        .as_deref()
+        .and_then(|cwd| normalize_repository(None, Some(cwd)));
+
+    let occurred_at_ms = match agent {
+        AgentKind::Amp => timestamp_at(value, &["/created"]),
+        AgentKind::Codex => timestamp_at(
+            value,
+            &[
+                "/result/thread/createdAt",
+                "/thread/createdAt",
+                "/payload/timestamp",
+            ],
+        ),
+        AgentKind::ClaudeCode => None,
+        AgentKind::OpenCode => timestamp_at(value, &["/info/time/created", "/info/time/updated"]),
+    }
+    .or_else(|| timestamp_ms(value));
+
+    NativeRawContext {
+        session_id,
+        repository,
+        occurred_at_ms,
+    }
+}
+
+fn nonempty_pointer(value: &Value, pointer: &str) -> Option<String> {
+    value
+        .pointer(pointer)
+        .and_then(Value::as_str)
+        .filter(|value| !value.trim().is_empty())
+        .map(str::to_owned)
+}
+
 pub(crate) fn timestamp_at(value: &Value, pointers: &[&str]) -> Option<i64> {
     pointers
         .iter()
@@ -230,24 +324,96 @@ pub(crate) fn message_role(role: Option<&str>, default: MessageRole) -> MessageR
     }
 }
 
-pub(crate) fn recall_text(hits: &[SearchHit]) -> String {
-    if hits.is_empty() {
+pub(crate) fn recall_text(items: &[RecallItem]) -> String {
+    if items.is_empty() {
         return String::new();
     }
-    let lines = hits
+    let lines = items
         .iter()
-        .map(|hit| {
-            format!(
+        .map(|item| match item {
+            RecallItem::Event { event, .. } => format!(
                 "- [sem:{} agent={} session={}] {}",
-                hit.event.id,
-                hit.event.source.agent,
-                hit.event.source.session_id,
-                hit.event.search_text().replace('\n', " ")
-            )
+                event.id,
+                event.source.agent,
+                event.source.session_id,
+                event.search_text().replace('\n', " ")
+            ),
+            RecallItem::Memory {
+                namespace,
+                id,
+                content,
+                source_event_ids,
+                ..
+            } => {
+                let sources = source_event_ids.join(",");
+                format!(
+                    "- [sem-memory:{namespace}/{id} sources={sources}] {}",
+                    content.replace('\n', "\n  ")
+                )
+            }
         })
         .collect::<Vec<_>>()
         .join("\n");
     format!(
         "Relevant history from Semafuse (verify against the cited session before relying on it):\n{lines}"
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::native_raw_context;
+    use crate::model::AgentKind;
+    use serde_json::json;
+
+    #[test]
+    fn native_raw_context_uses_only_agent_specific_root_identifiers() {
+        let amp = native_raw_context(
+            AgentKind::Amp,
+            &json!({
+                "id":"T-amp",
+                "created":1_784_350_800_000_i64,
+                "env":{"initial":{"trees":[{"uri":"file:///workspace/amp"}]}},
+                "messages":[{"id":"not-the-session"}]
+            }),
+        );
+        assert_eq!(amp.session_id.as_deref(), Some("T-amp"));
+        assert_eq!(amp.repository.as_deref(), Some("/workspace/amp"));
+        assert_eq!(amp.occurred_at_ms, Some(1_784_350_800_000));
+        let amp_hook =
+            native_raw_context(AgentKind::Amp, &json!({"thread":{"id":"T-hook"},"id":7}));
+        assert_eq!(amp_hook.session_id.as_deref(), Some("T-hook"));
+
+        let opencode = native_raw_context(
+            AgentKind::OpenCode,
+            &json!({"id":"wrong","info":{"id":"open-session","directory":"/workspace/open"}}),
+        );
+        assert_eq!(opencode.session_id.as_deref(), Some("open-session"));
+        assert_eq!(opencode.repository.as_deref(), Some("/workspace/open"));
+        let opencode_hook = native_raw_context(
+            AgentKind::OpenCode,
+            &json!({"event":{"properties":{"part":{"sessionID":"open-hook"}}}}),
+        );
+        assert_eq!(opencode_hook.session_id.as_deref(), Some("open-hook"));
+
+        let codex = native_raw_context(
+            AgentKind::Codex,
+            &json!({"id":19,"result":{"thread":{"id":"codex-session","cwd":"/workspace/codex"}}}),
+        );
+        assert_eq!(codex.session_id.as_deref(), Some("codex-session"));
+        assert_eq!(codex.repository.as_deref(), Some("/workspace/codex"));
+
+        let codex_session_meta = native_raw_context(
+            AgentKind::Codex,
+            &json!({"type":"session_meta","payload":{"id":"codex-rollout"}}),
+        );
+        assert_eq!(
+            codex_session_meta.session_id.as_deref(),
+            Some("codex-rollout")
+        );
+        let codex_message = native_raw_context(
+            AgentKind::Codex,
+            &json!({"type":"response_item","payload":{"id":"message-id"}}),
+        );
+        assert_eq!(codex_message.session_id, None);
+    }
 }

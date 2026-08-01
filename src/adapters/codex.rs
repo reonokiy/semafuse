@@ -1,12 +1,13 @@
 use super::{
     HistoryImporter, HookInstaller, HookProjector, ImportContext, NativeHistoryProjection,
-    ProjectedEvent, event_source, message_role, non_null_sources, project_native_history,
-    recall_text, scalar_string, text_content, timestamp_ms, value_text,
+    ProjectedEvent, event_source, executable::command_spec, message_role, non_null_sources,
+    project_native_history, recall_text, scalar_string, text_content, timestamp_ms, value_text,
 };
 use crate::{
     blob::BlobStore,
     importer::{ImportReport, NativeSource, json_source_files, read_json_values},
-    model::{AgentKind, CanonicalEvent, EventKind, MessageRole, SearchHit, ToolStatus},
+    model::{AgentKind, CanonicalEvent, ErrorInfo, EventKind, MessageRole, ToolStatus},
+    strategy::RecallItem,
 };
 use anyhow::{Context, Result, bail};
 use async_trait::async_trait;
@@ -18,10 +19,7 @@ use std::{
     process::Stdio,
     time::Duration,
 };
-use tokio::{
-    io::{AsyncBufReadExt, AsyncWrite, AsyncWriteExt, BufReader},
-    process::Command as TokioCommand,
-};
+use tokio::io::{AsyncBufReadExt, AsyncWrite, AsyncWriteExt, BufReader};
 
 /// Normalizes Codex history records and real-time hook events.
 ///
@@ -35,19 +33,21 @@ use tokio::{
 /// | `SessionStart` | [`SessionStart`](EventKind::SessionStart) | — | Empty | — |
 /// | `SessionEnd` | [`SessionEnd`](EventKind::SessionEnd) | — | `reason` | — |
 /// | `UserPromptSubmit` | [`UserMessage`](EventKind::UserMessage) | `user` | `prompt` | — |
+/// | `PermissionRequest` | [`ToolCall`](EventKind::ToolCall) | `assistant` | `tool_input` as text or JSON | `tool_name` |
 /// | `PreToolUse` | [`ToolCall`](EventKind::ToolCall) | `assistant` | `tool_input` as text or JSON | `tool_name` |
-/// | `PostToolUse` | [`ToolResult`](EventKind::ToolResult) | `tool` | `tool_response`, then `tool_output` | `tool_name` |
+/// | `PostToolUse` | [`ToolResult`](EventKind::ToolResult) | `tool` | `tool_response`, then `tool_output`; explicit native outcome or `unknown` | `tool_name` |
 /// | `PostToolUseFailure` | [`Error`](EventKind::Error) | `tool` | `error`, then `tool_response` | `tool_name` |
 /// | `Stop` | [`AssistantMessage`](EventKind::AssistantMessage) | `assistant` | `last_assistant_message` | — |
 /// | `StopFailure` | [`Error`](EventKind::Error) | `assistant` | `error` | — |
-/// | `PreCompact` / `PostCompact` | [`Compaction`](EventKind::Compaction) | — | `compact_summary`, then `custom_instructions` | — |
+/// | `SubagentStart` | [`SessionStart`](EventKind::SessionStart) | — | Empty | — |
+/// | `SubagentStop` | [`AssistantMessage`](EventKind::AssistantMessage) + [`SessionEnd`](EventKind::SessionEnd) | `assistant` / — | `last_assistant_message`; `agent_type` as reason | — |
+/// | `PreCompact` / `PostCompact` | [`Compaction`](EventKind::Compaction) | — | `trigger` in structured details | — |
 /// | Other | [`Other`](EventKind::Other) | — | Complete payload JSON | — |
 ///
 /// `session_id` uses `session_id`, or `codex-unknown`; `turn_id` uses `turn_id`;
 /// `native_id` tries `tool_use_id`, `agent_id`, and `id`. The generated hook
-/// configuration registers `SessionStart`, `UserPromptSubmit`, `PreToolUse`,
-/// `PostToolUse`, `Stop`, `PreCompact`, and `PostCompact`. Other aliases remain
-/// accepted for manual input and protocol evolution.
+/// configuration registers every currently supported Codex lifecycle hook.
+/// Other aliases remain accepted for manual input and protocol evolution.
 ///
 /// # History import
 ///
@@ -61,7 +61,7 @@ use tokio::{
 /// | `function_call_output` / `custom_tool_call_output` | [`ToolResult`](EventKind::ToolResult) | `tool` | `output` text | — |
 /// | `commandExecution` | [`ToolResult`](EventKind::ToolResult) | `tool` | Command plus `aggregatedOutput` | `commandExecution` |
 /// | `mcpToolCall` | [`ToolResult`](EventKind::ToolResult) | `tool` | Serialized `result`, `error`, or `arguments` | `{server}/{tool}` |
-/// | `dynamicToolCall` / `collabToolCall` | [`ToolResult`](EventKind::ToolResult) | `tool` | Complete payload JSON | `tool` |
+/// | `dynamicToolCall` / `collabAgentToolCall` | [`ToolResult`](EventKind::ToolResult) | `tool` | Complete payload JSON | `tool` |
 /// | `fileChange` | [`ToolResult`](EventKind::ToolResult) | `tool` | Serialized `changes` | `fileChange` |
 /// | `contextCompaction` | [`Compaction`](EventKind::Compaction) | — | Complete payload JSON | — |
 /// | `imageView` | [`ToolResult`](EventKind::ToolResult) | `tool` | `path` | `imageView` |
@@ -72,6 +72,19 @@ use tokio::{
 /// Rollout `session_meta` records produce an empty [`EventKind::SessionStart`];
 /// `turn_context` only updates the turn ID for subsequent events.
 pub struct CodexAdapter;
+
+const CODEX_THREAD_SOURCE_KINDS: [&str; 10] = [
+    "cli",
+    "vscode",
+    "exec",
+    "appServer",
+    "subAgent",
+    "subAgentReview",
+    "subAgentCompact",
+    "subAgentThreadSpawn",
+    "subAgentOther",
+    "unknown",
+];
 
 enum CodexHistory {
     Thread(CodexThread),
@@ -141,6 +154,7 @@ struct CodexPayload {
     command: Option<Value>,
     #[serde(rename = "aggregatedOutput")]
     aggregated_output: Option<Value>,
+    status: Option<Value>,
     result: Option<Value>,
     error: Option<Value>,
     server: Option<Value>,
@@ -160,6 +174,7 @@ struct CodexHookPayload {
     cwd: Option<Value>,
     tool_use_id: Option<Value>,
     agent_id: Option<Value>,
+    agent_type: Option<Value>,
     id: Option<Value>,
     reason: Option<Value>,
     prompt: Option<Value>,
@@ -169,8 +184,7 @@ struct CodexHookPayload {
     tool_output: Option<Value>,
     error: Option<Value>,
     last_assistant_message: Option<Value>,
-    compact_summary: Option<Value>,
-    custom_instructions: Option<Value>,
+    trigger: Option<Value>,
     content: Option<Value>,
     #[serde(skip)]
     raw: Value,
@@ -408,6 +422,66 @@ impl CodexPayload {
         scalar_string(self.path.as_ref()).unwrap_or_default()
     }
 
+    fn tool_outcome(&self) -> (ToolStatus, Option<ErrorInfo>) {
+        let explicit_error = self.error.as_ref().filter(|value| {
+            !value.is_null()
+                && value.as_bool() != Some(false)
+                && value.as_str().is_none_or(|value| !value.trim().is_empty())
+        });
+        let native_status = self
+            .status
+            .as_ref()
+            .and_then(|value| scalar_string(Some(value)))
+            .as_deref()
+            .and_then(parse_tool_status);
+        let status = if explicit_error.is_some()
+            && !native_status.is_some_and(|status| {
+                matches!(
+                    status,
+                    ToolStatus::Failed | ToolStatus::Cancelled | ToolStatus::Rejected
+                )
+            }) {
+            ToolStatus::Failed
+        } else {
+            native_status.unwrap_or(ToolStatus::Unknown)
+        };
+        let error = matches!(
+            status,
+            ToolStatus::Failed | ToolStatus::Cancelled | ToolStatus::Rejected
+        )
+        .then(|| {
+            let message = explicit_error
+                .and_then(|value| {
+                    scalar_string(value.get("message"))
+                        .or_else(|| scalar_string(value.pointer("/error/message")))
+                        .or_else(|| scalar_string(Some(value)))
+                        .or_else(|| Some(value_text(Some(value))))
+                })
+                .or_else(|| {
+                    scalar_string(self.aggregated_output.as_ref())
+                        .filter(|value| !value.trim().is_empty())
+                })
+                .filter(|value| !value.trim().is_empty())
+                .unwrap_or_else(|| match status {
+                    ToolStatus::Cancelled => "tool was cancelled".into(),
+                    ToolStatus::Rejected => "tool was rejected".into(),
+                    _ => "tool failed".into(),
+                });
+            let code = explicit_error.and_then(|value| {
+                scalar_string(value.get("code"))
+                    .or_else(|| scalar_string(value.pointer("/error/code")))
+            });
+            ErrorInfo {
+                message,
+                code,
+                details: explicit_error
+                    .filter(|value| value.is_object() || value.is_array())
+                    .cloned(),
+            }
+        });
+        (status, error)
+    }
+
     fn content_value(&self) -> &Value {
         self.content.as_ref().unwrap_or(&Value::Null)
     }
@@ -418,6 +492,22 @@ impl CodexPayload {
 
     fn raw_value(&self) -> &Value {
         &self.raw
+    }
+}
+
+fn parse_tool_status(value: &str) -> Option<ToolStatus> {
+    let status = value.trim().to_ascii_lowercase().replace(['-', ' '], "_");
+    match status.as_str() {
+        "pending" | "queued" => Some(ToolStatus::Pending),
+        "running" | "in_progress" | "inprogress" => Some(ToolStatus::Running),
+        "success" | "succeeded" | "completed" | "complete" | "ok" | "passed" => {
+            Some(ToolStatus::Succeeded)
+        }
+        "failed" | "failure" | "error" | "errored" => Some(ToolStatus::Failed),
+        "cancelled" | "canceled" | "aborted" | "interrupted" => Some(ToolStatus::Cancelled),
+        "rejected" | "declined" | "denied" | "blocked" => Some(ToolStatus::Rejected),
+        "unknown" => Some(ToolStatus::Unknown),
+        _ => None,
     }
 }
 
@@ -459,6 +549,102 @@ impl CodexHookPayload {
             "{}:{normalized_event}",
             self.turn().as_deref().unwrap_or(session)
         )
+    }
+
+    fn post_tool_outcome(&self) -> (ToolStatus, Option<ErrorInfo>) {
+        let response = self.tool_response.as_ref().or(self.tool_output.as_ref());
+        let exit_code = response
+            .and_then(|value| value.get("exit_code").or_else(|| value.get("exitCode")))
+            .and_then(|value| {
+                value
+                    .as_i64()
+                    .or_else(|| value.as_str().and_then(|value| value.parse().ok()))
+            });
+        let is_error = response.and_then(|value| {
+            value
+                .get("is_error")
+                .or_else(|| value.get("isError"))
+                .and_then(Value::as_bool)
+        });
+        let explicit_error = response
+            .and_then(|value| value.get("error"))
+            .filter(|value| {
+                !value.is_null()
+                    && value.as_bool() != Some(false)
+                    && value.as_str().is_none_or(|value| !value.trim().is_empty())
+            });
+        let native_status = response
+            .and_then(|value| {
+                ["/status", "/state/status", "/result/status"]
+                    .into_iter()
+                    .find_map(|pointer| value.pointer(pointer).and_then(Value::as_str))
+            })
+            .and_then(parse_tool_status);
+        let success = response.and_then(|value| {
+            value
+                .get("success")
+                .or_else(|| value.get("ok"))
+                .and_then(Value::as_bool)
+        });
+        let native_failure = native_status.filter(|status| {
+            matches!(
+                status,
+                ToolStatus::Failed | ToolStatus::Cancelled | ToolStatus::Rejected
+            )
+        });
+        let status = if let Some(status) = native_failure {
+            status
+        } else if let Some(exit_code) = exit_code {
+            if exit_code == 0 {
+                ToolStatus::Succeeded
+            } else {
+                ToolStatus::Failed
+            }
+        } else if is_error == Some(true) || explicit_error.is_some() {
+            ToolStatus::Failed
+        } else if let Some(status) = native_status {
+            status
+        } else if let Some(success) = success {
+            if success {
+                ToolStatus::Succeeded
+            } else {
+                ToolStatus::Failed
+            }
+        } else if is_error == Some(false) {
+            ToolStatus::Succeeded
+        } else {
+            ToolStatus::Unknown
+        };
+        let error = matches!(
+            status,
+            ToolStatus::Failed | ToolStatus::Cancelled | ToolStatus::Rejected
+        )
+        .then(|| {
+            let value = self
+                .error
+                .as_ref()
+                .or_else(|| response.and_then(|value| value.pointer("/error/message")))
+                .or(explicit_error)
+                .or_else(|| response.and_then(|value| value.get("message")));
+            let message = scalar_string(value)
+                .or_else(|| {
+                    value
+                        .filter(|value| !value.is_null())
+                        .map(|value| value_text(Some(value)))
+                })
+                .filter(|value| !value.trim().is_empty())
+                .unwrap_or_else(|| match status {
+                    ToolStatus::Cancelled => "tool was cancelled".into(),
+                    ToolStatus::Rejected => "tool was rejected".into(),
+                    _ => "tool failed".into(),
+                });
+            ErrorInfo {
+                message,
+                code: None,
+                details: None,
+            }
+        });
+        (status, error)
     }
 }
 
@@ -514,7 +700,7 @@ fn event_from_item(
                 payload.tool_or_default()
             )),
         ),
-        "dynamicToolCall" | "collabToolCall" => (
+        "dynamicToolCall" | "collabAgentToolCall" | "collabToolCall" => (
             EventKind::ToolResult,
             payload.raw_value().to_string(),
             payload.tool(),
@@ -551,6 +737,16 @@ fn event_from_item(
         "mcpToolCall" => payload.result_or_error().unwrap_or(&Value::Null),
         _ => payload.raw_value(),
     };
+    let tool_outcome = matches!(
+        item_type,
+        "commandExecution"
+            | "mcpToolCall"
+            | "dynamicToolCall"
+            | "collabAgentToolCall"
+            | "collabToolCall"
+            | "fileChange"
+    )
+    .then(|| payload.tool_outcome());
     let source = event_source(
         AgentKind::Codex,
         session,
@@ -579,14 +775,12 @@ fn event_from_item(
             content,
             timestamp,
         ),
-        EventKind::ToolResult => CanonicalEvent::tool_result_from_content(
-            source,
-            tool,
-            ToolStatus::Succeeded,
-            content,
-            None,
-            timestamp,
-        ),
+        EventKind::ToolResult => {
+            let (status, error) = tool_outcome.unwrap_or((ToolStatus::Succeeded, None));
+            CanonicalEvent::tool_result_from_content(
+                source, tool, status, content, error, timestamp,
+            )
+        }
         EventKind::Compaction => {
             CanonicalEvent::compaction_from_content(source, content, timestamp)
         }
@@ -700,9 +894,9 @@ impl NativeHistoryProjection for CodexHistory {
 
 impl CodexAdapter {
     async fn import_app_server(&self, blobs: Option<&dyn BlobStore>) -> Result<ImportReport> {
-        let mut command = TokioCommand::new("codex");
+        let command_spec = command_spec("codex", ["app-server", "--listen", "stdio://"]);
+        let mut command = command_spec.tokio_command();
         command
-            .args(["app-server", "--listen", "stdio://"])
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::null());
@@ -756,7 +950,16 @@ impl CodexAdapter {
             loop {
                 send_json(
                     &mut stdin,
-                    &json!({"method":"thread/list","id":request_id,"params":{"cursor":cursor,"limit":100,"archived":archived}}),
+                    &json!({
+                        "method":"thread/list",
+                        "id":request_id,
+                        "params":{
+                            "cursor":cursor,
+                            "limit":100,
+                            "archived":archived,
+                            "sourceKinds":CODEX_THREAD_SOURCE_KINDS,
+                        }
+                    }),
                 )
                 .await?;
                 let response = read_response(&mut reader, request_id).await?;
@@ -795,6 +998,12 @@ impl CodexAdapter {
             .await?;
             let response = read_response(&mut reader, request_id).await?;
             request_id += 1;
+            if let Some(error) = response.get("error").filter(|error| !error.is_null()) {
+                report.errors.push(format!(
+                    "codex-app-server:{id}: thread/read returned an error: {error}"
+                ));
+                continue;
+            }
             report
                 .add_native_source(
                     NativeSource {
@@ -937,6 +1146,25 @@ impl HookProjector for CodexAdapter {
             None,
         );
         let timestamp = timestamp_ms(payload.raw_value());
+        if matches!(normalized_event.as_str(), "subagentstop" | "subagent_stop") {
+            let mut events = Vec::with_capacity(2);
+            if let Some(message) = scalar_string(payload.last_assistant_message.as_ref())
+                .filter(|value| !value.trim().is_empty())
+            {
+                events.push(CanonicalEvent::message_from_text(
+                    source.clone(),
+                    MessageRole::Assistant,
+                    message,
+                    timestamp,
+                ));
+            }
+            events.push(CanonicalEvent::session_ended(
+                source,
+                scalar_string(payload.agent_type.as_ref()).filter(|value| !value.trim().is_empty()),
+                timestamp,
+            ));
+            return Ok(events);
+        }
         let event = match normalized_event.as_str() {
             "sessionstart" | "session_start" => CanonicalEvent::session_started(source, timestamp),
             "sessionend" | "session_end" => CanonicalEvent::session_ended(
@@ -950,25 +1178,30 @@ impl HookProjector for CodexAdapter {
                 scalar_string(payload.prompt.as_ref()).unwrap_or_default(),
                 timestamp,
             ),
-            "pretooluse" | "pre_tool_use" => CanonicalEvent::tool_call_from_content(
-                source,
-                scalar_string(payload.tool_name.as_ref()).unwrap_or_else(|| "unknown".into()),
-                value_text(payload.tool_input.as_ref()),
-                timestamp,
-            ),
-            "posttooluse" | "post_tool_use" => CanonicalEvent::tool_result_from_content(
-                source,
-                scalar_string(payload.tool_name.as_ref()),
-                ToolStatus::Succeeded,
-                value_text(
-                    payload
-                        .tool_response
-                        .as_ref()
-                        .or(payload.tool_output.as_ref()),
-                ),
-                None,
-                timestamp,
-            ),
+            "permissionrequest" | "permission_request" | "pretooluse" | "pre_tool_use" => {
+                CanonicalEvent::tool_call_from_content(
+                    source,
+                    scalar_string(payload.tool_name.as_ref()).unwrap_or_else(|| "unknown".into()),
+                    value_text(payload.tool_input.as_ref()),
+                    timestamp,
+                )
+            }
+            "posttooluse" | "post_tool_use" => {
+                let (status, error) = payload.post_tool_outcome();
+                CanonicalEvent::tool_result_from_content(
+                    source,
+                    scalar_string(payload.tool_name.as_ref()),
+                    status,
+                    value_text(
+                        payload
+                            .tool_response
+                            .as_ref()
+                            .or(payload.tool_output.as_ref()),
+                    ),
+                    error,
+                    timestamp,
+                )
+            }
             "posttoolusefailure" | "post_tool_use_failure" => CanonicalEvent::failed_tool_result(
                 source,
                 scalar_string(payload.tool_name.as_ref()),
@@ -984,14 +1217,14 @@ impl HookProjector for CodexAdapter {
             "stopfailure" | "stop_failure" => {
                 CanonicalEvent::error_message(source, value_text(payload.error.as_ref()), timestamp)
             }
+            "subagentstart" | "subagent_start" => {
+                CanonicalEvent::session_started(source, timestamp)
+            }
             "precompact" | "pre_compact" | "postcompact" | "post_compact" => {
-                CanonicalEvent::compaction_from_content(
-                    source,
-                    scalar_string(payload.compact_summary.as_ref())
-                        .or_else(|| scalar_string(payload.custom_instructions.as_ref()))
-                        .unwrap_or_default(),
-                    timestamp,
-                )
+                let details = scalar_string(payload.trigger.as_ref())
+                    .filter(|trigger| !trigger.trim().is_empty())
+                    .map(|trigger| json!({"trigger":trigger}));
+                CanonicalEvent::compaction(source, None, details, timestamp)
             }
             _ => CanonicalEvent::unknown(source, event_name, timestamp),
         };
@@ -1006,7 +1239,7 @@ impl HookProjector for CodexAdapter {
             "userpromptsubmit" | "user_prompt_submit" => {
                 non_null_sources([payload.content.as_ref(), payload.prompt.as_ref()])
             }
-            "pretooluse" | "pre_tool_use" => {
+            "permissionrequest" | "permission_request" | "pretooluse" | "pre_tool_use" => {
                 non_null_sources([payload.tool_input.as_ref(), payload.content.as_ref()])
             }
             "posttooluse" | "post_tool_use" => non_null_sources([payload
@@ -1031,7 +1264,7 @@ impl HookProjector for CodexAdapter {
         )
     }
 
-    fn recall_response(&self, event_name: &str, hits: &[SearchHit]) -> Option<Value> {
+    fn recall_response(&self, event_name: &str, hits: &[RecallItem]) -> Option<Value> {
         if !self.supports_recall(event_name) {
             return None;
         }
@@ -1048,7 +1281,7 @@ impl HookProjector for CodexAdapter {
 
 impl HookInstaller for CodexAdapter {
     fn hook_artifacts(&self, binary: &Path, database: &Path) -> Vec<(String, String)> {
-        let base_command = [
+        let arguments = [
             binary.display().to_string(),
             "hook".into(),
             "--agent".into(),
@@ -1058,17 +1291,30 @@ impl HookInstaller for CodexAdapter {
             "--db".into(),
             database.display().to_string(),
             "--protocol".into(),
-        ]
-        .iter()
-        .map(|value| shell_escape::unix::escape(value.into()))
-        .collect::<Vec<_>>()
-        .join(" ");
+        ];
+        let base_command = arguments
+            .iter()
+            .map(|value| shell_escape::unix::escape(value.into()))
+            .collect::<Vec<_>>()
+            .join(" ");
+        let base_command_windows = format!(
+            "& {}",
+            arguments
+                .iter()
+                .map(|value| format!("'{}'", value.replace('\'', "''")))
+                .collect::<Vec<_>>()
+                .join(" ")
+        );
         let mut hooks = serde_json::Map::new();
         for name in [
             "SessionStart",
+            "SessionEnd",
             "UserPromptSubmit",
+            "PermissionRequest",
             "PreToolUse",
             "PostToolUse",
+            "SubagentStart",
+            "SubagentStop",
             "Stop",
             "PreCompact",
             "PostCompact",
@@ -1078,10 +1324,20 @@ impl HookInstaller for CodexAdapter {
             } else {
                 base_command.clone()
             };
-            hooks.insert(
-                name.into(),
-                json!([{"hooks":[{"type":"command","command":command}]}]),
-            );
+            let command_windows = if self.supports_recall(name) {
+                format!("{base_command_windows} '--recall'")
+            } else {
+                base_command_windows.clone()
+            };
+            let mut handler = json!({
+                "type":"command",
+                "command":command,
+                "commandWindows":command_windows,
+            });
+            if name == "SessionEnd" {
+                handler["timeout"] = json!(3);
+            }
+            hooks.insert(name.into(), json!([{"hooks":[handler]}]));
         }
         let config = json!({"hooks":hooks});
         vec![(

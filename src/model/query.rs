@@ -78,6 +78,44 @@ pub struct MemoryRecord {
     pub updated_at_ms: i64,
 }
 
+/// One strategy-owned dense vector tied to an immutable canonical event.
+///
+/// Durable stores keep this artifact in the same deletion domain as the event,
+/// so forgetting an event also removes its embedding.
+#[derive(Debug, Clone, PartialEq)]
+pub struct StrategyEventVector {
+    /// Strategy namespace that owns the vector.
+    pub namespace: String,
+    /// Canonical event represented by the vector.
+    pub event_id: String,
+    /// Immutable embedding model identifier or revision.
+    pub model: String,
+    /// Dense vector values in model output order.
+    pub values: Vec<f32>,
+}
+
+/// Dense nearest-neighbour request over strategy-owned event vectors.
+#[derive(Debug, Clone)]
+pub struct VectorQuery {
+    /// Strategy namespace that owns the vector index.
+    pub namespace: String,
+    /// Exact embedding model identifier used for both corpus and query vectors.
+    pub model: String,
+    /// Query embedding.
+    pub values: Vec<f32>,
+    /// Event scope and result limit.
+    pub scope: SearchQuery,
+}
+
+/// Canonical event returned by dense vector search.
+#[derive(Debug, Clone)]
+pub struct VectorHit {
+    /// Retrieved event with full provenance.
+    pub event: CanonicalEvent,
+    /// Cosine similarity, ordered from greatest to least.
+    pub score: f64,
+}
+
 /// Namespace-scoped search over derived memories.
 #[derive(Debug, Clone, Default)]
 pub struct MemoryQuery {
@@ -100,6 +138,17 @@ pub enum MemoryMutation {
         namespace: String,
         /// Identifier within the namespace.
         id: String,
+    },
+    /// Inserts or replaces an event embedding owned by the strategy.
+    UpsertVector(StrategyEventVector),
+    /// Removes one event embedding from the strategy namespace.
+    DeleteVector {
+        /// Namespace that owns the vector.
+        namespace: String,
+        /// Canonical event represented by the vector.
+        event_id: String,
+        /// Exact embedding model identifier.
+        model: String,
     },
 }
 

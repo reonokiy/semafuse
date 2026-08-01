@@ -53,9 +53,38 @@ impl EventStore for MemoryStore {
             .cloned()
             .map(|event| SearchHit { event, score: 1.0 })
             .collect();
-        hits.sort_by_key(|h| std::cmp::Reverse(h.event.ordering_timestamp_ms()));
+        hits.sort_by(|left, right| {
+            right
+                .event
+                .ordering_timestamp_ms()
+                .cmp(&left.event.ordering_timestamp_ms())
+                .then_with(|| left.event.id.cmp(&right.event.id))
+        });
         hits.truncate(query.limit);
         Ok(hits)
+    }
+
+    async fn scoped_message_events(&self, query: &SearchQuery) -> Result<Vec<CanonicalEvent>> {
+        let stored = self.events.read().expect("memory store poisoned");
+        let mut events = stored
+            .values()
+            .filter(|event| {
+                matches!(
+                    event.data,
+                    crate::model::EventData::Message { .. }
+                        | crate::model::EventData::ToolCall { .. }
+                        | crate::model::EventData::ToolResult { .. }
+                ) && !event.search_text().trim().is_empty()
+                    && matches(event, query)
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+        events.sort_by(|left, right| {
+            left.ordering_timestamp_ms()
+                .cmp(&right.ordering_timestamp_ms())
+                .then_with(|| left.id.cmp(&right.id))
+        });
+        Ok(events)
     }
 
     async fn recent(&self, query: &SearchQuery) -> Result<Vec<SearchHit>> {
@@ -66,7 +95,13 @@ impl EventStore for MemoryStore {
             .cloned()
             .map(|event| SearchHit { event, score: 0.1 })
             .collect();
-        hits.sort_by_key(|h| std::cmp::Reverse(h.event.ordering_timestamp_ms()));
+        hits.sort_by(|left, right| {
+            right
+                .event
+                .ordering_timestamp_ms()
+                .cmp(&left.event.ordering_timestamp_ms())
+                .then_with(|| left.event.id.cmp(&right.event.id))
+        });
         hits.truncate(query.limit);
         Ok(hits)
     }
@@ -78,7 +113,11 @@ impl EventStore for MemoryStore {
             .filter(|e| e.source.session_id == session_id)
             .cloned()
             .collect();
-        events.sort_by_key(CanonicalEvent::ordering_timestamp_ms);
+        events.sort_by(|left, right| {
+            left.ordering_timestamp_ms()
+                .cmp(&right.ordering_timestamp_ms())
+                .then_with(|| left.id.cmp(&right.id))
+        });
         Ok(events)
     }
     async fn count(&self) -> Result<usize> {

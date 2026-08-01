@@ -5,15 +5,21 @@
 //! construct replacement state off to the side before an atomic swap.
 
 mod history;
+mod lazymem;
+mod recall;
+mod registry;
+
+pub use recall::RecallItem;
 
 use crate::{
-    config::Config,
-    model::{CanonicalEvent, DomainEventSequence, MemoryMutation, SearchHit, SearchQuery},
-    storage::{EventStore, MemoryRepository, SqliteStore},
+    config::{Config, StrategyConfig},
+    model::{CanonicalEvent, DomainEventSequence, MemoryMutation, SearchQuery},
+    storage::{
+        EventStore, MemoryRepository, SqliteStore, StrategyStateRepository, VectorRepository,
+    },
 };
-use anyhow::{Result, bail, ensure};
+use anyhow::{Context, Result, ensure};
 use async_trait::async_trait;
-use history::HistoryStrategy;
 
 /// A committed batch of newly ingested canonical events delivered to a memory strategy.
 ///
@@ -33,19 +39,30 @@ pub struct StrategyEvent {
 pub struct RecallRequest {
     /// Event search text, filters, and result limit.
     pub query: SearchQuery,
+    /// Explicit wall-clock reference used by query-conditioned processors.
+    ///
+    /// Passing this through the request keeps benchmark replays deterministic
+    /// and prevents strategies from consulting the current clock internally.
+    pub query_time_ms: i64,
 }
 
 /// Result returned by a memory strategy's recall path.
 pub struct RecallResult {
-    /// Ranked canonical events selected as relevant context.
-    pub hits: Vec<SearchHit>,
+    /// Ranked event-backed or strategy-derived memories selected as context.
+    pub items: Vec<RecallItem>,
 }
 
 /// Combined read interface exposed to strategy implementations.
 ///
 /// Mutation and checkpoint methods are intentionally owned by the dispatcher.
-pub trait StrategyContext: EventStore + MemoryRepository {}
-impl<T: EventStore + MemoryRepository> StrategyContext for T {}
+pub trait StrategyContext:
+    EventStore + MemoryRepository + VectorRepository + StrategyStateRepository
+{
+}
+impl<T: EventStore + MemoryRepository + VectorRepository + StrategyStateRepository> StrategyContext
+    for T
+{
+}
 
 /// Derives namespaced memories from events and serves recall requests.
 #[async_trait]
@@ -58,7 +75,7 @@ pub trait MemoryStrategy: Send + Sync {
         context: &dyn StrategyContext,
         event: &StrategyEvent,
     ) -> Result<Vec<MemoryMutation>>;
-    /// Selects canonical events to inject as relevant context.
+    /// Selects event-backed or derived memories to inject as relevant context.
     async fn recall(
         &self,
         context: &dyn StrategyContext,
@@ -66,20 +83,17 @@ pub trait MemoryStrategy: Send + Sync {
     ) -> Result<RecallResult>;
 }
 
-/// Constructs a derived-memory strategy by configuration name.
-pub fn strategy(name: &str) -> Result<Box<dyn MemoryStrategy>> {
-    match name {
-        "history" => Ok(Box::new(HistoryStrategy)),
-        _ => bail!("unknown memory strategy: {name}"),
-    }
+fn configured_strategy(name: &str, config: &StrategyConfig) -> Result<Box<dyn MemoryStrategy>> {
+    registry::build(name, config.settings.get(name))
 }
 
 /// Validates unique enabled names and an enabled recall route.
 pub fn validate(config: &Config) -> Result<()> {
+    registry::validate_settings(&config.strategies.settings)?;
     let mut names = std::collections::HashSet::new();
     for name in &config.strategies.enabled {
         ensure!(names.insert(name), "duplicate enabled strategy: {name}");
-        strategy(name)?;
+        configured_strategy(name, &config.strategies)?;
     }
     ensure!(
         names.contains(&config.strategies.recall),
@@ -116,7 +130,7 @@ pub async fn dispatch_pending(
         if only.is_some_and(|selected| selected != name) {
             continue;
         }
-        let handler = strategy(name)?;
+        let handler = configured_strategy(name, &config.strategies)?;
         let (checkpoint, _, _) = store.strategy_checkpoint(name).await?;
         for (sequence, ids) in store.pending_domain_events(checkpoint).await? {
             let event = StrategyEvent {
@@ -147,12 +161,30 @@ pub async fn recall(
     store: &SqliteStore,
     config: &Config,
     query: SearchQuery,
-) -> Result<Vec<SearchHit>> {
+) -> Result<Vec<RecallItem>> {
+    recall_at(store, config, query, crate::model::now_ms()).await
+}
+
+/// Routes a query with an explicit reference time for reproducible replay.
+pub async fn recall_at(
+    store: &SqliteStore,
+    config: &Config,
+    query: SearchQuery,
+    query_time_ms: i64,
+) -> Result<Vec<RecallItem>> {
     validate(config)?;
-    Ok(strategy(&config.strategies.recall)?
-        .recall(store, &RecallRequest { query })
-        .await?
-        .hits)
+    Ok(
+        configured_strategy(&config.strategies.recall, &config.strategies)?
+            .recall(
+                store,
+                &RecallRequest {
+                    query,
+                    query_time_ms,
+                },
+            )
+            .await?
+            .items,
+    )
 }
 
 /// Rebuilds one enabled strategy from all canonical events.
@@ -169,24 +201,28 @@ pub async fn rebuild(store: &SqliteStore, config: &Config, name: &str) -> Result
             .any(|enabled| enabled == name),
         "strategy {name} is not enabled"
     );
-    strategy(name)?;
-    let handler = strategy(name)?;
-    let events = store.all_events().await?;
+    let handler = configured_strategy(name, &config.strategies)?;
+    let (events, latest) = store.events_and_latest_seq().await?;
     let count = events.len();
     let staging = SqliteStore::open_memory().await?;
     for event in events {
-        staging.ingest(std::slice::from_ref(&event)).await?;
+        let stats = staging.ingest(std::slice::from_ref(&event)).await?;
+        let sequence = stats
+            .domain_event_seq
+            .context("staging ingest did not emit a domain event")?;
         let input = StrategyEvent {
-            sequence: DomainEventSequence::ORIGIN,
+            sequence,
             events: vec![event],
         };
         let mutations = handler.on_event(&staging, &input).await?;
         staging
-            .apply_strategy_event(name, DomainEventSequence::ORIGIN, &mutations)
+            .apply_strategy_event(name, sequence, &mutations)
             .await?;
     }
     let records = staging.all_memories(name).await?;
-    let latest = store.latest_domain_event_seq().await?;
-    store.replace_strategy_state(name, &records, latest).await?;
+    let vectors = staging.all_strategy_vectors(name).await?;
+    store
+        .replace_strategy_state(name, &records, &vectors, latest)
+        .await?;
     Ok(count)
 }

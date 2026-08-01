@@ -16,12 +16,20 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  quality:
+    name: Run quality checks
+    uses: ./.github/workflows/ci.yml
+    permissions:
+      contents: read
+
   validate-tag:
     name: Validate release tag
     runs-on: ubuntu-24.04
     steps:
       - name: Check out source
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - name: Match tag to Cargo package version
         shell: bash
         run: |
@@ -34,7 +42,9 @@ jobs:
 
   build:
     name: Build ${{ matrix.target }}
-    needs: validate-tag
+    needs:
+      - quality
+      - validate-tag
     strategy:
       fail-fast: false
       matrix:
@@ -57,12 +67,14 @@ jobs:
     runs-on: ${{ matrix.runner }}
     steps:
       - name: Check out source
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - name: Install Rust
         shell: bash
         run: |
-          rustup toolchain install stable --profile minimal --target "${{ matrix.target }}"
-          rustup default stable
+          rustup target add "${{ matrix.target }}"
+          rustc --version --verbose
       - name: Build release binary
         shell: bash
         run: cargo build --locked --release --target "${{ matrix.target }}"
@@ -79,17 +91,22 @@ jobs:
         shell: bash
         run: |
           archive="semafuse-${GITHUB_REF_NAME}-${{ matrix.target }}.tar.gz"
-          mkdir -p dist
-          tar -C "target/${{ matrix.target }}/release" -czf "dist/$archive" semafuse
+          staging="target/release-package"
+          mkdir -p dist "$staging"
+          cp "target/${{ matrix.target }}/release/semafuse" "$staging/"
+          cp LICENSE "$staging/"
+          tar -C "$staging" -czf "dist/$archive" semafuse LICENSE
       - name: Package Windows binary
         if: matrix.archive == 'zip'
         shell: pwsh
         run: |
           $archive = "semafuse-$env:GITHUB_REF_NAME-${{ matrix.target }}.zip"
+          $staging = "target\release-package"
           New-Item -ItemType Directory -Force dist | Out-Null
-          Compress-Archive `
-            -LiteralPath "target\${{ matrix.target }}\release\semafuse.exe" `
-            -DestinationPath "dist\$archive"
+          New-Item -ItemType Directory -Force $staging | Out-Null
+          Copy-Item "target\${{ matrix.target }}\release\semafuse.exe" $staging
+          Copy-Item LICENSE $staging
+          Compress-Archive -Path "$staging\*" -DestinationPath "dist\$archive"
       - name: Upload packaged binary
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
@@ -116,7 +133,7 @@ jobs:
         shell: bash
         run: |
           cd dist
-          sha256sum semafuse-* > SHA256SUMS
+          sha256sum semafuse-* > SHA256SUMS.txt
       - name: Create or update GitHub release
         env:
           GH_TOKEN: ${{ github.token }}

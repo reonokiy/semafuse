@@ -1,4 +1,4 @@
-//! Line-delimited JSON-RPC server implementing Semafuse's MCP interface.
+//! Model Context Protocol server implemented with the official Rust SDK.
 
 use crate::{
     config,
@@ -7,127 +7,186 @@ use crate::{
     strategy,
 };
 use anyhow::Result;
-use serde_json::{Value, json};
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use rmcp::{
+    ErrorData as McpError, ServerHandler, ServiceExt,
+    handler::server::wrapper::Parameters,
+    model::{CallToolResult, ContentBlock},
+    schemars::JsonSchema,
+    tool, tool_handler, tool_router,
+    transport::stdio,
+};
+use serde::{Deserialize, Serialize};
+use serde_json::json;
 
-/// Serves MCP over standard input and standard output until input reaches EOF.
-///
-/// The server exposes `semafuse_search` for raw lexical/recent/hybrid search,
-/// `semafuse_recall` for configured strategy recall, `semafuse_session` for a
-/// session timeline, and `semafuse_recent` for recent events. Malformed lines
-/// and notifications without IDs are ignored; tool failures are returned as MCP
-/// error content while unknown methods receive JSON-RPC method-not-found.
-pub async fn serve(store: &SqliteStore) -> Result<()> {
-    let stdin = tokio::io::stdin();
-    let mut lines = BufReader::new(stdin).lines();
-    let mut stdout = tokio::io::stdout();
-    while let Some(line) = lines.next_line().await? {
-        if line.trim().is_empty() {
-            continue;
-        }
-        let request: Value = match serde_json::from_str(&line) {
-            Ok(v) => v,
-            Err(_) => continue,
+#[derive(Clone)]
+struct SemafuseServer {
+    store: SqliteStore,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+struct SearchArgs {
+    /// Full-text query to search for.
+    query: String,
+    /// Exact normalized repository filter.
+    repository: Option<String>,
+    /// Retrieval mode: lexical, recent, or hybrid.
+    mode: Option<String>,
+    /// Inclusive lower timestamp bound in Unix milliseconds.
+    since_ms: Option<i64>,
+    /// Inclusive upper timestamp bound in Unix milliseconds.
+    until_ms: Option<i64>,
+    /// Maximum number of results, clamped to 1–100.
+    limit: Option<usize>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+struct RecallArgs {
+    /// Full-text query to recall context for.
+    query: String,
+    /// Exact normalized repository filter.
+    repository: Option<String>,
+    /// Maximum number of results, clamped to 1–100.
+    limit: Option<usize>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+struct SessionArgs {
+    /// Native session identifier.
+    session_id: String,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+struct RecentArgs {
+    /// Exact normalized repository filter.
+    repository: Option<String>,
+    /// Inclusive lower timestamp bound in Unix milliseconds.
+    since_ms: Option<i64>,
+    /// Inclusive upper timestamp bound in Unix milliseconds.
+    until_ms: Option<i64>,
+    /// Maximum number of results, clamped to 1–100.
+    limit: Option<usize>,
+}
+
+#[tool_router]
+impl SemafuseServer {
+    #[tool(
+        name = "semafuse_search",
+        description = "Search raw coding-agent history with provenance"
+    )]
+    async fn search(
+        &self,
+        Parameters(args): Parameters<SearchArgs>,
+    ) -> std::result::Result<CallToolResult, McpError> {
+        let mode = args
+            .mode
+            .as_deref()
+            .unwrap_or("hybrid")
+            .parse::<QueryMode>()
+            .map_err(|error| McpError::invalid_params(error.to_string(), None))?;
+        let query = SearchQuery {
+            text: args.query,
+            repository: nonempty(args.repository),
+            agent: None,
+            since_ms: args.since_ms,
+            until_ms: args.until_ms,
+            limit: limit(args.limit),
         };
-        let Some(id) = request.get("id").cloned() else {
-            continue;
-        };
-        let method = request
-            .get("method")
-            .and_then(Value::as_str)
-            .unwrap_or_default();
-        let result = match method {
-            "initialize" => json!({"protocolVersion":"2025-06-18","capabilities":{"tools":{}},"serverInfo":{"name":"semafuse","version":env!("CARGO_PKG_VERSION")}}),
-            "ping" => json!({}),
-            "tools/list" => json!({"tools":[
-                {"name":"semafuse_search","description":"Search raw coding-agent history with provenance","inputSchema":{"type":"object","properties":{"query":{"type":"string"},"repository":{"type":"string"},"mode":{"type":"string","enum":["lexical","recent","hybrid"]},"since_ms":{"type":"integer"},"until_ms":{"type":"integer"},"limit":{"type":"integer"}},"required":["query"]}},
-                {"name":"semafuse_recall","description":"Recall context through the configured memory strategy","inputSchema":{"type":"object","properties":{"query":{"type":"string"},"repository":{"type":"string"},"limit":{"type":"integer"}},"required":["query"]}},
-                {"name":"semafuse_session","description":"Read normalized events for a prior session","inputSchema":{"type":"object","properties":{"session_id":{"type":"string"}},"required":["session_id"]}},
-                {"name":"semafuse_recent","description":"List recent normalized coding-agent events","inputSchema":{"type":"object","properties":{"repository":{"type":"string"},"since_ms":{"type":"integer"},"until_ms":{"type":"integer"},"limit":{"type":"integer"}}}}
-            ]}),
-            "tools/call" => tool_call(store, request.get("params").unwrap_or(&Value::Null)).await.unwrap_or_else(|error| json!({"content":[{"type":"text","text":format!("Semafuse error: {error:#}")}],"isError":true})),
-            _ => {
-                let response = json!({"jsonrpc":"2.0","id":id,"error":{"code":-32601,"message":format!("method not found: {method}")}});
-                stdout.write_all(format!("{}\n", response).as_bytes()).await?;
-                stdout.flush().await?;
-                continue;
-            }
-        };
-        let response = json!({"jsonrpc":"2.0","id":id,"result":result});
-        stdout
-            .write_all(format!("{}\n", response).as_bytes())
-            .await?;
-        stdout.flush().await?;
+        Ok(tool_result(self.store.query(mode, &query).await))
     }
+
+    #[tool(
+        name = "semafuse_recall",
+        description = "Recall context through the configured memory strategy"
+    )]
+    async fn recall(
+        &self,
+        Parameters(args): Parameters<RecallArgs>,
+    ) -> std::result::Result<CallToolResult, McpError> {
+        let query = SearchQuery {
+            text: args.query,
+            repository: nonempty(args.repository),
+            agent: None,
+            since_ms: None,
+            until_ms: None,
+            limit: limit(args.limit),
+        };
+        let result = match config::load() {
+            Ok(config) => strategy::recall(&self.store, &config, query).await,
+            Err(error) => Err(error),
+        };
+        Ok(tool_result(result))
+    }
+
+    #[tool(
+        name = "semafuse_session",
+        description = "Read normalized events for a prior session"
+    )]
+    async fn session(
+        &self,
+        Parameters(args): Parameters<SessionArgs>,
+    ) -> std::result::Result<CallToolResult, McpError> {
+        Ok(tool_result(
+            self.store.session_events(&args.session_id).await,
+        ))
+    }
+
+    #[tool(
+        name = "semafuse_recent",
+        description = "List recent normalized coding-agent events"
+    )]
+    async fn recent(
+        &self,
+        Parameters(args): Parameters<RecentArgs>,
+    ) -> std::result::Result<CallToolResult, McpError> {
+        let query = SearchQuery {
+            text: String::new(),
+            repository: nonempty(args.repository),
+            agent: None,
+            since_ms: args.since_ms,
+            until_ms: args.until_ms,
+            limit: limit(args.limit),
+        };
+        Ok(tool_result(self.store.recent(&query).await))
+    }
+}
+
+#[tool_handler(name = "semafuse")]
+impl ServerHandler for SemafuseServer {}
+
+/// Serves Semafuse's MCP tools over standard input and standard output.
+///
+/// The official SDK owns JSON-RPC framing, lifecycle negotiation, tool routing,
+/// and protocol errors. Application failures are returned as caller-visible MCP
+/// tool errors, while malformed arguments remain JSON-RPC invalid-params errors.
+pub async fn serve(store: &SqliteStore) -> Result<()> {
+    let service = SemafuseServer {
+        store: store.clone(),
+    }
+    .serve(stdio())
+    .await?;
+    service.waiting().await?;
     Ok(())
 }
 
-async fn tool_call(store: &SqliteStore, params: &Value) -> Result<Value> {
-    let name = params
-        .get("name")
-        .and_then(Value::as_str)
-        .unwrap_or_default();
-    let args = params.get("arguments").unwrap_or(&Value::Null);
-    let value = match name {
-        "semafuse_session" => {
-            let id = args
-                .get("session_id")
-                .and_then(Value::as_str)
-                .unwrap_or_default();
-            serde_json::to_value(store.session_events(id).await?)?
-        }
-        "semafuse_recent" => {
-            let query = SearchQuery {
-                text: String::new(),
-                repository: nonempty(args.get("repository")),
-                agent: None,
-                since_ms: time_bound(args.get("since_ms")),
-                until_ms: time_bound(args.get("until_ms")),
-                limit: limit(args),
-            };
-            serde_json::to_value(store.recent(&query).await?)?
-        }
-        "semafuse_search" | "semafuse_recall" => {
-            let query = SearchQuery {
-                text: args
-                    .get("query")
-                    .and_then(Value::as_str)
-                    .unwrap_or_default()
-                    .to_owned(),
-                repository: nonempty(args.get("repository")),
-                agent: None,
-                since_ms: time_bound(args.get("since_ms")),
-                until_ms: time_bound(args.get("until_ms")),
-                limit: limit(args),
-            };
-            let mode = args.get("mode").and_then(Value::as_str).unwrap_or("hybrid");
-            let hits = if name == "semafuse_recall" {
-                strategy::recall(store, &config::load()?, query).await?
-            } else {
-                store.query(mode.parse::<QueryMode>()?, &query).await?
-            };
-            serde_json::to_value(hits)?
-        }
-        _ => anyhow::bail!("unknown MCP tool: {name}"),
-    };
-    Ok(
-        json!({"content":[{"type":"text","text":serde_json::to_string_pretty(&value)?}],"structuredContent":{"results":value}}),
-    )
+fn tool_result<T: Serialize>(result: Result<T>) -> CallToolResult {
+    match result.and_then(|results| {
+        let results = serde_json::to_value(results)?;
+        let text = serde_json::to_string_pretty(&results)?;
+        let mut result = CallToolResult::success(vec![ContentBlock::text(text)]);
+        result.structured_content = Some(json!({ "results": results }));
+        Ok(result)
+    }) {
+        Ok(result) => result,
+        Err(error) => CallToolResult::error(vec![ContentBlock::text(format!(
+            "Semafuse error: {error:#}"
+        ))]),
+    }
 }
 
-fn nonempty(value: Option<&Value>) -> Option<String> {
-    value
-        .and_then(Value::as_str)
-        .filter(|s| !s.is_empty())
-        .map(str::to_owned)
-}
-fn limit(args: &Value) -> usize {
-    args.get("limit")
-        .and_then(Value::as_u64)
-        .unwrap_or(10)
-        .clamp(1, 100) as usize
+fn nonempty(value: Option<String>) -> Option<String> {
+    value.filter(|value| !value.is_empty())
 }
 
-fn time_bound(value: Option<&Value>) -> Option<i64> {
-    value.and_then(Value::as_i64)
+fn limit(value: Option<usize>) -> usize {
+    value.unwrap_or(10).clamp(1, 100)
 }

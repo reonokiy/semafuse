@@ -7,6 +7,7 @@
 use anyhow::{Result, ensure};
 use config::{Environment, File};
 use serde::Deserialize;
+use serde_json::Value;
 use std::{collections::HashMap, path::PathBuf};
 
 /// Returns the data directory, honoring `SEMAFUSE_DATA_DIR`.
@@ -49,6 +50,7 @@ pub fn default_config_path() -> PathBuf {
 
 /// Selection of derived-memory strategies.
 #[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct StrategyConfig {
     /// Strategies that receive committed domain events.
     #[serde(default = "default_enabled")]
@@ -56,6 +58,13 @@ pub struct StrategyConfig {
     /// Enabled strategy through which recall requests are routed.
     #[serde(default = "default_recall")]
     pub recall: String,
+    /// Strategy-owned configuration keyed by registered strategy name.
+    ///
+    /// Keeping these values opaque at the application layer lets each strategy
+    /// module deserialize and validate its own settings without growing a
+    /// central configuration enum whenever a module is added.
+    #[serde(default)]
+    pub settings: HashMap<String, Value>,
 }
 
 /// Complete Semafuse application configuration.
@@ -94,6 +103,7 @@ impl Default for StrategyConfig {
         Self {
             enabled: default_enabled(),
             recall: default_recall(),
+            settings: HashMap::new(),
         }
     }
 }

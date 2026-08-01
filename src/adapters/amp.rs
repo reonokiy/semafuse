@@ -6,7 +6,8 @@ use super::{
 use crate::{
     blob::BlobStore,
     importer::{ImportReport, NativeSource, json_source_files, read_json_values},
-    model::{AgentKind, CanonicalEvent, EventKind, MessageRole, SearchHit, ToolStatus},
+    model::{AgentKind, CanonicalEvent, EventKind, MessageRole, ToolStatus},
+    strategy::RecallItem,
 };
 use anyhow::{Context, Result};
 use async_trait::async_trait;
@@ -688,7 +689,7 @@ impl HookProjector for AmpAdapter {
         event_name == "agent.start"
     }
 
-    fn recall_response(&self, event_name: &str, hits: &[SearchHit]) -> Option<Value> {
+    fn recall_response(&self, event_name: &str, hits: &[RecallItem]) -> Option<Value> {
         if event_name != "agent.start" {
             return None;
         }

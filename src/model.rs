@@ -17,7 +17,10 @@ pub use event::{
     AgentKind, AttachmentRef, CanonicalEvent, ContentPart, ErrorInfo, EventData, EventEnvelope,
     EventKind, EventSpecVersion, MessageRole, ToolStatus,
 };
-pub use query::{MemoryMutation, MemoryQuery, MemoryRecord, QueryMode, SearchHit, SearchQuery};
+pub use query::{
+    MemoryMutation, MemoryQuery, MemoryRecord, QueryMode, SearchHit, SearchQuery,
+    StrategyEventVector, VectorHit, VectorQuery,
+};
 pub use source::{EventSource, normalize_repository};
 pub use time::now_ms;
 

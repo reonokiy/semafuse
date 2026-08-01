@@ -252,7 +252,7 @@ pub enum EventData {
     },
     /// Native record deliberately retained only through raw provenance.
     Unknown {
-        /// Native discriminator; raw payload lives in [`RawRecord`].
+        /// Native discriminator; raw payload lives in [`crate::model::RawRecord`].
         native_type: String,
     },
 }
@@ -689,6 +689,28 @@ impl EventEnvelope {
             }
         }
         self.refresh_identity();
+    }
+
+    /// Returns every content-addressed attachment referenced by this event.
+    pub fn attachment_refs(&self) -> Vec<&AttachmentRef> {
+        match &self.data {
+            EventData::Message { content, .. }
+            | EventData::ToolResult {
+                output: content, ..
+            } => content
+                .iter()
+                .filter_map(|part| match part {
+                    ContentPart::Attachment { attachment } => Some(attachment),
+                    _ => None,
+                })
+                .collect(),
+            EventData::ToolCall { attachments, .. } => attachments.iter().collect(),
+            EventData::SessionStarted
+            | EventData::SessionEnded { .. }
+            | EventData::Compaction { .. }
+            | EventData::Error { .. }
+            | EventData::Unknown { .. } => Vec::new(),
+        }
     }
 
     /// Recomputes the fingerprint after canonical identity content changes.

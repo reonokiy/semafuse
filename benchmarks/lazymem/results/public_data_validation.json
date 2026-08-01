@@ -1,0 +1,61 @@
+{
+  "schema_version": 1,
+  "validated_at": "2026-08-01",
+  "status": "data-protocol-validated-model-evaluation-not-run",
+  "longmemeval": {
+    "dataset": "xiaowu0162/longmemeval-cleaned",
+    "revision": "98d7416c24c778c2fee6e6f3006e7a073259d48f",
+    "file": "longmemeval_s_cleaned.json",
+    "file_bytes": 277383467,
+    "file_sha256": "d6f21ea9d60a0d56f34a05b609c79c88a451d2ae03597821ea3d5a9678c3a442",
+    "questions": 500,
+    "normalized_encoding": "compact sorted-key JSONL with one trailing newline per question",
+    "normalized_sha256": "6f1d87ee272fa58debc2b766a91fc488841d47f78df13ffbdaffe857b9f3aea1",
+    "generated_split": {
+      "algorithm": "stratified-largest-remainder-seed-42-public-reconstruction",
+      "train": 360,
+      "validation": 40,
+      "test": 100,
+      "ids_sha256": "e0830d978d7d8f078d4425fd71d4959472782e1de1b13153c14a5d428756a21c",
+      "manifest_sha256": "9e4ea4417f59115093301fc3ac58e8933ae75c005378b58366ad5a4e8d4f110d",
+      "paper_exact_ids": false
+    },
+    "adapter_observations": {
+      "questions_with_repeated_native_session_ids": 13,
+      "empty_role_messages": 12,
+      "questions_with_empty_role_messages": 7,
+      "handling": "scope repeated session occurrences independently; retain empty messages in the exact retrieval corpus but exclude them from MPM decisions"
+    }
+  },
+  "locomo": {
+    "repository_revision": "3eb6f2c585f5e1699204e3c3bdf7adc5c28cb376",
+    "file": "data/locomo10.json",
+    "file_bytes": 2805274,
+    "file_sha256": "79fa87e90f04081343b8c8debecb80a9a6842b76a7aa537dc9fdf651ea698ff4",
+    "license": "CC-BY-NC-4.0",
+    "conversation_ids": ["conv-49", "conv-50"],
+    "categories": [1, 2, 3, 4],
+    "questions": 314,
+    "normalized_encoding": "compact sorted-key JSONL with one trailing newline per question",
+    "normalized_sha256": "1b108edd5af625ad24036d1ee415f20e53a09451f415d5168473a83895e161ae",
+    "adapter_observations": {
+      "packed_or_zero_padded_evidence_entries_normalized": 4,
+      "raw_evidence_preserved_in_metadata": true,
+      "paper_question_type_counts": {
+        "multi-hop": 69,
+        "temporal": 65,
+        "open-domain": 20,
+        "single-hop": 160
+      },
+      "speaker_prefix_image_caption_and_image_query_projection_matches_public_retrieval_artifact": true
+    }
+  },
+  "score_status": {
+    "produced": false,
+    "reasons": [
+      "the paper's exact LoCoMo binary LLM-judge prompt/labels are not present in the public paper or repository; released LoCoMo token-F1 is implemented separately",
+      "no configured Qwen3-Embedding-8B, BGE-Reranker-v2-M3, MPM, Qwen3-32B answer, or DeepSeek-V4-Pro judge endpoints were available",
+      "the validation host has no visible NVIDIA GPU"
+    ]
+  }
+}

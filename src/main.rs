@@ -3,19 +3,41 @@ use chrono::DateTime;
 use clap::{Parser, Subcommand};
 use indicatif::{ProgressBar, ProgressStyle};
 use semafuse::{
-    AgentKind, QueryMode, SearchQuery,
-    adapters::{history_importer, hook_installer, hook_projector},
-    blob::{BlobStore, DryRunBlobStore, OpenDalBlobStore},
-    canonical_archive_schema, config, hooks, mcp,
-    storage::{EventStore, IngestBatch, SqliteStore},
+    AgentKind, DiagnosticSeverity, QueryMode, SearchQuery,
+    adapters::{executable::command_available, history_importer, hook_installer, hook_projector},
+    blob::{BlobStore, DryRunBlobStore, OpenDalBlobStore, drain_blob_gc},
+    canonical_archive_schema, config,
+    governance::export_directory,
+    hooks,
+    importer::DeferredImportBlobStore,
+    mcp,
+    storage::{EventStore, ForgetFilter, IngestBatch, SqliteStore},
     strategy,
 };
 use serde_json::{Value, json};
 use std::{
+    collections::HashSet,
+    fmt,
     io::Read,
     path::PathBuf,
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
+
+#[derive(Debug)]
+struct ReportedCommandFailure(String);
+
+impl fmt::Display for ReportedCommandFailure {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for ReportedCommandFailure {}
+
+#[cfg(test)]
+use semafuse::adapters::executable::resolve_executable_in;
+#[cfg(test)]
+use std::ffi::OsStr;
 
 #[derive(Parser)]
 #[command(version, about)]
@@ -107,6 +129,48 @@ enum Commands {
     Raw {
         /// A `raw_...` record ID or an `evt_...` canonical event ID
         id: String,
+        #[arg(long)]
+        db: Option<PathBuf>,
+    },
+    /// Export canonical records and verified attachments to a new directory
+    Export {
+        /// New output directory; existing paths are never overwritten
+        #[arg(long)]
+        output: PathBuf,
+        /// SQLite database path (overrides SEMAFUSE_DB)
+        #[arg(long)]
+        db: Option<PathBuf>,
+    },
+    /// Preview or confirm bounded deletion of retained conversation data
+    Forget {
+        /// Match one canonical source session ID
+        #[arg(long)]
+        session: Option<String>,
+        /// Match one normalized repository/worktree identifier
+        #[arg(long)]
+        repository: Option<String>,
+        /// Match one source agent
+        #[arg(long)]
+        agent: Option<AgentKind>,
+        /// Match data strictly before this duration, RFC3339 time, or Unix milliseconds
+        #[arg(long)]
+        before: Option<String>,
+        /// Commit the previewed deletion; omitted means no data is changed
+        #[arg(long)]
+        confirm: bool,
+        /// Additional hook spool directory to clean; repeatable (the configured default is always included)
+        #[arg(long)]
+        spool_dir: Vec<PathBuf>,
+        /// SQLite database path (overrides SEMAFUSE_DB)
+        #[arg(long)]
+        db: Option<PathBuf>,
+    },
+    /// Retry attachment deletion and SQLite/WAL physical cleanup
+    Gc {
+        /// Maximum queued objects to process in this pass
+        #[arg(long, default_value_t = 1_000)]
+        limit: usize,
+        /// SQLite database path (overrides SEMAFUSE_DB)
         #[arg(long)]
         db: Option<PathBuf>,
     },
@@ -209,6 +273,9 @@ impl Commands {
             Self::Search { .. } => "search",
             Self::Session { .. } => "session",
             Self::Raw { .. } => "raw",
+            Self::Export { .. } => "export",
+            Self::Forget { .. } => "forget",
+            Self::Gc { .. } => "gc",
             Self::Schema => "schema",
             Self::Hooks {
                 command: HookCommands::Print { .. },
@@ -230,7 +297,9 @@ async fn main() {
     let json_output = cli.json;
     let command = cli.command.name();
     if let Err(error) = run(cli).await {
-        if json_output {
+        if json_output && error.downcast_ref::<ReportedCommandFailure>().is_some() {
+            // The command already emitted its complete machine-readable report.
+        } else if json_output {
             eprintln!(
                 "{}",
                 serde_json::to_string_pretty(&json!({
@@ -268,37 +337,62 @@ async fn run(cli: Cli) -> Result<()> {
             let importer = history_importer(agent);
             let mut progress = TerminalProgress::new("Discovering import sources");
             let runtime_config = if dry_run { None } else { Some(config::load()?) };
-            let dry_run_blobs = DryRunBlobStore;
-            let blob_store = runtime_config
-                .as_ref()
-                .map(|config| OpenDalBlobStore::from_config(&config.blob))
-                .transpose()?;
-            let blobs: Option<&dyn BlobStore> = if dry_run {
-                Some(&dry_run_blobs)
+            let store = if dry_run {
+                None
             } else {
-                blob_store.as_ref().map(|store| store as &dyn BlobStore)
+                Some(SqliteStore::open(&db_path(db)).await?)
             };
-            let report = if let Some(source) = source {
+            let lifecycle_guard = store
+                .as_ref()
+                .map(SqliteStore::lock_lifecycle)
+                .transpose()?;
+            let dry_run_blobs = DryRunBlobStore;
+            let deferred_blobs = DeferredImportBlobStore;
+            let blob_store = if let (Some(config), Some(store)) = (&runtime_config, &store) {
+                Some(OpenDalBlobStore::from_config_for_store(&config.blob, store).await?)
+            } else {
+                None
+            };
+            let blobs: &dyn BlobStore = if dry_run {
+                &dry_run_blobs
+            } else {
+                blob_store
+                    .as_ref()
+                    .map(|store| store as &dyn BlobStore)
+                    .expect("blob store opened for import")
+            };
+            let mut report = if let Some(source) = source {
                 progress.spinner(format!(
                     "Importing {agent} history from {}",
                     source.display()
                 ));
-                importer.import_path(&source, blobs).await?
+                importer.import_path(&source, Some(&deferred_blobs)).await?
             } else {
                 progress.spinner(format!("Importing {agent} default history"));
-                importer.import_default(blobs).await?
+                importer.import_default(Some(&deferred_blobs)).await?
             };
+            report.finalize_events(store.as_ref(), blobs).await?;
             let event_count = report.events.len();
             let raw_count = report.raw_records.len();
             let diagnostic_count = report.diagnostics.len();
+            let failed_records = report
+                .diagnostics
+                .iter()
+                .filter(|diagnostic| diagnostic.severity == DiagnosticSeverity::Error)
+                .map(|diagnostic| diagnostic.raw_record_id.as_str())
+                .collect::<HashSet<_>>()
+                .len();
+            let mut complete = report.errors.is_empty() && failed_records == 0;
             if dry_run {
                 progress.finish();
                 if json_output {
                     print_json(&json!({
-                        "ok":true, "command":"import", "agent":agent, "dry_run":true,
+                        "ok":complete, "complete":complete,
+                        "command":"import", "agent":agent, "dry_run":true,
                         "files":report.files, "records":report.records,
                         "raw_records":raw_count, "events":event_count,
-                        "diagnostics":diagnostic_count, "errors":report.errors,
+                        "diagnostics":diagnostic_count, "failed_records":failed_records,
+                        "source_errors":report.errors.len(), "errors":report.errors,
                     }))?;
                 } else {
                     println!("Import preview for {agent}:");
@@ -307,20 +401,47 @@ async fn run(cli: Cli) -> Result<()> {
                     println!("  Raw:     {raw_count}");
                     println!("  Events:  {event_count}");
                     println!("  Diagnostics: {diagnostic_count}");
+                    println!("  Failed records: {failed_records}");
                     println!("  Errors:  {}", report.errors.len());
                 }
             } else {
                 progress.spinner(format!("Writing {event_count} events"));
-                let store = SqliteStore::open(&db_path(db)).await?;
+                let store = store.as_ref().expect("store opened for import");
+                let storage_events = report.events_for_storage();
                 let stats = store
                     .ingest_batch(IngestBatch {
                         raw_records: &report.raw_records,
-                        events: &report.events,
+                        raw_contexts: &report.raw_contexts,
+                        events: &storage_events,
                         diagnostics: &report.diagnostics,
                     })
                     .await?;
+                drop(lifecycle_guard);
+                let (attachment_gc, attachment_gc_error) = if stats.attachment_objects_queued > 0 {
+                    match drain_blob_gc(
+                        store,
+                        blob_store.as_ref().expect("blob store opened for import"),
+                        stats.attachment_objects_queued.min(10_000),
+                    )
+                    .await
+                    {
+                        Ok(report) => (Some(report), None),
+                        Err(error) => (
+                            None,
+                            Some(format!("attachment cleanup remains queued: {error:#}")),
+                        ),
+                    }
+                } else {
+                    (None, None)
+                };
+                complete &= !stats.sqlite_cleanup_pending
+                    && stats.unmanaged_attachment_objects == 0
+                    && attachment_gc_error.is_none()
+                    && attachment_gc
+                        .as_ref()
+                        .is_none_or(|report| report.pending == 0 && report.failures.is_empty());
                 let delivered = strategy::dispatch_pending(
-                    &store,
+                    store,
                     runtime_config.as_ref().expect("config loaded for import"),
                     None,
                 )
@@ -328,30 +449,76 @@ async fn run(cli: Cli) -> Result<()> {
                 progress.finish();
                 if json_output {
                     print_json(&json!({
-                        "ok":true, "command":"import", "agent":agent, "dry_run":false,
+                        "ok":complete, "complete":complete,
+                        "command":"import", "agent":agent, "dry_run":false,
                         "files":report.files, "records":report.records,
                         "raw_records":raw_count, "events":event_count,
                         "diagnostics":diagnostic_count,
                         "raw_inserted":stats.raw_inserted,
                         "raw_deduplicated":stats.raw_deduplicated,
+                        "raw_tombstoned":stats.raw_tombstoned,
                         "inserted":stats.inserted,
-                        "deduplicated":stats.deduplicated, "strategy_events_delivered":delivered, "errors":report.errors,
+                        "deduplicated":stats.deduplicated, "tombstoned":stats.tombstoned,
+                        "failed_records":failed_records, "source_errors":report.errors.len(),
+                        "sqlite_cleanup_pending":stats.sqlite_cleanup_pending,
+                        "sqlite_cleanup_error":stats.sqlite_cleanup_error,
+                        "attachment_objects_queued":stats.attachment_objects_queued,
+                        "unmanaged_attachment_objects":stats.unmanaged_attachment_objects,
+                        "attachment_gc":attachment_gc,
+                        "attachment_gc_error":attachment_gc_error,
+                        "strategy_events_delivered":delivered, "errors":report.errors,
                     }))?;
                 } else {
                     println!("Imported {agent} history:");
                     println!("  Files:        {}", report.files);
                     println!("  Records:      {}", report.records);
                     println!("  Raw inserted: {}", stats.raw_inserted);
+                    println!("  Raw blocked by forget rules: {}", stats.raw_tombstoned);
                     println!("  Inserted:     {}", stats.inserted);
                     println!("  Deduplicated: {}", stats.deduplicated);
+                    println!("  Events blocked by forget rules: {}", stats.tombstoned);
+                    println!(
+                        "  Legacy attachments queued: {}",
+                        stats.attachment_objects_queued
+                    );
+                    println!(
+                        "  Legacy/unmanaged attachments: {}",
+                        stats.unmanaged_attachment_objects
+                    );
                     println!("  Diagnostics:  {diagnostic_count}");
+                    println!("  Failed records: {failed_records}");
                     println!("  Errors:       {}", report.errors.len());
+                    if let Some(error) = &stats.sqlite_cleanup_error {
+                        eprintln!(
+                            "Warning: replay cleanup committed, but SQLite physical cleanup remains pending: {error}"
+                        );
+                    }
+                    if let Some(gc) = &attachment_gc {
+                        println!("  Legacy attachments deleted: {}", gc.deleted);
+                        if gc.pending > 0 || !gc.failures.is_empty() {
+                            eprintln!(
+                                "Warning: {} attachment object(s) remain queued with {} failure(s); run `semafuse gc`.",
+                                gc.pending,
+                                gc.failures.len()
+                            );
+                        }
+                    }
+                    if let Some(error) = &attachment_gc_error {
+                        eprintln!("Warning: {error}");
+                    }
                 }
             }
             if !json_output {
-                for error in report.errors {
+                for error in &report.errors {
                     eprintln!("Warning: {error}");
                 }
+            }
+            if !complete {
+                return Err(ReportedCommandFailure(format!(
+                    "import incomplete: {failed_records} record(s) failed normalization, {} source error(s) occurred, or SQLite/attachment cleanup remains pending",
+                    report.errors.len(),
+                ))
+                .into());
             }
         }
         Commands::Hook {
@@ -364,6 +531,13 @@ async fn run(cli: Cli) -> Result<()> {
         } => {
             let mut input = String::new();
             std::io::stdin().read_to_string(&mut input)?;
+            // Codex-backed LazyMem processing launches an isolated child Codex
+            // with hooks disabled. Managed policy can force hooks back on, so
+            // the inherited depth marker is the final recursion barrier. Drain
+            // stdin first so the parent hook runner never sees a broken pipe.
+            if hooks::is_processor_child() {
+                return Ok(());
+            }
             let payload: Value = if input.trim().is_empty() {
                 json!({})
             } else {
@@ -372,10 +546,28 @@ async fn run(cli: Cli) -> Result<()> {
             let path = db_path(db);
             let adapter = hook_projector(agent);
             let spool_path = spool_dir.unwrap_or_else(config::default_spool_dir);
-            let result: Result<Option<Value>> = async {
+            let resolved_event = if event == "auto" {
+                payload
+                    .get("hook_event_name")
+                    .and_then(Value::as_str)
+                    .unwrap_or("other")
+            } else {
+                &event
+            };
+            let deadline_sensitive = agent == AgentKind::Codex
+                && matches!(
+                    resolved_event.to_ascii_lowercase().as_str(),
+                    "sessionend" | "session_end"
+                );
+            // Write-ahead staging makes both crashes and concurrent forget
+            // cleanup explicit: success removes this locked generation;
+            // failure leaves it for replay or a tombstone-aware discard.
+            let pending_spool = hooks::stage_spool(&spool_path, agent, &event, &payload)?;
+            let processing = async {
                 let runtime_config = config::load()?;
-                let blob_store = OpenDalBlobStore::from_config(&runtime_config.blob)?;
                 let store = SqliteStore::open(&path).await?;
+                let blob_store =
+                    OpenDalBlobStore::from_config_for_store(&runtime_config.blob, &store).await?;
                 hooks::process_hook(
                     &*adapter,
                     &store,
@@ -386,10 +578,27 @@ async fn run(cli: Cli) -> Result<()> {
                     &runtime_config,
                 )
                 .await
-            }
-            .await;
+            };
+            // Codex caps SessionEnd hooks at three seconds. Reserve enough time
+            // to durably append the original payload to the spool if SQLite is
+            // busy or another processing step stalls.
+            let result: Result<Option<Value>> = if deadline_sensitive {
+                match tokio::time::timeout(Duration::from_millis(1_500), processing).await {
+                    Ok(result) => result,
+                    Err(_) => Err(anyhow::anyhow!(
+                        "Codex SessionEnd processing exceeded the 1.5 second persistence budget"
+                    )),
+                }
+            } else {
+                processing.await
+            };
             match result {
                 Ok(response) => {
+                    if let Err(error) = pending_spool.complete() {
+                        eprintln!(
+                            "semafuse recorded the hook but could not remove its deduplicated write-ahead spool: {error:#}"
+                        );
+                    }
                     if protocol {
                         if let Some(response) = response {
                             println!("{}", serde_json::to_string(&response)?);
@@ -407,8 +616,34 @@ async fn run(cli: Cli) -> Result<()> {
                     }
                 }
                 Err(error) => {
-                    hooks::append_spool(&spool_path, agent, &event, &payload)?;
-                    if protocol {
+                    // Recheck durable tombstones after a failure that happened
+                    // before normal processing (for example while opening the
+                    // blob backend). The locked write-ahead generation prevents
+                    // an in-flight forget from falsely claiming spool cleanup.
+                    let mut tombstoned = false;
+                    if let Ok(store) = SqliteStore::open(&path).await {
+                        // A committed forget rule is safe to read while another
+                        // lifecycle operation owns the writer lock. An
+                        // uncommitted forget cannot claim cleanup complete while
+                        // this pending file is still locked by the hook.
+                        tombstoned =
+                            hooks::hook_payload_is_tombstoned(&*adapter, &store, &event, &payload)
+                                .await
+                                .unwrap_or(false);
+                    }
+                    if tombstoned {
+                        pending_spool.complete()?;
+                        if !protocol && json_output {
+                            print_json(&json!({
+                                "ok":true, "command":"hook", "agent":agent, "event":event,
+                                "recorded":false, "spooled":false, "forgotten":true,
+                            }))?;
+                        } else if !protocol {
+                            println!(
+                                "Discarded {agent} hook event {event} because it matches a forget rule."
+                            );
+                        }
+                    } else if protocol {
                         eprintln!("semafuse hook spooled after processing error: {error:#}");
                     } else if json_output {
                         print_json(&json!({
@@ -449,10 +684,10 @@ async fn run(cli: Cli) -> Result<()> {
                     .context("parse --until")?,
                 limit: limit.clamp(1, 100),
             };
-            if let (Some(since), Some(until)) = (query.since_ms, query.until_ms) {
-                if since > until {
-                    bail!("--since must be earlier than or equal to --until");
-                }
+            if let (Some(since), Some(until)) = (query.since_ms, query.until_ms)
+                && since > until
+            {
+                bail!("--since must be earlier than or equal to --until");
             }
             let mode: QueryMode = mode.parse()?;
             let hits = store.query(mode, &query).await?;
@@ -520,6 +755,230 @@ async fn run(cli: Cli) -> Result<()> {
                 println!("No raw records found for {id}.");
             } else {
                 print_json(&serde_json::to_value(records)?)?;
+            }
+        }
+        Commands::Export { output, db } => {
+            let runtime_config = config::load()?;
+            let store = SqliteStore::open(&db_path(db)).await?;
+            let blob_store =
+                OpenDalBlobStore::from_config_for_store(&runtime_config.blob, &store).await?;
+            let report = export_directory(&store, &blob_store, &output).await?;
+            if json_output {
+                print_json(&json!({
+                    "ok":true, "command":"export", "output":report.output,
+                    "raw_records":report.raw_records, "events":report.events,
+                    "diagnostics":report.diagnostics,
+                    "attachment_objects":report.attachment_objects,
+                }))?;
+            } else {
+                println!(
+                    "Exported a portable archive to {}:",
+                    report.output.display()
+                );
+                println!("  Raw records:  {}", report.raw_records);
+                println!("  Events:       {}", report.events);
+                println!("  Diagnostics:  {}", report.diagnostics);
+                println!("  Attachments:  {}", report.attachment_objects);
+            }
+        }
+        Commands::Forget {
+            session,
+            repository,
+            agent,
+            before,
+            confirm,
+            spool_dir,
+            db,
+        } => {
+            let filter = ForgetFilter {
+                session_id: session,
+                repository,
+                agent,
+                before_ms: before
+                    .as_deref()
+                    .map(parse_time_bound)
+                    .transpose()
+                    .context("parse --before")?,
+            };
+            filter.validate()?;
+            let store = SqliteStore::open(&db_path(db)).await?;
+            let preview = store.preview_forget(&filter).await?;
+            let mut spool_directories = vec![config::default_spool_dir()];
+            for directory in spool_dir {
+                if !spool_directories.contains(&directory) {
+                    spool_directories.push(directory);
+                }
+            }
+            if !confirm {
+                let spool_preview = hooks::preview_spool_forget(&spool_directories, &filter)?;
+                if json_output {
+                    print_json(&json!({
+                        "ok":true, "command":"forget", "confirmed":false,
+                        "changed":false, "preview":preview,
+                        "spool_preview":spool_preview,
+                    }))?;
+                } else {
+                    println!("Forget preview (no data changed):");
+                    println!("  Events:       {}", preview.events);
+                    println!("  Raw records:  {}", preview.raw_records);
+                    println!("  Attachments:  {}", preview.attachment_objects);
+                    println!(
+                        "  Legacy/unmanaged attachments: {}",
+                        preview.unmanaged_attachment_objects
+                    );
+                    println!("  Spooled hook records: {}", spool_preview.matched);
+                    println!("Run the same command with --confirm to commit this deletion.");
+                }
+                return Ok(());
+            }
+
+            let runtime_config = config::load()?;
+            strategy::validate(&runtime_config)?;
+            let blob_store =
+                OpenDalBlobStore::from_config_for_store(&runtime_config.blob, &store).await?;
+            let stats = store.forget(&filter).await?;
+            let (spool_cleanup, spool_error) =
+                match hooks::forget_spool_records(&spool_directories, &filter) {
+                    Ok(report) => (Some(report), None),
+                    Err(error) => (
+                        None,
+                        Some(format!("hook spool cleanup remains incomplete: {error:#}")),
+                    ),
+                };
+            let (gc, gc_error) = match drain_blob_gc(&store, &blob_store, 10_000).await {
+                Ok(report) => (Some(report), None),
+                Err(error) => (
+                    None,
+                    Some(format!("attachment cleanup remains queued: {error:#}")),
+                ),
+            };
+            let (strategy_events_delivered, strategy_error) =
+                match strategy::dispatch_pending(&store, &runtime_config, None).await {
+                    Ok(delivered) => (delivered, None),
+                    Err(error) => (
+                        0,
+                        Some(format!("derived-memory replay remains pending: {error:#}")),
+                    ),
+                };
+            let final_cleanup_guard = store.lock_lifecycle()?;
+            let sqlite_cleanup_pending = store.sqlite_cleanup_is_pending().await?;
+            let pending_attachment_gc = store.pending_blob_gc_count().await?;
+            let unmanaged_blob_residue = store.unmanaged_blob_residue_count().await?;
+            drop(final_cleanup_guard);
+            let incomplete = unmanaged_blob_residue > 0
+                || sqlite_cleanup_pending
+                || pending_attachment_gc > 0
+                || spool_error.is_some()
+                || gc_error.is_some()
+                || gc.as_ref().is_none_or(|report| !report.failures.is_empty())
+                || strategy_error.is_some();
+            if json_output {
+                print_json(&json!({
+                    "ok":!incomplete, "command":"forget", "confirmed":true,
+                    "logical_deletion_committed":true, "cleanup_complete":!incomplete,
+                    "changed":stats.events > 0 || stats.raw_records > 0
+                        || spool_cleanup.as_ref().is_some_and(|report| report.matched > 0),
+                    "preview":preview, "deleted":stats, "attachment_gc":gc,
+                    "attachment_gc_error":gc_error,
+                    "pending_attachment_gc":pending_attachment_gc,
+                    "sqlite_cleanup_pending":sqlite_cleanup_pending,
+                    "unmanaged_attachment_residue":unmanaged_blob_residue,
+                    "spool_cleanup":spool_cleanup, "spool_cleanup_error":spool_error,
+                    "strategy_events_delivered":strategy_events_delivered,
+                    "strategy_error":strategy_error,
+                }))?;
+            } else {
+                println!("Forgot retained data:");
+                println!("  Events:       {}", stats.events);
+                println!("  Raw records:  {}", stats.raw_records);
+                println!("  Attachments queued: {}", stats.attachment_objects_queued);
+                println!(
+                    "  Legacy/unmanaged attachments not deleted: {}",
+                    unmanaged_blob_residue
+                );
+                println!("  Events remaining:  {}", stats.remaining_events);
+                if let Some(spool_cleanup) = spool_cleanup {
+                    println!("  Spooled hook records deleted: {}", spool_cleanup.matched);
+                }
+                if let Some(error) = spool_error {
+                    eprintln!("Warning: {error}");
+                }
+                if let Some(gc) = gc {
+                    println!("  Attachments deleted: {}", gc.deleted);
+                    if pending_attachment_gc > 0 {
+                        eprintln!(
+                            "Warning: {} attachment object(s) remain queued; run `semafuse gc`.",
+                            pending_attachment_gc
+                        );
+                    }
+                }
+                if let Some(error) = gc_error {
+                    eprintln!("Warning: {error}");
+                }
+                if let Some(error) = strategy_error {
+                    eprintln!("Warning: {error}");
+                }
+                if let Some(error) = &stats.sqlite_cleanup_error {
+                    eprintln!(
+                        "Warning: SQLite physical cleanup remains pending; rerun this forget command or `semafuse gc`: {error}"
+                    );
+                }
+            }
+            if incomplete {
+                bail!(
+                    "logical deletion committed, but SQLite, spool, attachment, or derived-memory cleanup remains incomplete"
+                );
+            }
+        }
+        Commands::Gc { limit, db } => {
+            anyhow::ensure!(
+                (1..=10_000).contains(&limit),
+                "--limit must be between 1 and 10000"
+            );
+            let runtime_config = config::load()?;
+            let store = SqliteStore::open(&db_path(db)).await?;
+            let blob_store =
+                OpenDalBlobStore::from_config_for_store(&runtime_config.blob, &store).await?;
+            let mut report = drain_blob_gc(&store, &blob_store, limit).await?;
+            let _guard = store.lock_lifecycle()?;
+            store
+                .scrub_deleted_pages()
+                .await
+                .context("SQLite physical cleanup remains incomplete")?;
+            let sqlite_cleanup_pending = store.sqlite_cleanup_is_pending().await?;
+            report.pending = store.pending_blob_gc_count().await?;
+            let unmanaged_blob_residue = store.unmanaged_blob_residue_count().await?;
+            let incomplete = report.pending > 0
+                || !report.failures.is_empty()
+                || sqlite_cleanup_pending
+                || unmanaged_blob_residue > 0;
+            if json_output {
+                print_json(&json!({
+                    "ok":!incomplete, "command":"gc",
+                    "deleted":report.deleted, "pending":report.pending,
+                    "failures":report.failures,
+                    "sqlite_cleanup_pending":sqlite_cleanup_pending,
+                    "unmanaged_attachment_residue":unmanaged_blob_residue,
+                }))?;
+            } else {
+                println!("Deleted {} orphaned attachment object(s).", report.deleted);
+                if report.pending > 0 {
+                    eprintln!(
+                        "Warning: {} attachment object(s) remain queued.",
+                        report.pending
+                    );
+                }
+                if unmanaged_blob_residue > 0 {
+                    eprintln!(
+                        "Warning: {unmanaged_blob_residue} legacy/unmanaged attachment object(s) require manual cleanup."
+                    );
+                }
+                for failure in report.failures {
+                    eprintln!("Warning: {}: {}", failure.object_key, failure.error);
+                }
+            }
+            if incomplete {
+                bail!("attachment garbage collection remains incomplete");
             }
         }
         Commands::Schema => print_json(&canonical_archive_schema())?,
@@ -590,8 +1049,9 @@ async fn run(cli: Cli) -> Result<()> {
             command: SpoolCommands::Replay { db, spool_dir },
         } => {
             let runtime_config = config::load()?;
-            let blob_store = OpenDalBlobStore::from_config(&runtime_config.blob)?;
             let store = SqliteStore::open(&db_path(db)).await?;
+            let blob_store =
+                OpenDalBlobStore::from_config_for_store(&runtime_config.blob, &store).await?;
             let count = hooks::replay_spool(
                 &spool_dir.unwrap_or_else(config::default_spool_dir),
                 &store,
@@ -696,6 +1156,8 @@ async fn run(cli: Cli) -> Result<()> {
             let path = db_path(db);
             let store = SqliteStore::open(&path).await?;
             let event_count = store.count().await?;
+            let pending_blob_gc = store.pending_blob_gc_count().await?;
+            let unmanaged_blob_residue = store.unmanaged_blob_residue_count().await?;
             let mut agents = serde_json::Map::new();
             for agent in [
                 AgentKind::Amp,
@@ -712,12 +1174,17 @@ async fn run(cli: Cli) -> Result<()> {
             if json_output {
                 print_json(&json!({
                     "ok":true, "command":"doctor", "database":path,
-                    "events":event_count, "agents":agents,
+                    "events":event_count, "pending_attachment_gc":pending_blob_gc,
+                    "unmanaged_attachment_residue":unmanaged_blob_residue,
+                    "database_encrypted":false, "agents":agents,
                 }))?;
             } else {
                 println!("Semafuse status:");
                 println!("  Database: {}", path.display());
                 println!("  Events:   {event_count}");
+                println!("  Pending attachment GC: {pending_blob_gc}");
+                println!("  Unmanaged attachment residue: {unmanaged_blob_residue}");
+                println!("  Database encryption: not enabled (use full-disk encryption)");
                 println!("  Agents:");
                 for (agent, available) in agents {
                     let status = if available == Value::Bool(true) {
@@ -851,10 +1318,19 @@ impl Drop for TerminalProgress {
 }
 
 fn command_exists(command: &str) -> bool {
-    std::env::var_os("PATH").is_some_and(|paths| {
-        std::env::split_paths(&paths).any(|path| {
-            let candidate = path.join(command);
-            candidate.is_file()
-        })
-    })
+    command_available(command)
 }
+
+#[cfg(test)]
+fn command_exists_in(
+    command: &str,
+    paths: Option<&OsStr>,
+    path_ext: Option<&OsStr>,
+    windows: bool,
+) -> bool {
+    resolve_executable_in(command, paths, path_ext, windows).is_some()
+}
+
+#[cfg(test)]
+#[path = "main_tests.rs"]
+mod tests;

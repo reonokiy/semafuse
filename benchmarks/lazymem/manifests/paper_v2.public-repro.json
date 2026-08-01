@@ -1,0 +1,90 @@
+{
+  "schema_version": 2,
+  "identity": {
+    "arxiv_id": "2607.22690v2",
+    "paper_url": "https://arxiv.org/abs/2607.22690v2",
+    "paper_date": "2026-07-28",
+    "implementation": "independent clean-room reconstruction from the paper and public artifact contracts",
+    "lazymem_public_repository_commit_inspected": "af4109960aacb90d6dba994e9103a36a165cc380",
+    "upstream_source_copied_imported_or_vendored": false,
+    "upstream_repository_license_observed": null
+  },
+  "reproducibility_status": "runnable prompt-only public reconstruction; exact split IDs and LoCoMo LJ evaluator remain unavailable",
+  "paper_reported": {
+    "longmemeval": {
+      "total": 500,
+      "split": {"train": 360, "validation": 40, "test": 100},
+      "seed": 42,
+      "stratification": "question type; sorted IDs; Python random.Random(42); largest-remainder allocation"
+    },
+    "locomo": {
+      "conversation_ids": ["conv-49", "conv-50"],
+      "categories": [1, 2, 3, 4],
+      "questions": 314,
+      "training_use": false
+    },
+    "retrieval": {
+      "dense": "Qwen3-Embedding-8B",
+      "sparse": "Okapi BM25",
+      "fusion": "Reciprocal Rank Fusion",
+      "reranker": "BGE-Reranker-v2-M3",
+      "output_messages": 50
+    },
+    "windowing": {"radius": 2, "max_messages": 8, "stride": 7, "equation_merge_gap": "<= 2w"},
+    "inference": {
+      "mpm_model": "Qwen3-32B prompt-only, thinking enabled",
+      "answer_model": "Qwen3-32B, thinking enabled",
+      "judge_model": "DeepSeek-V4-Pro, temperature 0",
+      "questions_sequential": true,
+      "mpm_window_concurrency": 64
+    },
+    "metrics": ["binary LLM-judge accuracy", "per-question-type LJ", "All@50", "answer-context memory tokens", "latency mean/median/p90/p95"]
+  },
+  "public_artifact_resolutions": {
+    "rrf_k": 60,
+    "dense_channel_limit": 100,
+    "sparse_channel_limit": 100,
+    "fused_limit": 100,
+    "bm25": {"implementation": "rank_bm25.BM25Okapi", "k1": 1.5, "b": 0.75, "epsilon": 0.25, "tokenizer": "[A-Za-z0-9_\\-]+ then lowercase"},
+    "mpm_prompt": "Appendix G.1 system and user templates",
+    "mpm_final_inference": {"temperature": 0.1, "top_p": 0.95, "max_tokens": 3072, "max_model_len": 12288, "thinking": true},
+    "answer_inference": {"temperature": 0.0, "max_tokens": 512, "thinking": true},
+    "public_window_builder_merge_gap": "<= 2w+1"
+  },
+  "named_profiles": {
+    "paper-spec": "uses the paper equation merge gap <=2w",
+    "public-repro": "uses the released window-builder boundary <=2w+1",
+    "custom": "non-comparable ablation profile"
+  },
+  "known_unavailable_or_nonidentical_artifacts": [
+    "a published official split-ID artifact (the deterministic algorithm is reconstructed)",
+    "the exact LoCoMo binary LLM-judge prompt or labels used in the paper",
+    "server/runtime details beyond the paper and released inference scripts"
+  ],
+  "implemented_official_evaluation": {
+    "longmemeval": {
+      "upstream_commit": "9e0b455f4ef0e2ab8f2e582289761153549043fc",
+      "evaluator_sha256": "ecce9c4c79dc89d99534ac17b383a5cbb5b9f0c69ee98adaf0684742e3d95251",
+      "metric": "official binary LLM judge prompt and yes-substring rule"
+    },
+    "locomo": {
+      "upstream_commit": "3eb6f2c585f5e1699204e3c3bdf7adc5c28cb376",
+      "scorer_sha256": "8e3be5d57ff2ff9ec5cd05939592f468c5f3f1fd95d13e431932bdf6bf0fd6fd",
+      "metric": "released category-aware token F1; explicitly not the paper's unavailable binary LJ"
+    }
+  },
+  "licenses": {
+    "longmemeval_code": "MIT",
+    "locomo_data": "CC-BY-NC-4.0; non-commercial use and attribution required",
+    "lazymem_upstream_repository": "no license observed; inspected but not copied"
+  },
+  "comparability_gate": [
+    "record the exact dataset files, normalized JSONL, split IDs, config, and all SHA-256 values",
+    "pin immutable dense, reranker, MPM, answer, judge, and tokenizer revisions",
+    "use the named profile matching the claimed comparison and report the merge boundary",
+    "use an immutable Qwen3-32B revision for the prompt-only MPM or label the run as an ablation",
+    "use the LongMemEval official evaluator with the declared judge model; do not call LoCoMo token F1 the paper LJ",
+    "record serving software, resolved settings, hardware, warm-ups, and measured repeats",
+    "do not compare approximate-token smoke runs to paper token counts"
+  ]
+}

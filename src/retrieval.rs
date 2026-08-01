@@ -85,7 +85,18 @@ impl RetrievalStrategy for Hybrid {
                 });
         }
         let mut hits: Vec<_> = merged.into_values().collect();
-        hits.sort_by(|a, b| b.score.total_cmp(&a.score));
+        hits.sort_by(|left, right| {
+            right
+                .score
+                .total_cmp(&left.score)
+                .then_with(|| {
+                    right
+                        .event
+                        .ordering_timestamp_ms()
+                        .cmp(&left.event.ordering_timestamp_ms())
+                })
+                .then_with(|| left.event.id.cmp(&right.event.id))
+        });
         hits.truncate(query.limit);
         Ok(hits)
     }

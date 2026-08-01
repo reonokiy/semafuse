@@ -1,15 +1,32 @@
 use assert_cmd::Command;
+use fs2::FileExt;
 use predicates::prelude::*;
 use serde_json::Value;
 use std::{
     fs,
     io::Write,
     process::{Command as StdCommand, Stdio},
+    sync::atomic::{AtomicU64, Ordering},
 };
 use tempfile::TempDir;
+use walkdir::WalkDir;
 
 fn bin() -> Command {
-    Command::cargo_bin("semafuse").unwrap()
+    static NEXT_SPOOL: AtomicU64 = AtomicU64::new(0);
+    let mut command = Command::cargo_bin("semafuse").unwrap();
+    command.env(
+        "SEMAFUSE_DATA_DIR",
+        std::env::temp_dir().join(format!("semafuse-e2e-{}", std::process::id())),
+    );
+    command.env(
+        "SEMAFUSE_SPOOL_DIR",
+        std::env::temp_dir().join(format!(
+            "semafuse-e2e-spool-{}-{}",
+            std::process::id(),
+            NEXT_SPOOL.fetch_add(1, Ordering::Relaxed)
+        )),
+    );
+    command
 }
 
 fn session_json(db: &std::path::Path, session_id: &str) -> Value {
@@ -465,10 +482,10 @@ fn hook_recalls_cross_agent_history_and_stores_image_blob() {
         .success()
         .stdout(predicate::str::contains("image/png"));
     assert!(
-        fs::read_dir(blob_dir.join("sha256"))
-            .unwrap()
-            .next()
-            .is_some()
+        WalkDir::new(&blob_dir)
+            .into_iter()
+            .filter_map(Result::ok)
+            .any(|entry| entry.file_type().is_file())
     );
 }
 
@@ -887,7 +904,8 @@ fn spool_replay_and_mcp_protocol_work_end_to_end() {
         .spawn()
         .unwrap();
     let input = concat!(
-        "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{}}\n",
+        "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"protocolVersion\":\"2025-11-25\",\"capabilities\":{},\"clientInfo\":{\"name\":\"semafuse-test\",\"version\":\"1.0.0\"}}}\n",
+        "{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}\n",
         "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/list\",\"params\":{}}\n",
         "{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"tools/call\",\"params\":{\"name\":\"semafuse_search\",\"arguments\":{\"query\":\"offline spool\"}}}\n"
     );
@@ -906,24 +924,243 @@ fn spool_replay_and_mcp_protocol_work_end_to_end() {
         .map(|line| serde_json::from_str(line).unwrap())
         .collect();
     assert_eq!(lines.len(), 3);
+    let tools = &lines.iter().find(|line| line["id"] == 2).unwrap()["result"]["tools"];
+    let search = lines.iter().find(|line| line["id"] == 3).unwrap();
     assert!(
-        lines[1]["result"]["tools"]
+        tools
             .as_array()
             .unwrap()
             .iter()
             .any(|tool| tool["name"] == "semafuse_search")
     );
     assert!(
-        lines[1]["result"]["tools"]
+        tools
             .as_array()
             .unwrap()
             .iter()
             .any(|tool| tool["name"] == "semafuse_recall")
     );
     assert!(
-        lines[2]
+        search
             .to_string()
             .contains("Recovered from the offline spool")
+    );
+}
+
+#[test]
+fn forgotten_session_cannot_be_resurrected_by_spool_replay() {
+    let temp = TempDir::new().unwrap();
+    let db = temp.path().join("memory.db");
+    let blobs = temp.path().join("blobs");
+    let spool = temp.path().join("spool");
+    let payload = serde_json::json!({
+        "session_id":"never-resurrect-this-session",
+        "hook_event_name":"Stop",
+        "last_assistant_message":"private replay marker"
+    })
+    .to_string();
+
+    bin()
+        .env("SEMAFUSE_BLOB_DIR", &blobs)
+        .args(["hook", "--agent", "codex", "--event", "auto", "--db"])
+        .arg(&db)
+        .write_stdin(payload.clone())
+        .assert()
+        .success();
+
+    let blocker = temp.path().join("not-a-directory");
+    fs::write(&blocker, "block database creation").unwrap();
+    bin()
+        .env("SEMAFUSE_BLOB_DIR", &blobs)
+        .args(["hook", "--agent", "codex", "--event", "auto", "--db"])
+        .arg(blocker.join("unavailable.db"))
+        .arg("--spool-dir")
+        .arg(&spool)
+        .write_stdin(payload)
+        .assert()
+        .success();
+
+    bin()
+        .env("SEMAFUSE_BLOB_DIR", &blobs)
+        .args(["forget", "--session", "never-resurrect-this-session"])
+        .arg("--confirm")
+        .arg("--db")
+        .arg(&db)
+        .assert()
+        .success();
+    bin()
+        .env("SEMAFUSE_BLOB_DIR", &blobs)
+        .args(["spool", "replay", "--db"])
+        .arg(&db)
+        .arg("--spool-dir")
+        .arg(&spool)
+        .assert()
+        .success();
+
+    let session = session_json(&db, "never-resurrect-this-session");
+    assert_eq!(session["count"], 0);
+}
+
+#[test]
+fn forgotten_malformed_hook_is_removed_before_adapter_decoding() {
+    let temp = TempDir::new().unwrap();
+    let db = temp.path().join("memory.db");
+    let blobs = temp.path().join("blobs");
+    let default_spool = temp.path().join("default-spool");
+    let custom_spool = temp.path().join("custom-spool");
+    let blocker = temp.path().join("not-a-directory");
+    fs::write(&blocker, "block database creation").unwrap();
+    let malformed = serde_json::json!({
+        "id":"forgotten-malformed-hook",
+        "messages":"this must be an array"
+    })
+    .to_string();
+
+    bin()
+        .env("SEMAFUSE_BLOB_DIR", &blobs)
+        .env("SEMAFUSE_SPOOL_DIR", &default_spool)
+        .args(["hook", "--agent", "amp", "--event", "agent.end", "--db"])
+        .arg(blocker.join("unavailable.db"))
+        .arg("--spool-dir")
+        .arg(&custom_spool)
+        .write_stdin(malformed)
+        .assert()
+        .success();
+    bin()
+        .env("SEMAFUSE_BLOB_DIR", &blobs)
+        .env("SEMAFUSE_SPOOL_DIR", &default_spool)
+        .args([
+            "forget",
+            "--session",
+            "forgotten-malformed-hook",
+            "--confirm",
+            "--db",
+        ])
+        .arg(&db)
+        .assert()
+        .success();
+    bin()
+        .env("SEMAFUSE_BLOB_DIR", &blobs)
+        .args(["spool", "replay", "--db"])
+        .arg(&db)
+        .arg("--spool-dir")
+        .arg(&custom_spool)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Replayed 1"));
+    assert_eq!(session_json(&db, "forgotten-malformed-hook")["count"], 0);
+    let retained = WalkDir::new(&custom_spool)
+        .into_iter()
+        .filter_map(Result::ok)
+        .filter(|entry| entry.file_type().is_file())
+        .map(|entry| fs::read_to_string(entry.path()).unwrap_or_default())
+        .collect::<String>();
+    assert!(!retained.contains("forgotten-malformed-hook"));
+}
+
+#[test]
+fn forget_cleans_default_and_repeated_custom_spool_directories() {
+    let temp = TempDir::new().unwrap();
+    let db = temp.path().join("memory.db");
+    let blobs = temp.path().join("blobs");
+    let default_spool = temp.path().join("default-spool");
+    let custom_a = temp.path().join("custom-a");
+    let custom_b = temp.path().join("custom-b");
+    let blocker = temp.path().join("not-a-directory");
+    fs::write(&blocker, "block database creation").unwrap();
+    let payload = serde_json::json!({
+        "session_id":"forget-every-spool",
+        "hook_event_name":"Stop",
+        "last_assistant_message":"private in every spool"
+    })
+    .to_string();
+
+    for spool in [None, Some(&custom_a), Some(&custom_b)] {
+        let mut command = bin();
+        command
+            .env("SEMAFUSE_BLOB_DIR", &blobs)
+            .env("SEMAFUSE_SPOOL_DIR", &default_spool)
+            .args(["hook", "--agent", "codex", "--event", "auto", "--db"])
+            .arg(blocker.join("unavailable.db"));
+        if let Some(spool) = spool {
+            command.arg("--spool-dir").arg(spool);
+        }
+        command.write_stdin(payload.clone()).assert().success();
+    }
+
+    let output = bin()
+        .env("SEMAFUSE_BLOB_DIR", &blobs)
+        .env("SEMAFUSE_SPOOL_DIR", &default_spool)
+        .args([
+            "forget",
+            "--session",
+            "forget-every-spool",
+            "--confirm",
+            "--db",
+        ])
+        .arg(&db)
+        .arg("--spool-dir")
+        .arg(&custom_a)
+        .arg("--spool-dir")
+        .arg(&custom_b)
+        .arg("--json")
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let output: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(output["cleanup_complete"], true);
+    assert_eq!(output["spool_cleanup"]["directories"], 3);
+    assert_eq!(output["spool_cleanup"]["matched"], 3);
+    for directory in [&default_spool, &custom_a, &custom_b] {
+        let retained = WalkDir::new(directory)
+            .into_iter()
+            .filter_map(Result::ok)
+            .filter(|entry| entry.file_type().is_file())
+            .map(|entry| fs::read_to_string(entry.path()).unwrap_or_default())
+            .collect::<String>();
+        assert!(!retained.contains("private in every spool"));
+    }
+}
+
+#[test]
+fn confirmed_forget_exits_nonzero_when_a_spool_location_cannot_be_cleaned() {
+    let temp = TempDir::new().unwrap();
+    let db = temp.path().join("memory.db");
+    let blobs = temp.path().join("blobs");
+    let default_spool = temp.path().join("missing-default-spool");
+    let invalid_spool = temp.path().join("spool-is-a-file");
+    fs::write(&invalid_spool, "not a spool directory").unwrap();
+
+    let output = bin()
+        .env("SEMAFUSE_BLOB_DIR", &blobs)
+        .env("SEMAFUSE_SPOOL_DIR", &default_spool)
+        .args([
+            "forget",
+            "--session",
+            "cleanup-failure",
+            "--confirm",
+            "--db",
+        ])
+        .arg(&db)
+        .arg("--spool-dir")
+        .arg(&invalid_spool)
+        .arg("--json")
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    let result: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(result["logical_deletion_committed"], true);
+    assert_eq!(result["cleanup_complete"], false);
+    assert_eq!(result["ok"], false);
+    assert!(
+        result["spool_cleanup_error"]
+            .as_str()
+            .unwrap()
+            .contains("is not a directory")
     );
 }
 
@@ -973,12 +1210,20 @@ fn generated_integrations_have_agent_native_locations() {
     let codex_hooks: Value =
         serde_json::from_str(&fs::read_to_string(temp.path().join(".codex/hooks.json")).unwrap())
             .unwrap();
-    assert!(codex_hooks["hooks"].get("SessionEnd").is_none());
+    assert!(codex_hooks["hooks"]["SessionEnd"].is_array());
+    assert!(codex_hooks["hooks"]["PermissionRequest"].is_array());
+    assert!(codex_hooks["hooks"]["SubagentStart"].is_array());
+    assert!(codex_hooks["hooks"]["SubagentStop"].is_array());
     assert!(codex_hooks["hooks"].get("StopFailure").is_none());
     for (name, entries) in codex_hooks["hooks"].as_object().unwrap() {
         let handler = &entries[0]["hooks"][0];
         let command = handler["command"].as_str().unwrap();
         assert!(command.contains("--protocol"));
+        assert!(
+            handler["commandWindows"].as_str().is_some_and(
+                |command| command.starts_with("& '") && command.contains("'--protocol'")
+            )
+        );
         assert_eq!(
             command.contains("--recall"),
             matches!(name.as_str(), "SessionStart" | "UserPromptSubmit")
@@ -1302,7 +1547,7 @@ fn tool_attachments_are_isolated_from_message_and_result_events() {
 }
 
 #[test]
-fn codex_image_only_messages_preserve_local_and_inline_images() {
+fn codex_history_rejects_local_paths_but_keeps_inline_images() {
     let temp = TempDir::new().unwrap();
     let image = temp.path().join("screen.png");
     let source = temp.path().join("codex-images.json");
@@ -1311,28 +1556,66 @@ fn codex_image_only_messages_preserve_local_and_inline_images() {
     fs::write(
         &source,
         serde_json::json!({"thread":{
-            "id":"codex-image-only", "turns":[{"id":"turn-1","items":[{
-                "id":"message-1", "type":"userMessage", "content":[
-                    {"type":"localImage","path":image},
-                    {"type":"image","url":"data:image/png;base64,aW5saW5l"}
-                ]
-            }]}]
+            "id":"codex-image-only", "turns":[{"id":"turn-1","items":[
+                {
+                    "id":"message-local", "type":"userMessage", "content":[
+                        {"type":"localImage","path":image}
+                    ]
+                },
+                {
+                    "id":"message-inline", "type":"userMessage", "content":[
+                        {"type":"image","url":"data:image/png;base64,aW5saW5l"}
+                    ]
+                }
+            ]}]
         }})
         .to_string(),
     )
     .unwrap();
 
-    bin()
+    let output = bin()
         .env("SEMAFUSE_BLOB_DIR", temp.path().join("blobs"))
         .args(["import", "--agent", "codex", "--source"])
         .arg(&source)
         .arg("--db")
         .arg(&db)
-        .assert()
-        .success();
+        .arg("--json")
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    let report: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(report["ok"], false);
+    assert_eq!(report["complete"], false);
+    assert_eq!(report["failed_records"], 1);
     let session = session_json(&db, "codex-image-only");
     assert_eq!(session["count"], 1);
-    assert_eq!(event_attachments(&session["events"][0]).len(), 2);
+    assert_eq!(
+        session["events"][0]["source"]["native_id"],
+        "message-inline"
+    );
+    assert_eq!(event_attachments(&session["events"][0]).len(), 1);
+}
+
+#[test]
+fn explicit_missing_import_source_is_a_machine_readable_failure() {
+    let temp = TempDir::new().unwrap();
+    let db = temp.path().join("missing.db");
+    let missing = temp.path().join("does-not-exist.json");
+    let output = bin()
+        .env("SEMAFUSE_BLOB_DIR", temp.path().join("blobs"))
+        .args(["import", "--agent", "codex", "--source"])
+        .arg(&missing)
+        .arg("--db")
+        .arg(&db)
+        .arg("--json")
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    let report: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(report["ok"], false);
+    assert_eq!(report["complete"], false);
+    assert_eq!(report["files"], 0);
+    assert_eq!(report["source_errors"], 1);
 }
 
 #[test]
@@ -1366,6 +1649,94 @@ fn dry_run_preserves_image_only_event_counts_without_writing_blobs() {
     assert_eq!(output["events"], 1);
     assert_eq!(output["diagnostics"], 0);
     assert!(!blob_dir.exists());
+}
+
+#[test]
+fn import_checks_raw_cutoff_tombstones_before_writing_new_attachments() {
+    let temp = TempDir::new().unwrap();
+    let source = temp.path().join("codex-shared-raw.json");
+    let db = temp.path().join("memory.db");
+    let blobs = temp.path().join("blobs");
+    let spool = temp.path().join("spool");
+    let snapshot = |current_id: &str, image: &str| {
+        serde_json::json!({"thread":{
+            "id":"shared-raw-cutoff", "turns":[{"id":"turn-1","items":[
+                {
+                    "id":"old-message", "type":"userMessage", "role":"user",
+                    "timestamp":1000,
+                    "content":[{"type":"input_text","text":"old side of cutoff"}]
+                },
+                {
+                    "id":current_id, "type":"userMessage", "role":"user",
+                    "timestamp":3000,
+                    "content":[
+                        {"type":"input_text","text":"new side of cutoff"},
+                        {"type":"image","url":format!("data:image/png;base64,{image}")}
+                    ]
+                }
+            ]}]
+        }})
+    };
+    fs::write(
+        &source,
+        snapshot("current-message-a", "aW5pdGlhbA==").to_string(),
+    )
+    .unwrap();
+    bin()
+        .env("SEMAFUSE_BLOB_DIR", &blobs)
+        .args(["import", "--agent", "codex", "--source"])
+        .arg(&source)
+        .arg("--db")
+        .arg(&db)
+        .assert()
+        .success();
+    bin()
+        .env("SEMAFUSE_BLOB_DIR", &blobs)
+        .env("SEMAFUSE_SPOOL_DIR", &spool)
+        .args(["forget", "--before", "2000000", "--confirm", "--db"])
+        .arg(&db)
+        .assert()
+        .success();
+
+    fs::write(
+        &source,
+        snapshot("current-message-b", "Zm9yZ290dGVuLWF0dGFjaG1lbnQ=").to_string(),
+    )
+    .unwrap();
+    let output = bin()
+        .env("SEMAFUSE_BLOB_DIR", &blobs)
+        .args(["import", "--agent", "codex", "--source"])
+        .arg(&source)
+        .arg("--db")
+        .arg(&db)
+        .arg("--json")
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    let output: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(output["events"], 0);
+    assert_eq!(output["raw_tombstoned"], 1);
+
+    let doctor = bin()
+        .args(["doctor", "--db"])
+        .arg(&db)
+        .arg("--json")
+        .output()
+        .unwrap();
+    assert!(doctor.status.success());
+    let doctor: Value = serde_json::from_slice(&doctor.stdout).unwrap();
+    assert_eq!(doctor["pending_attachment_gc"], 0);
+    let retained = WalkDir::new(&blobs)
+        .into_iter()
+        .filter_map(Result::ok)
+        .filter(|entry| entry.file_type().is_file())
+        .map(|entry| fs::read(entry.path()).unwrap_or_default())
+        .collect::<Vec<_>>();
+    assert!(
+        !retained
+            .iter()
+            .any(|bytes| bytes == b"forgotten-attachment")
+    );
 }
 
 #[test]
@@ -1410,7 +1781,17 @@ fn blob_initialization_failure_spools_and_replay_keeps_the_payload() {
         .arg(&spool)
         .assert()
         .failure();
-    assert!(spool.join("hooks.jsonl").is_file());
+    assert!(
+        fs::read_dir(&spool)
+            .unwrap()
+            .filter_map(Result::ok)
+            .any(|entry| {
+                entry
+                    .file_name()
+                    .to_str()
+                    .is_some_and(|name| name.ends_with(".jsonl"))
+            })
+    );
 
     bin()
         .env_remove("SEMAFUSE_CONFIG")
@@ -1422,6 +1803,174 @@ fn blob_initialization_failure_spools_and_replay_keeps_the_payload() {
         .assert()
         .success();
     assert_eq!(session_json(&db, "blob-failure")["count"], 1);
+}
+
+#[test]
+fn pre_processing_failure_does_not_spool_a_forgotten_payload() {
+    let temp = TempDir::new().unwrap();
+    let db = temp.path().join("memory.db");
+    let blobs = temp.path().join("blobs");
+    let spool = temp.path().join("spool");
+    let invalid_config = temp.path().join("invalid.toml");
+    fs::write(
+        &invalid_config,
+        "[blob]\nscheme = \"not-a-real-opendal-service\"\n",
+    )
+    .unwrap();
+    bin()
+        .env("SEMAFUSE_BLOB_DIR", &blobs)
+        .args([
+            "forget",
+            "--session",
+            "forgotten-before-blob-init",
+            "--confirm",
+            "--db",
+        ])
+        .arg(&db)
+        .assert()
+        .success();
+
+    let output = bin()
+        .env("SEMAFUSE_CONFIG", &invalid_config)
+        .args(["hook", "--agent", "claude-code", "--event", "Stop", "--db"])
+        .arg(&db)
+        .arg("--spool-dir")
+        .arg(&spool)
+        .arg("--json")
+        .write_stdin(
+            serde_json::json!({
+                "session_id":"forgotten-before-blob-init",
+                "last_assistant_message":"must not enter spool"
+            })
+            .to_string(),
+        )
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    let output: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(output["forgotten"], true);
+    assert_eq!(output["spooled"], false);
+    let retained = WalkDir::new(&spool)
+        .into_iter()
+        .filter_map(Result::ok)
+        .filter(|entry| entry.file_type().is_file())
+        .map(|entry| fs::read_to_string(entry.path()).unwrap_or_default())
+        .collect::<String>();
+    assert!(!retained.contains("must not enter spool"));
+}
+
+#[test]
+fn deadline_pre_processing_failure_clears_a_forgotten_pending_spool() {
+    let temp = TempDir::new().unwrap();
+    let db = temp.path().join("memory.db");
+    let original_blobs = temp.path().join("original-blobs");
+    let changed_blobs = temp.path().join("changed-blobs");
+    let spool = temp.path().join("spool");
+    bin()
+        .env("SEMAFUSE_BLOB_DIR", &original_blobs)
+        .env("SEMAFUSE_SPOOL_DIR", &spool)
+        .args([
+            "forget",
+            "--session",
+            "forgotten-session-end",
+            "--confirm",
+            "--db",
+        ])
+        .arg(&db)
+        .assert()
+        .success();
+
+    let output = bin()
+        .env("SEMAFUSE_BLOB_DIR", &changed_blobs)
+        .args(["hook", "--agent", "codex", "--event", "SessionEnd", "--db"])
+        .arg(&db)
+        .arg("--spool-dir")
+        .arg(&spool)
+        .arg("--json")
+        .write_stdin(
+            serde_json::json!({
+                "session_id":"forgotten-session-end",
+                "hook_event_name":"SessionEnd",
+                "last_assistant_message":"must not remain pending"
+            })
+            .to_string(),
+        )
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    let output: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(output["forgotten"], true);
+    assert_eq!(output["spooled"], false);
+    let retained = WalkDir::new(&spool)
+        .into_iter()
+        .filter_map(Result::ok)
+        .filter(|entry| entry.file_type().is_file())
+        .map(|entry| fs::read_to_string(entry.path()).unwrap_or_default())
+        .collect::<String>();
+    assert!(!retained.contains("must not remain pending"));
+}
+
+#[test]
+fn deadline_hook_discards_a_forgotten_pending_spool_while_lifecycle_is_busy() {
+    let temp = TempDir::new().unwrap();
+    let db = temp.path().join("memory.db");
+    let blobs = temp.path().join("blobs");
+    let spool = temp.path().join("spool");
+    bin()
+        .env("SEMAFUSE_BLOB_DIR", &blobs)
+        .args([
+            "forget",
+            "--session",
+            "forgotten-busy-session-end",
+            "--confirm",
+            "--db",
+        ])
+        .arg(&db)
+        .assert()
+        .success();
+
+    let lock_path = std::path::PathBuf::from(format!(
+        "{}.lifecycle.lock",
+        db.canonicalize().unwrap().display()
+    ));
+    let lifecycle_lock = fs::OpenOptions::new()
+        .create(true)
+        .read(true)
+        .write(true)
+        .truncate(false)
+        .open(lock_path)
+        .unwrap();
+    lifecycle_lock.lock_exclusive().unwrap();
+    let output = bin()
+        .env("SEMAFUSE_BLOB_DIR", &blobs)
+        .args(["hook", "--agent", "codex", "--event", "SessionEnd", "--db"])
+        .arg(&db)
+        .arg("--spool-dir")
+        .arg(&spool)
+        .arg("--json")
+        .write_stdin(
+            serde_json::json!({
+                "session_id":"forgotten-busy-session-end",
+                "hook_event_name":"SessionEnd",
+                "last_assistant_message":"must not survive a busy lifecycle lock"
+            })
+            .to_string(),
+        )
+        .output()
+        .unwrap();
+    FileExt::unlock(&lifecycle_lock).unwrap();
+
+    assert!(output.status.success());
+    let output: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(output["forgotten"], true);
+    assert_eq!(output["spooled"], false);
+    let retained = WalkDir::new(&spool)
+        .into_iter()
+        .filter_map(Result::ok)
+        .filter(|entry| entry.file_type().is_file())
+        .map(|entry| fs::read_to_string(entry.path()).unwrap_or_default())
+        .collect::<String>();
+    assert!(!retained.contains("must not survive a busy lifecycle lock"));
 }
 
 #[test]

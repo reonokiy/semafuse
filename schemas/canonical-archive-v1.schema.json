@@ -435,7 +435,7 @@
           "description": "Native record deliberately retained only through raw provenance.",
           "properties": {
             "native_type": {
-              "description": "Native discriminator; raw payload lives in [`RawRecord`].",
+              "description": "Native discriminator; raw payload lives in [`crate::model::RawRecord`].",
               "type": "string"
             },
             "type": {

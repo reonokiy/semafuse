@@ -30,7 +30,7 @@ impl ImportContext {
 ///
 /// Keeping attachment ownership at this boundary prevents attachments from all
 /// being assigned to the final event in a session. If attachment processing
-/// fails, the importer rejects that source instead of writing an event with
+/// fails, the importer rejects that event instead of writing it with
 /// silently missing attachments.
 #[derive(Debug, Clone)]
 pub struct ProjectedEvent {

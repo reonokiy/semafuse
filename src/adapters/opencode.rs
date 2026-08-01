@@ -1,23 +1,19 @@
 use super::{
     HistoryImporter, HookInstaller, HookProjector, ImportContext, NativeHistoryProjection,
-    ProjectedEvent, event_source, message_role, non_null_sources, project_native_history,
-    scalar_string, text_content, timestamp_at, timestamp_ms, value_text,
+    ProjectedEvent, event_source, executable::command_spec, message_role, non_null_sources,
+    project_native_history, scalar_string, text_content, timestamp_at, timestamp_ms, value_text,
 };
 use crate::{
     blob::BlobStore,
     importer::{ImportReport, NativeSource, json_source_files, read_json_values},
-    model::{AgentKind, CanonicalEvent, EventKind, MessageRole, SearchHit, ToolStatus},
+    model::{AgentKind, CanonicalEvent, EventKind, MessageRole, ToolStatus},
+    strategy::RecallItem,
 };
 use anyhow::{Context, Result, bail};
 use async_trait::async_trait;
 use serde::Deserialize;
 use serde_json::Value;
-use std::{
-    net::TcpListener,
-    path::Path,
-    process::{Command as StdCommand, Stdio},
-    time::Duration,
-};
+use std::{net::TcpListener, path::Path, process::Stdio, time::Duration};
 
 /// Normalizes OpenCode history records and real-time bus events.
 ///
@@ -695,14 +691,13 @@ impl HistoryImporter for OpenCodeAdapter {
         let listener = TcpListener::bind("127.0.0.1:0")?;
         let port = listener.local_addr()?.port();
         drop(listener);
-        let child = StdCommand::new("opencode")
-            .args([
-                "serve",
-                "--hostname",
-                "127.0.0.1",
-                "--port",
-                &port.to_string(),
-            ])
+        let port = port.to_string();
+        let command_spec = command_spec(
+            "opencode",
+            ["serve", "--hostname", "127.0.0.1", "--port", &port],
+        );
+        let child = command_spec
+            .std_command()
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null())
@@ -1000,7 +995,7 @@ impl HookProjector for OpenCodeAdapter {
         }
     }
 
-    fn recall_response(&self, _event_name: &str, _hits: &[SearchHit]) -> Option<Value> {
+    fn recall_response(&self, _event_name: &str, _hits: &[RecallItem]) -> Option<Value> {
         None
     }
 }

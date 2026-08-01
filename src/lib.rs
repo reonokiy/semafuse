@@ -13,10 +13,13 @@ pub mod adapters;
 pub mod blob;
 /// Configuration defaults, loading, and validation.
 pub mod config;
+/// Portable export and explicit retention operations.
+pub mod governance;
 /// Real-time hook ingestion and durable spool replay.
 pub mod hooks;
 /// Agent history discovery and import.
 pub mod importer;
+mod inference;
 /// Model Context Protocol server over standard input and output.
 pub mod mcp;
 /// Canonical events, queries, memories, and shared value types.
@@ -28,10 +31,12 @@ pub mod storage;
 /// Checkpointed derived-memory strategies and recall routing.
 pub mod strategy;
 
+pub use strategy::RecallItem;
+
 pub use model::{
     AgentKind, ArchiveSpecVersion, AttachmentRef, CanonicalArchive, CanonicalEvent, ContentPart,
     ConversionDiagnostic, DiagnosticSeverity, DomainEventSequence, ErrorInfo, EventData,
     EventEnvelope, EventKind, EventSource, EventSpecVersion, MemoryMutation, MemoryQuery,
-    MemoryRecord, MessageRole, QueryMode, RawRecord, SearchHit, SearchQuery, ToolStatus,
-    canonical_archive_schema,
+    MemoryRecord, MessageRole, QueryMode, RawRecord, SearchHit, SearchQuery, StrategyEventVector,
+    ToolStatus, VectorHit, VectorQuery, canonical_archive_schema,
 };

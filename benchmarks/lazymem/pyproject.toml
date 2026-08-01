@@ -1,0 +1,40 @@
+[build-system]
+requires = ["hatchling>=1.27"]
+build-backend = "hatchling.build"
+
+[project]
+name = "semafuse-lazymem-bench"
+version = "0.1.0"
+description = "Clean-room LazyMem paper-v2 benchmark harness for semafuse"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+authors = [{ name = "semafuse contributors" }]
+dependencies = []
+
+[project.optional-dependencies]
+# No model package is needed for dataset adaptation, splitting, windowing,
+# endpoint-backed inference, resuming, or metrics.
+retrieval = [
+  "rank-bm25>=0.2.2,<1",
+  "sentence-transformers>=5,<6",
+]
+tokenizer = ["transformers>=4.51,<6"]
+locomo-eval = ["nltk>=3.9,<4"]
+dev = []
+
+[project.scripts]
+semafuse-lazymem-bench = "semafuse_lazymem_bench.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/semafuse_lazymem_bench"]
+
+[tool.hatch.build.targets.sdist]
+include = [
+  "/src",
+  "/configs",
+  "/manifests",
+  "/tests",
+  "/README.md",
+  "/THIRD_PARTY_NOTICES.md",
+]

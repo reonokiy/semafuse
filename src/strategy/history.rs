@@ -1,9 +1,42 @@
-use super::{MemoryStrategy, RecallRequest, RecallResult, StrategyContext, StrategyEvent};
+use super::{
+    MemoryStrategy, RecallItem, RecallRequest, RecallResult, StrategyContext, StrategyEvent,
+    registry::StrategyRegistration,
+};
 use crate::model::{MemoryMutation, QueryMode};
-use anyhow::Result;
+use anyhow::{Context, Result};
 use async_trait::async_trait;
+use serde::Deserialize;
+use serde_json::Value;
 
-pub(super) struct HistoryStrategy;
+pub(super) const REGISTRATION: StrategyRegistration = StrategyRegistration::new("history", build);
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+struct HistoryConfig {
+    retrieval: QueryMode,
+}
+
+impl Default for HistoryConfig {
+    fn default() -> Self {
+        Self {
+            retrieval: QueryMode::Hybrid,
+        }
+    }
+}
+
+pub(super) struct HistoryStrategy {
+    config: HistoryConfig,
+}
+
+fn build(settings: Option<&Value>) -> Result<Box<dyn MemoryStrategy>> {
+    let config = settings
+        .cloned()
+        .map(serde_json::from_value)
+        .transpose()
+        .context("deserialize history strategy settings")?
+        .unwrap_or_default();
+    Ok(Box::new(HistoryStrategy { config }))
+}
 
 #[async_trait]
 impl MemoryStrategy for HistoryStrategy {
@@ -25,7 +58,12 @@ impl MemoryStrategy for HistoryStrategy {
         request: &RecallRequest,
     ) -> Result<RecallResult> {
         Ok(RecallResult {
-            hits: context.query(QueryMode::Hybrid, &request.query).await?,
+            items: context
+                .query(self.config.retrieval, &request.query)
+                .await?
+                .into_iter()
+                .map(RecallItem::from)
+                .collect(),
         })
     }
 }
