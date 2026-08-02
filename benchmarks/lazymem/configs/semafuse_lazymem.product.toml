@@ -1,0 +1,69 @@
+# Semafuse's actual LazyMem strategy for the product benchmark.
+#
+# This locks the paper-v2 public-reproduction settings inside Semafuse, but a
+# run through `--method semafuse-lazymem` is still a product benchmark rather
+# than a paper-comparable clean-room reproduction.  Replace the local endpoint
+# URLs with your deployed services (or override them with SEMAFUSE nested
+# environment settings) before running the benchmark. Uncomment an
+# `api_key_env` line only when that endpoint requires bearer authentication;
+# credentials are always references to environment-variable names, never
+# literal secrets.
+
+[strategies]
+enabled = ["lazymem"]
+recall = "lazymem"
+
+[strategies.settings.lazymem]
+protocol = "public-repro"
+embedding_batch_size = 32
+
+[strategies.settings.lazymem.embedding]
+backend = "openai_compatible"
+
+[strategies.settings.lazymem.embedding.endpoint]
+base_url = "http://127.0.0.1:8001/v1"
+model = "Qwen/Qwen3-Embedding-8B"
+# api_key_env = "LAZYMEM_EMBED_API_KEY"
+timeout_secs = 180
+max_retries = 2
+
+[strategies.settings.lazymem.reranker]
+backend = "openai_compatible"
+
+[strategies.settings.lazymem.reranker.endpoint]
+base_url = "http://127.0.0.1:8002"
+model = "BAAI/bge-reranker-v2-m3"
+protocol = "tei"
+# api_key_env = "LAZYMEM_RERANK_API_KEY"
+timeout_secs = 180
+max_retries = 2
+
+[strategies.settings.lazymem.processor]
+backend = "openai_compatible"
+
+[strategies.settings.lazymem.processor.endpoint]
+base_url = "http://127.0.0.1:8003/v1"
+model = "Qwen/Qwen3-32B"
+# api_key_env = "LAZYMEM_MPM_API_KEY"
+timeout_secs = 180
+max_retries = 2
+
+[strategies.settings.lazymem.retrieval]
+dense_limit = 100
+sparse_limit = 100
+fused_limit = 100
+rerank_top_n = 50
+require_dense_index = true
+
+[strategies.settings.lazymem.window]
+radius = 2
+merge_rule = "repository_contiguous"
+max_messages = 8
+stride = 7
+
+[strategies.settings.lazymem.generation]
+temperature = 0.1
+top_p = 0.95
+max_tokens = 3072
+max_concurrency = 64
+enable_thinking = true

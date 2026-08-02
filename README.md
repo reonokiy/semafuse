@@ -58,27 +58,35 @@ mise use -g github:reonokiy/semafuse@0.1.0
 
 Because this repository is private, authenticate mise through the GitHub CLI or set
 `MISE_GITHUB_TOKEN` to a token with read access to the repository. The release workflow
-accepts only a `v<version>` tag matching `Cargo.toml`, reruns the same Rust and Web quality
-checks used for pushes and pull requests, smoke-tests every supported binary, and then
-publishes platform-specific archives containing the binary and license, plus a `SHA256SUMS.txt`
-file. Mise uses those files to select and verify the download.
+accepts only a `v<version>` tag matching both Rust packages, reruns the same Rust and Web
+quality checks used for pushes and pull requests, and smoke-tests every supported binary.
+Each Linux/macOS archive contains `semafuse`, a models-candle-enabled `semafused`, the
+daemon example config, and the license; the Windows archive contains `semafuse.exe` and
+the license because the daemon transport is Unix-only. Mise exposes the executables found
+in the selected archive and verifies it using the published `SHA256SUMS.txt`.
 
 To build and install from source instead:
 
 ```bash
 cargo install --path . --locked
+cargo install --path semafused --locked --features models-candle
 ```
 
 Rust, Node.js, and pnpm are pinned in `rust-toolchain.toml`, `mise.toml`, and
-`web/package.json`. Install the complete development toolchain and reproduce CI locally with:
+`web/package.json`; `mise install` installs those managed tools. Native Rust dependencies
+also require a C/C++ compiler and `pkg-config` (Xcode Command Line Tools on macOS, or the
+distribution build toolchain on Linux). On Unix, reproduce CI locally with:
 
 ```bash
 mise install
 
 cargo fmt --all -- --check
-cargo clippy --locked --all-targets -- -D warnings
-cargo test --locked --all-targets
-RUSTDOCFLAGS="-D warnings" cargo doc --locked --no-deps
+cargo clippy --locked --workspace --all-targets -- -D warnings
+cargo clippy --locked -p semafused --all-targets --features models-candle -- -D warnings
+cargo test --locked --workspace --all-targets
+cargo test --locked -p semafused --all-targets --features models-candle
+RUSTDOCFLAGS="-D warnings" cargo doc --locked --workspace --no-deps
+RUSTDOCFLAGS="-D warnings" cargo doc --locked -p semafused --no-deps --features models-candle
 
 pnpm --dir web install --frozen-lockfile
 pnpm --dir web check
@@ -90,6 +98,40 @@ All examples below assume that `semafuse` is installed in `PATH`.
 ```bash
 semafuse --help
 semafuse <command> --help
+```
+
+## Process Boundary
+
+`semafuse` is the one-shot command. Imports, hooks, searches, maintenance,
+strategy operations, benchmark requests, and `daemon status` connect to their
+dependencies and then exit. The stdio MCP command is the explicit exception
+because its protocol owns stdin/stdout for the lifetime of one client session.
+
+`semafused` is a separate, all-Rust foreground process for services that
+benefit from staying warm. The first built-in service hosts local embedding and
+reranking models, while its versioned service envelope and status registry allow
+other long-lived services to be added later. It has no daemonization,
+`start`, `stop`, or `restart` command; systemd or another supervisor owns
+its lifecycle.
+
+Official `semafused` builds target Linux and macOS. Windows keeps the one-shot
+`semafuse` CLI, but its Unix-socket daemon client returns an unsupported error.
+
+The two processes communicate through a same-user Unix-domain socket. The
+`semafuse` client never starts `semafused`, never removes its socket, and
+never falls back from a failed local request to HTTP. Install the optional
+models-enabled daemon separately:
+
+```bash
+cargo install --path semafused --locked --features models-candle
+```
+
+See [the semafused guide](semafused/README.md) for strict local model layout,
+configuration, foreground execution, and supervisor examples. Inspect an
+already-running process without changing it with:
+
+```bash
+semafuse daemon status --socket "$XDG_RUNTIME_DIR/semafuse/semafused.sock"
 ```
 
 ## License
@@ -385,7 +427,9 @@ window length/stride `8/7`, and MPM generation at temperature `0.1`, top-p
 profiles require the `openai_compatible` processor so they cannot accidentally
 label a coding-agent run as paper-comparable. Use `protocol = "custom"` for a
 Codex processor or another explicit ablation. Embeddings use an OpenAI-compatible
-endpoint, reranking is TEI- or Cohere-compatible, and credentials are referenced
+endpoint or the local Unix-socket semafused service; reranking likewise uses an
+explicit TEI/Cohere-compatible or semafused backend. There is no automatic
+fallback between local and remote transports, and credentials are referenced
 only by environment-variable name.
 
 To route through the full path with Codex itself as the prompt-only memory
@@ -403,11 +447,17 @@ protocol = "custom"
 embedding_batch_size = 32
 
 [strategies.settings.lazymem.embedding]
+backend = "openai_compatible"
+
+[strategies.settings.lazymem.embedding.endpoint]
 base_url = "http://127.0.0.1:8001/v1"
 model = "Qwen/Qwen3-Embedding-8B"
 api_key_env = "LAZYMEM_EMBED_API_KEY"
 
 [strategies.settings.lazymem.reranker]
+backend = "openai_compatible"
+
+[strategies.settings.lazymem.reranker.endpoint]
 base_url = "http://127.0.0.1:8002"
 model = "BAAI/bge-reranker-v2-m3"
 protocol = "tei"
@@ -415,7 +465,9 @@ api_key_env = "LAZYMEM_RERANK_API_KEY"
 
 [strategies.settings.lazymem.processor]
 backend = "codex_cli"
-model = "gpt-5.6"
+# Choose a model listed by `codex debug models`; `gpt-5.6-sol` is the
+# validated Codex CLI 0.145.0 choice.
+model = "gpt-5.6-sol"
 command = "codex"
 timeout_secs = 600
 max_output_bytes = 1048576
@@ -648,12 +700,12 @@ cargo sqlx prepare
 `.sqlx/` must be committed together with queries; it enables `query!` / `query_as!` to perform compile-time SQL validation
 in build environments without a database connection.
 
+Run the Unix workspace and models-candle gates in [Build and Install](#build-and-install).
+After they pass, build the same two Rust executables shipped on Unix:
+
 ```bash
-cargo fmt --check
-cargo clippy --all-targets -- -D warnings
-cargo test --all-targets
-cargo doc --no-deps
-cargo build --release
+cargo build --locked --release -p semafuse --bin semafuse
+cargo build --locked --release -p semafused --bin semafused --features models-candle
 ```
 
 Tests cover import and deduplication for all four agents, cross-agent hook recall, OpenDAL image storage, spool

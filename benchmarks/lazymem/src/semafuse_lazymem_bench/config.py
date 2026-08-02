@@ -7,7 +7,7 @@ import tomllib
 from pathlib import Path
 from typing import Any, Mapping
 
-from .endpoints import OpenAICompatibleClient
+from .endpoints import ChatCompletionClient, CodexCliClient, OpenAICompatibleClient
 
 
 def validate_reproduction_config(config: Mapping[str, Any]) -> None:
@@ -109,3 +109,93 @@ def endpoint_client(config: Mapping[str, Any]) -> OpenAICompatibleClient:
         timeout_s=float(config.get("timeout_s", 180)),
         retries=int(config.get("retries", 2)),
     )
+
+
+def completion_client(config: Mapping[str, Any]) -> ChatCompletionClient:
+    """Build the configured completion provider without changing HTTP defaults.
+
+    ``backend`` is optional for backward compatibility: absent means the
+    original OpenAI-compatible HTTP client.  ``codex_cli`` keeps the benchmark
+    local to an authenticated Codex CLI and has no API-key configuration.
+    """
+
+    backend = str(config.get("backend", "openai_compatible")).lower().replace("-", "_")
+    if backend in {"openai_compatible", "openai"}:
+        return endpoint_client(config)
+    if backend != "codex_cli":
+        raise ValueError(
+            "completion backend must be 'openai_compatible' or 'codex_cli'"
+        )
+
+    def optional(name: str) -> str | None:
+        direct = config.get(name)
+        if isinstance(direct, str) and direct:
+            return direct
+        env_name = config.get(f"{name}_env")
+        if isinstance(env_name, str) and os.environ.get(env_name):
+            return os.environ[env_name]
+        return None
+
+    if config.get("profile") is not None or config.get("profile_env") is not None:
+        raise ValueError(
+            "codex_cli does not support profile because it ignores user configuration"
+        )
+    command = optional("command") or "codex"
+    model = optional("model")
+    if model is None:
+        raise ValueError("codex_cli requires 'model' or 'model_env'")
+    return CodexCliClient(
+        command=command,
+        model=model,
+        timeout_s=float(config.get("timeout_s", 300)),
+        retries=int(config.get("retries", 0)),
+        max_output_bytes=int(config.get("max_output_bytes", 1_048_576)),
+    )
+
+
+def completion_client_identity(config: Mapping[str, Any]) -> dict[str, Any]:
+    """Return non-secret provider coordinates for resumable run identities."""
+
+    backend = str(config.get("backend", "openai_compatible")).lower().replace("-", "_")
+
+    def resolved(name: str) -> str | None:
+        direct = config.get(name)
+        if isinstance(direct, str) and direct:
+            return direct
+        environment_name = config.get(f"{name}_env")
+        if isinstance(environment_name, str):
+            return os.environ.get(environment_name)
+        return None
+
+    if backend in {"openai_compatible", "openai"}:
+        return {
+            "backend": "openai_compatible",
+            "base_url": resolved("base_url"),
+            "model": resolved("model"),
+            "api_key_env": (
+                str(config["api_key_env"]) if config.get("api_key_env") else None
+            ),
+        }
+    if backend == "codex_cli":
+        if config.get("profile") is not None or config.get("profile_env") is not None:
+            raise ValueError(
+                "codex_cli does not support profile because it ignores user configuration"
+            )
+        model = resolved("model")
+        if model is None:
+            raise ValueError("codex_cli requires 'model' or 'model_env'")
+        return {
+            "backend": "codex_cli",
+            "command": resolved("command") or "codex",
+            "model": model,
+            "sandbox": "read-only",
+            "ephemeral": True,
+            "ignore_user_config": True,
+            "ignore_rules": True,
+            "web_search": "disabled",
+            "output_schema": "semafuse-lazymem-codex-cli/v1",
+            "timeout_s": float(config.get("timeout_s", 300)),
+            "retries": int(config.get("retries", 0)),
+            "max_output_bytes": int(config.get("max_output_bytes", 1_048_576)),
+        }
+    raise ValueError("completion backend must be 'openai_compatible' or 'codex_cli'")

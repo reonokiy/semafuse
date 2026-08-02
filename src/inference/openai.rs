@@ -1,3 +1,4 @@
+use super::SemafusedEndpointConfig;
 use super::http::{default_retries, default_timeout_secs, post_json, validate_transport};
 use anyhow::{Context, Result, ensure};
 use serde::Deserialize;
@@ -14,6 +15,13 @@ pub(crate) struct OpenAiEndpoint {
     timeout_secs: u64,
     #[serde(default = "default_retries")]
     max_retries: usize,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(tag = "backend", rename_all = "snake_case", deny_unknown_fields)]
+pub(crate) enum EmbeddingBackend {
+    OpenaiCompatible { endpoint: OpenAiEndpoint },
+    Semafused { endpoint: SemafusedEndpointConfig },
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -162,6 +170,36 @@ impl OpenAiEndpoint {
             "chat completion returned empty content"
         );
         Ok(content.to_owned())
+    }
+}
+
+impl EmbeddingBackend {
+    pub(crate) fn validate(&self, label: &str) -> Result<()> {
+        match self {
+            Self::OpenaiCompatible { endpoint } => endpoint.validate(label),
+            Self::Semafused { endpoint } => endpoint.validate(label),
+        }
+    }
+
+    pub(crate) fn backend_name(&self) -> &'static str {
+        match self {
+            Self::OpenaiCompatible { .. } => "openai_compatible",
+            Self::Semafused { .. } => "semafused",
+        }
+    }
+
+    pub(crate) fn model_identity(&self) -> &str {
+        match self {
+            Self::OpenaiCompatible { endpoint } => &endpoint.model,
+            Self::Semafused { endpoint } => endpoint.model_fingerprint(),
+        }
+    }
+
+    pub(crate) async fn embed(&self, input: &[String]) -> Result<Vec<Vec<f32>>> {
+        match self {
+            Self::OpenaiCompatible { endpoint } => endpoint.embed(input).await,
+            Self::Semafused { endpoint } => endpoint.embed(input).await,
+        }
     }
 }
 

@@ -7,6 +7,7 @@ use semafuse::{
     adapters::{executable::command_available, history_importer, hook_installer, hook_projector},
     blob::{BlobStore, DryRunBlobStore, OpenDalBlobStore, drain_blob_gc},
     canonical_archive_schema, config,
+    daemon_ipc::DaemonClient,
     governance::export_directory,
     hooks,
     importer::DeferredImportBlobStore,
@@ -191,6 +192,11 @@ enum Commands {
         #[command(subcommand)]
         command: StrategyCommands,
     },
+    /// Inspect the separately managed semafused process
+    Daemon {
+        #[command(subcommand)]
+        command: DaemonCommands,
+    },
     /// Run the stdio MCP server used by coding-agent clients
     Mcp {
         #[arg(long)]
@@ -264,6 +270,20 @@ enum StrategyCommands {
     },
 }
 
+#[derive(Subcommand)]
+enum DaemonCommands {
+    /// Probe a running daemon without changing its services
+    Status {
+        /// Absolute Unix-domain socket path
+        #[arg(long)]
+        socket: PathBuf,
+        #[arg(long, default_value_t = 1_000)]
+        connect_timeout_ms: u64,
+        #[arg(long, default_value_t = 120_000)]
+        request_timeout_ms: u64,
+    },
+}
+
 impl Commands {
     fn name(&self) -> &'static str {
         match self {
@@ -285,6 +305,7 @@ impl Commands {
             } => "hooks.install",
             Self::Spool { .. } => "spool.replay",
             Self::Strategy { .. } => "strategy",
+            Self::Daemon { .. } => "daemon.status",
             Self::Mcp { .. } => "mcp",
             Self::Doctor { .. } => "doctor",
         }
@@ -1144,6 +1165,67 @@ async fn run(cli: Cli) -> Result<()> {
                         )?;
                     } else {
                         println!("Rebuilt {name} from {delivered} domain event(s).");
+                    }
+                }
+            }
+        }
+        Commands::Daemon {
+            command:
+                DaemonCommands::Status {
+                    socket,
+                    connect_timeout_ms,
+                    request_timeout_ms,
+                },
+        } => {
+            let status = DaemonClient::status_at(
+                socket.clone(),
+                Duration::from_millis(connect_timeout_ms),
+                Duration::from_millis(request_timeout_ms),
+            )
+            .await
+            .context("semafused status probe failed")?;
+            let models = status.models().context("invalid models service status")?;
+            if json_output {
+                print_json(&json!({
+                    "ok": true,
+                    "command": "daemon.status",
+                    "socket": socket,
+                    "status": status,
+                }))?;
+            } else {
+                println!(
+                    "semafused {:?} at {} (version {}).",
+                    status.state,
+                    socket.display(),
+                    status.daemon_version
+                );
+                println!(
+                    "  Services: {}",
+                    status
+                        .services
+                        .keys()
+                        .cloned()
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                );
+                if let Some(models) = models {
+                    println!(
+                        "  Models: {:?} (version {})",
+                        models.state, models.service_version
+                    );
+                    if let Some(identity) = models.embedding {
+                        println!(
+                            "    Embedding: {} ({}, {} dimensions)",
+                            identity.model,
+                            identity.fingerprint,
+                            identity.dimensions.unwrap_or_default()
+                        );
+                    }
+                    if let Some(identity) = models.reranker {
+                        println!(
+                            "    Reranker:  {} ({})",
+                            identity.model, identity.fingerprint
+                        );
                     }
                 }
             }

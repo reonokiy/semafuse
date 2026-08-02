@@ -1,0 +1,84 @@
+[reproduction]
+name = "Semafuse production LazyMem benchmark"
+source_paper_arxiv_id = "2607.22690v2"
+# This invokes Semafuse's Rust strategy, not the independent Python
+# reconstruction. It must never be reported as a paper-comparable row.
+status = "custom-ablation"
+paper_comparable = false
+
+[dataset.longmemeval]
+expected_questions = 500
+train = 360
+validation = 40
+test = 100
+split_seed = 42
+
+[dataset.locomo]
+conversation_ids = ["conv-49", "conv-50"]
+categories = [1, 2, 3, 4]
+expected_questions = 314
+license = "CC-BY-NC-4.0"
+
+# These fields remain in the run identity for auditability. The actual
+# retrieval/window/MPM implementation is configured by --semafuse-config and
+# executed in Rust, rather than by this harness's Python clean-room pipeline.
+[retrieval]
+candidate_limit = 50
+channel_limit = 100
+fused_limit = 100
+rrf_k = 60
+dense_model = "Qwen/Qwen3-Embedding-8B"
+reranker_model = "BAAI/bge-reranker-v2-m3"
+sparse_backend = "rank-bm25"
+sparse_tokenization = "ascii-alnum-underscore-hyphen-lower"
+bm25_k1 = 1.5
+bm25_b = 0.75
+bm25_epsilon = 0.25
+
+[window]
+radius = 2
+max_messages = 8
+stride = 7
+merge_rule = "code"
+
+# Retained because the benchmark configuration schema has an MPM table. These
+# coordinates are not used for `semafuse-lazymem`; configure Semafuse itself
+# through the separate --semafuse-config TOML.
+[mpm]
+base_url_env = "LAZYMEM_MPM_BASE_URL"
+model_env = "LAZYMEM_MPM_MODEL"
+api_key_env = "LAZYMEM_MPM_API_KEY"
+concurrency = 64
+max_tokens = 3072
+temperature = 0.1
+top_p = 0.95
+enable_thinking = true
+timeout_s = 180
+retries = 2
+
+[answer]
+base_url_env = "LAZYMEM_ANSWER_BASE_URL"
+model_env = "LAZYMEM_ANSWER_MODEL"
+api_key_env = "LAZYMEM_ANSWER_API_KEY"
+temperature = 0.0
+max_tokens = 512
+enable_thinking = true
+timeout_s = 180
+retries = 2
+
+[judge]
+base_url_env = "LAZYMEM_JUDGE_BASE_URL"
+model_env = "LAZYMEM_JUDGE_MODEL"
+api_key_env = "LAZYMEM_JUDGE_API_KEY"
+temperature = 0.0
+timeout_s = 180
+retries = 2
+
+[metrics]
+primary = "binary-llm-judge"
+tokenizer_model = "Qwen/Qwen3-32B"
+all_at_50_uses_neighbor_expansion = true
+latency_question_concurrency = 1
+latency_mpm_concurrency = 64
+latency_warmup_runs = 3
+latency_measured_runs = 3

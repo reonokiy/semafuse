@@ -77,6 +77,9 @@ semafuse-lazymem-bench validate-config \
   judge, the pinned official LongMemEval LLM-judge prompt/rule, the released
   LoCoMo category-aware F1 scorer, and strict external-score import;
 - RAG Top20, RAG Top50, Oracle Turn, and LongMemEval Oracle Session baselines;
+- a `semafuse-lazymem` product backend that streams normalized questions to the
+  Rust benchmark runner and therefore exercises Semafuse's actual ingest,
+  indexing, retrieval, windowing, and memory-processing path;
 - crash-safe append-only JSONL resumption;
 - LJ, per-type LJ, expanded-neighbor All@50, memory-token, and latency
   mean/median/P90/P95 summaries.
@@ -228,6 +231,231 @@ semafuse-lazymem-bench run \
 The same command accepts `rag20`, `rag50`, `oracle-turn`, or
 `oracle-session`. Oracle Session is intentionally rejected for LoCoMo because
 the paper does not define it there.
+
+## Benchmark Semafuse's production LazyMem strategy
+
+`lazymem` above is the independent Python reconstruction. To measure the
+strategy that this repository actually ships, use `semafuse-lazymem`. The
+harness keeps its dataset adapters, answer generation, official evaluators,
+metrics, and JSONL resume journal, while a persistent Rust JSONL process
+performs each question's Semafuse ingestion and recall.
+
+Build the runner from the repository root and copy the supplied Semafuse
+strategy template before replacing its local endpoint URLs. Its recall strategy
+is already `lazymem` and its strategy settings match the public-reproduction
+profile:
+
+```bash
+cargo build --release --bin semafuse-lazymem-benchmark
+cd benchmarks/lazymem
+cp configs/semafuse_lazymem.product.toml runs/semafuse-lazymem.toml
+
+semafuse-lazymem-bench run \
+  --config configs/semafuse_lazymem.custom.toml \
+  --dataset longmemeval \
+  --input /data/longmemeval_s_cleaned.json \
+  --split-manifest runs/longmemeval.paper-v2.split.json \
+  --split test \
+  --method semafuse-lazymem \
+  --semafuse-config runs/semafuse-lazymem.toml \
+  --semafuse-benchmark-binary ../../target/release/semafuse-lazymem-benchmark \
+  --output runs/semafuse-lazymem.longmemeval.test.jsonl
+```
+
+The bridge writes each normalized `Question` as one JSONL request and requires
+one flushed response with the same `question_id`, the constructed memory
+`context`, retrieval/coverage IDs, stage latencies, and runner metadata. The
+backend is deliberately restricted to
+`configs/semafuse_lazymem.custom.toml` (or another
+`reproduction.status = "custom-ablation"` configuration). It is a product
+benchmark, not a paper-comparable result: Semafuse's production strategy,
+storage lifecycle, and endpoint configuration are the system under test rather
+than the clean-room reconstruction. Each result row records this distinction
+and hashes the supplied Semafuse strategy configuration. Relevant
+`SEMAFUSE__STRATEGIES__...` overrides are also fingerprinted without retaining
+their values, so a resumed output cannot silently mix endpoint or model
+overrides.
+
+Every case uses a fresh in-memory SQLite store and a synthetic repository
+scope, so one question cannot leak history into another. Consequently the
+end-to-end latency is a cold replay measure; the versioned
+`method_metadata.runner_metadata.benchmark_trace.timing_s` separates ingest,
+index, and strategy-recall time for reporting.
+
+### Use the installed Codex CLI as Semafuse's MPM
+
+[`configs/semafuse_lazymem.codex.toml`](configs/semafuse_lazymem.codex.toml)
+is a ready-to-copy custom-ablation strategy config. It replaces only Semafuse's
+query-time memory processor with the locally installed and authenticated
+`codex` CLI; it does not turn Codex into an embedding, reranking, answer, or
+judge service. Check authentication and the model catalog first:
+
+```bash
+codex login status
+codex debug models | jq -r '.models[].slug'
+```
+
+Then copy the template and use it as the `--semafuse-config` in the product
+benchmark command above:
+
+```bash
+cp configs/semafuse_lazymem.codex.toml runs/semafuse-lazymem-codex.toml
+
+semafuse-lazymem-bench run \
+  --config configs/semafuse_lazymem.custom.toml \
+  --dataset longmemeval \
+  --input /data/longmemeval_s_cleaned.json \
+  --split-manifest runs/longmemeval.paper-v2.split.json \
+  --split test \
+  --method semafuse-lazymem \
+  --semafuse-config runs/semafuse-lazymem-codex.toml \
+  --semafuse-benchmark-binary ../../target/release/semafuse-lazymem-benchmark \
+  --output runs/semafuse-lazymem.codex.longmemeval.test.jsonl
+```
+
+For every MPM window Semafuse starts a fresh `codex exec` process in a private
+temporary directory. It passes the prompt on stdin, uses read-only sandboxing,
+disables tools, hooks, web, plugins, memories, and multi-agent features, and
+requires Codex structured output to be a single object with a `decisions`
+array. The array must contain exactly one positional object per window message:
+`{"op":"KEEP|DROP","compressed_content":"...","reason":"..."}`. A
+`DROP` must use an empty `compressed_content`; a `KEEP` must use a non-empty
+one. Invalid output fails the question before a JSONL result is committed.
+
+The `codex_cli` backend deliberately ignores user configuration and requests an
+ephemeral session, so it uses Codex authentication but does not inherit project
+instructions, hooks, model defaults, or a local `--oss` provider. It is a
+local CLI transport to the Codex service, not local-on-GPU inference. The
+embedding and reranker endpoints in the Semafuse config are still mandatory;
+the companion harness configuration below sends `[answer]` and `[judge]`
+through the same local Codex CLI. Preserve `codex --version`, the selected
+model, and the copied TOML with the output journal.
+
+### Use the local semafused models service instead of HTTP
+
+The embedding and reranker can be moved off the HTTP path without moving them
+into each short-lived Semafuse command. Install and start
+[`semafused`](../../semafused/README.md) separately, using absolute local
+directories for `Qwen/Qwen3-Embedding-0.6B` and
+`BAAI/bge-reranker-v2-m3`. After it reports ready, inspect its semantic
+fingerprints:
+
+```bash
+cargo run --bin semafuse -- daemon status \
+  --socket "$XDG_RUNTIME_DIR/semafuse/semafused.sock"
+```
+
+Copy the dedicated strategy template, replace its literal socket path and both
+fingerprints with the status output, and pass the result to the same product
+benchmark command:
+
+```bash
+cp configs/semafuse_lazymem.semafused.toml.example \
+  runs/semafuse-lazymem-semafused.toml
+# Edit runs/semafuse-lazymem-semafused.toml before running.
+```
+
+The persistent benchmark runner is only a socket client. It does not start,
+restart, or stop the daemon, and a missing socket or fingerprint mismatch fails
+the question without falling back to HTTP. The Codex MPM remains a fresh
+one-shot process for every memory window.
+
+### Local CPU smoke run
+
+For a single-question, end-to-end functional check, the repository includes a
+[TEI](https://huggingface.co/docs/text-embeddings-inference/quick_tour) Compose
+file and two custom-ablation configurations:
+
+- [`compose.local-retrieval.yml`](compose.local-retrieval.yml) runs local CPU
+  embedding and reranking services on ports 8001 and 8002. It caches
+  `Qwen/Qwen3-Embedding-0.6B` and `BAAI/bge-reranker-v2-m3` in named Docker
+  volumes.
+- [`configs/semafuse_lazymem.local-smoke.toml`](configs/semafuse_lazymem.local-smoke.toml)
+  uses those services and invokes the installed Codex CLI for Semafuse's MPM.
+- [`configs/semafuse_lazymem.codex-harness.toml`](configs/semafuse_lazymem.codex-harness.toml)
+  invokes the same local Codex CLI for the harness's answer and optional judge
+  calls.
+
+The first container start downloads public model weights, and CPU inference is
+intentionally appropriate only for a small smoke run. If `docker info` cannot
+reach its socket, start a new login shell (or run `newgrp docker`) before
+continuing. The minimal run omits `--generic-judge`, so it makes a Codex MPM
+call and a Codex answer call, but no judge call.
+
+```bash
+cd /path/to/semafuse
+cargo build --release --bin semafuse-lazymem-benchmark
+
+cd benchmarks/lazymem
+codex login status
+docker compose -f compose.local-retrieval.yml up -d
+
+until curl --fail --silent http://127.0.0.1:8001/health >/dev/null \
+  && curl --fail --silent http://127.0.0.1:8002/health >/dev/null; do
+  sleep 2
+done
+
+mkdir -p runs
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python -m semafuse_lazymem_bench.cli run \
+  --config configs/semafuse_lazymem.codex-harness.toml \
+  --dataset longmemeval \
+  --input tests/fixtures/longmemeval.json \
+  --method semafuse-lazymem \
+  --semafuse-config configs/semafuse_lazymem.local-smoke.toml \
+  --semafuse-benchmark-binary ../../target/release/semafuse-lazymem-benchmark \
+  --allow-nonpaper-count \
+  --limit 1 \
+  --approximate-tokens \
+  --output runs/semafuse-lazymem.local-smoke.jsonl
+
+docker compose -f compose.local-retrieval.yml down
+```
+
+`--allow-nonpaper-count` is deliberately limited to `custom-ablation` runs: it
+permits the two-record test fixture without fabricating a 500-question split
+manifest. The resulting JSONL verifies the actual Rust ingestion, embedding,
+reranking, windowing, Codex MPM, and Codex answer path, but it is neither a
+paper-comparable result nor a useful CPU latency/quality measurement. Use the
+real LongMemEval release, a generated split manifest, and the product-sized
+model configuration for a benchmark report.
+
+### Use the installed Codex CLI for answers and judges
+
+[`configs/semafuse_lazymem.codex-harness.toml`](configs/semafuse_lazymem.codex-harness.toml)
+selects `backend = "codex_cli"` for the harness's `[answer]`, `[judge]`, and
+(for the independent Python method) `[mpm]` clients. Pair it with the
+Semafuse Codex-MPM strategy config above to make every LLM call in a
+`semafuse-lazymem` run use the locally authenticated Codex CLI.
+
+The harness launches a fresh `codex exec` process for every answer or judge.
+It uses an ephemeral temporary workspace, a `read-only` sandbox,
+`approval_policy = "never"`, `--strict-config`, `--ignore-user-config`,
+`--ignore-rules`, JSON output, disabled web search, and disabled tool, hook,
+plugin, memory, and multi-agent features. Final replies must satisfy a
+one-field structured-output envelope before the benchmark accepts them. No API
+key is configured or written to a journal.
+
+The template pins `gpt-5.6-sol`; change `model` only deliberately, because it
+is part of the resumable run identity. Codex CLI does not expose the
+OpenAI-compatible `temperature`, `top_p`, `max_tokens`, or endpoint-specific
+extra-body controls. The client records them as requested-but-unsupported in
+`answer_metadata` or `judge_metadata` rather than claiming they were applied.
+This makes the resulting row a Codex-backed custom ablation, not a
+paper-comparable result.
+
+For the optional generic smoke judge, add `--generic-judge` to `run`. For the
+LongMemEval official judge, use the same harness configuration during
+post-processing:
+
+```bash
+semafuse-lazymem-bench evaluate \
+  --evaluator longmemeval-official-lj \
+  --dataset longmemeval \
+  --input /data/longmemeval_s_cleaned.json \
+  --results runs/semafuse-lazymem.codex.longmemeval.test.jsonl \
+  --output runs/semafuse-lazymem.codex.longmemeval.test.evaluated.jsonl \
+  --config configs/semafuse_lazymem.codex-harness.toml
+```
 
 Each successfully completed question is appended and `fsync`ed as one JSONL
 record. Re-running the exact command skips existing `run_key` values. Malformed

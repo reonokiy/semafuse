@@ -1,0 +1,62 @@
+# Semafuse LazyMem benchmark with the locally installed Codex CLI as the MPM.
+#
+# This is intentionally a custom ablation: Codex is a prompt-only processor,
+# not the paper's Qwen3-32B MPM. The CLI receives one isolated, read-only,
+# ephemeral `codex exec` invocation per LazyMem window. Embeddings and reranking
+# remain ordinary local/remote services and must be configured below.
+
+[strategies]
+enabled = ["lazymem"]
+recall = "lazymem"
+
+[strategies.settings.lazymem]
+protocol = "custom"
+embedding_batch_size = 32
+
+[strategies.settings.lazymem.embedding]
+backend = "openai_compatible"
+
+[strategies.settings.lazymem.embedding.endpoint]
+base_url = "http://127.0.0.1:8001/v1"
+model = "Qwen/Qwen3-Embedding-8B"
+# api_key_env = "LAZYMEM_EMBED_API_KEY"
+timeout_secs = 180
+max_retries = 2
+
+[strategies.settings.lazymem.reranker]
+backend = "openai_compatible"
+
+[strategies.settings.lazymem.reranker.endpoint]
+base_url = "http://127.0.0.1:8002"
+model = "BAAI/bge-reranker-v2-m3"
+protocol = "tei"
+# api_key_env = "LAZYMEM_RERANK_API_KEY"
+timeout_secs = 180
+max_retries = 2
+
+[strategies.settings.lazymem.processor]
+backend = "codex_cli"
+# Verify available model names with `codex debug models`; this name is present
+# in Codex CLI 0.145.0 used to validate this template.
+model = "gpt-5.6-sol"
+command = "codex"
+timeout_secs = 600
+max_output_bytes = 1048576
+
+[strategies.settings.lazymem.retrieval]
+dense_limit = 100
+sparse_limit = 100
+fused_limit = 100
+rerank_top_n = 50
+require_dense_index = true
+
+[strategies.settings.lazymem.window]
+radius = 2
+merge_rule = "repository_contiguous"
+max_messages = 8
+stride = 7
+
+[strategies.settings.lazymem.generation]
+# Codex owns its own sampling controls. Keep this at one to avoid parallel
+# subscription calls and to retain a simple, reproducible timing profile.
+max_concurrency = 1

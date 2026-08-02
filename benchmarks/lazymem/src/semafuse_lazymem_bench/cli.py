@@ -6,13 +6,19 @@ import argparse
 import hashlib
 import json
 import os
+import shutil
 import sys
 import tempfile
 from pathlib import Path
 from typing import Any, Sequence
 
 from .adapters import load_locomo, load_longmemeval
-from .config import endpoint_client, load_config, validate_reproduction_config
+from .config import (
+    completion_client,
+    completion_client_identity,
+    load_config,
+    validate_reproduction_config,
+)
 from .evaluation import (
     ApproximateTokenCounter,
     EndpointAnswerer,
@@ -42,6 +48,7 @@ from .retrieval import (
     RankBM25Ranker,
     SentenceTransformerRanker,
 )
+from .semafuse import SemafuseLazyMemMethod
 from .split import sha256_file, stratified_split, write_split_manifest
 from .types import Question
 
@@ -71,9 +78,10 @@ def _filter_split(
     *,
     source_path: str | Path | None = None,
     expected_counts: dict[str, int] | None = None,
+    allow_nonpaper_count: bool = False,
 ) -> list[Question]:
     if not manifest_path:
-        if expected_counts is not None:
+        if expected_counts is not None and not allow_nonpaper_count:
             raise ValueError(
                 "LongMemEval paper runs require --split-manifest; refusing to "
                 f"label all questions as {split_name!r}"
@@ -177,26 +185,66 @@ def _build_retriever(config: dict[str, Any]) -> HybridRetriever:
 def _run_identity(
     args: argparse.Namespace, config: dict[str, Any]
 ) -> tuple[str, dict[str, Any]]:
-    def endpoint_identity(section: str) -> dict[str, str | None]:
-        value = config[section]
+    def semafuse_strategy_environment_identity() -> tuple[list[str], str]:
+        """Fingerprint config-rs overrides without writing their values to rows."""
 
-        def resolved(name: str) -> str | None:
-            direct = value.get(name)
-            if isinstance(direct, str) and direct:
-                return direct
-            environment_name = value.get(f"{name}_env")
-            if isinstance(environment_name, str):
-                return os.environ.get(environment_name)
-            return None
-
-        return {
-            "base_url": resolved("base_url"),
-            "model": resolved("model"),
-            "api_key_env": (
-                str(value["api_key_env"]) if value.get("api_key_env") else None
-            ),
+        overrides = {
+            name: value
+            for name, value in os.environ.items()
+            if name.startswith("SEMAFUSE__STRATEGIES__")
         }
+        encoded = json.dumps(
+            overrides,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+        return sorted(overrides), hashlib.sha256(encoded).hexdigest()
 
+    semafuse_config = getattr(args, "semafuse_config", None)
+    semafuse_binary = getattr(args, "semafuse_benchmark_binary", None)
+    binary_command = str(semafuse_binary) if semafuse_binary else None
+    binary_path = (
+        Path(shutil.which(binary_command) or binary_command)
+        if binary_command
+        else None
+    )
+    semafuse_override_keys, semafuse_override_sha256 = (
+        semafuse_strategy_environment_identity()
+    )
+    endpoint_sections = (
+        ("answer", "judge")
+        if args.method == "semafuse-lazymem"
+        else ("mpm", "answer", "judge")
+    )
+    product_backend = (
+        {
+            "backend": "semafuse-product",
+            "paper_comparable": False,
+            "reason": (
+                "This method invokes Semafuse's production LazyMem strategy, "
+                "not the clean-room paper reconstruction."
+            ),
+            "runner_binary": binary_command,
+            "runner_binary_resolved": (
+                str(binary_path.resolve())
+                if binary_path is not None and binary_path.is_file()
+                else None
+            ),
+            "runner_binary_sha256": (
+                sha256_file(binary_path)
+                if binary_path is not None and binary_path.is_file()
+                else None
+            ),
+            "strategy_config_sha256": (
+                sha256_file(semafuse_config) if semafuse_config else None
+            ),
+            "strategy_environment_override_keys": semafuse_override_keys,
+            "strategy_environment_overrides_sha256": semafuse_override_sha256,
+        }
+        if args.method == "semafuse-lazymem"
+        else None
+    )
     metadata: dict[str, Any] = {
         "schema_version": 1,
         "dataset": args.dataset,
@@ -215,9 +263,10 @@ def _run_identity(
         "window": config.get("window", {}),
         "tokenizer_model": config.get("metrics", {}).get("tokenizer_model"),
         "endpoints": {
-            section: endpoint_identity(section)
-            for section in ("mpm", "answer", "judge")
+            section: completion_client_identity(config[section])
+            for section in endpoint_sections
         },
+        "product_backend": product_backend,
     }
     encoded = json.dumps(
         metadata, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False
@@ -225,15 +274,42 @@ def _run_identity(
     return hashlib.sha256(encoded).hexdigest(), metadata
 
 
+def _validate_method_config(args: argparse.Namespace, config: dict[str, Any]) -> None:
+    """Keep production Semafuse rows distinct from paper reconstruction rows."""
+
+    if args.method != "semafuse-lazymem":
+        return
+    if config["reproduction"].get("status") != "custom-ablation":
+        raise ValueError(
+            "semafuse-lazymem uses the Semafuse product implementation and must "
+            "run with reproduction.status = 'custom-ablation'; it is not a "
+            "paper-comparable clean-room result"
+        )
+    semafuse_config = getattr(args, "semafuse_config", None)
+    if not semafuse_config:
+        raise ValueError("semafuse-lazymem requires --semafuse-config")
+    if not Path(semafuse_config).is_file():
+        raise ValueError(
+            f"--semafuse-config does not name a readable file: {semafuse_config}"
+        )
+
+
 def _run(args: argparse.Namespace) -> None:
     config = load_config(args.config)
     validate_reproduction_config(config)
+    _validate_method_config(args, config)
+    if args.allow_nonpaper_count and config["reproduction"].get("status") != "custom-ablation":
+        raise ValueError(
+            "--allow-nonpaper-count is limited to custom-ablation runs; use a "
+            "split manifest for a paper/public reconstruction"
+        )
     questions = _filter_split(
         _load_questions(args),
         args.split_manifest,
         args.split,
         source_path=args.input,
         expected_counts=_longmemeval_split_counts(args.dataset, config),
+        allow_nonpaper_count=args.allow_nonpaper_count,
     )
     run_id, run_metadata = _run_identity(args, config)
     if args.limit is not None:
@@ -246,7 +322,7 @@ def _run(args: argparse.Namespace) -> None:
         window = config["window"]
         mpm_config = config["mpm"]
         processor = ConcurrentMemoryProcessor(
-            endpoint_client(mpm_config),
+            completion_client(mpm_config),
             max_workers=int(mpm_config.get("concurrency", 64)),
             max_tokens=int(mpm_config.get("max_tokens", 3072)),
             temperature=float(mpm_config.get("temperature", 0.1)),
@@ -263,6 +339,11 @@ def _run(args: argparse.Namespace) -> None:
             stride=int(window.get("stride", 7)),
             merge_rule=str(window.get("merge_rule", "paper")),
         )
+    elif args.method == "semafuse-lazymem":
+        method = SemafuseLazyMemMethod(
+            binary=args.semafuse_benchmark_binary,
+            config_path=args.semafuse_config,
+        )
     elif args.method in ("rag20", "rag50"):
         method = RagBaseline(retriever, k=int(args.method[3:]))
     elif args.method == "oracle-turn":
@@ -277,7 +358,7 @@ def _run(args: argparse.Namespace) -> None:
     )
     answer_config = config["answer"]
     answerer = EndpointAnswerer(
-        endpoint_client(answer_config),
+        completion_client(answer_config),
         max_tokens=int(answer_config.get("max_tokens", 512)),
         temperature=float(answer_config.get("temperature", 0.0)),
         enable_thinking=answer_config.get("enable_thinking", True),
@@ -285,11 +366,11 @@ def _run(args: argparse.Namespace) -> None:
     )
     latency_protocol = args.command == "run-latency"
     judge = (
-        EndpointBinaryJudge(endpoint_client(config["judge"]))
+        EndpointBinaryJudge(completion_client(config["judge"]))
         if getattr(args, "generic_judge", False)
         else None
     )
-    result = EvaluationRunner(
+    runner = EvaluationRunner(
         method=method,
         answerer=answerer,
         judge=judge,
@@ -297,19 +378,24 @@ def _run(args: argparse.Namespace) -> None:
         token_counter=token_counter,
         run_id=run_id,
         run_metadata=run_metadata,
-    ).run(
-        questions,
-        warmup_runs=(
+    )
+    run_kwargs = {
+        "warmup_runs": (
             int(config["metrics"].get("latency_warmup_runs", 3))
             if latency_protocol
             else 0
         ),
-        measured_runs=(
+        "measured_runs": (
             int(config["metrics"].get("latency_measured_runs", 3))
             if latency_protocol
             else 1
         ),
-    )
+    }
+    if isinstance(method, SemafuseLazyMemMethod):
+        with method:
+            result = runner.run(questions, **run_kwargs)
+    else:
+        result = runner.run(questions, **run_kwargs)
     _write_json(None, result)
 
 
@@ -337,7 +423,7 @@ def _evaluate(args: argparse.Namespace) -> None:
         if not args.config:
             raise ValueError("longmemeval-official-lj requires --config")
         config = load_config(args.config)
-        evaluator = LongMemEvalOfficialLJ(endpoint_client(config["judge"]))
+        evaluator = LongMemEvalOfficialLJ(completion_client(config["judge"]))
     elif args.evaluator == "locomo-official-f1":
         if args.dataset != "locomo":
             raise ValueError("locomo-official-f1 requires --dataset locomo")
@@ -425,6 +511,24 @@ def _evaluate(args: argparse.Namespace) -> None:
     )
 
 
+def _add_semafuse_runner_arguments(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--semafuse-config",
+        help=(
+            "TOML configuration consumed by the Semafuse Rust runner; required "
+            "for --method semafuse-lazymem"
+        ),
+    )
+    parser.add_argument(
+        "--semafuse-benchmark-binary",
+        default="semafuse-lazymem-benchmark",
+        help=(
+            "Semafuse JSONL benchmark executable for --method semafuse-lazymem "
+            "(default: %(default)s)"
+        ),
+    )
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="semafuse-lazymem-bench",
@@ -478,9 +582,17 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--input", required=True)
     run.add_argument(
         "--method",
-        choices=("lazymem", "rag20", "rag50", "oracle-turn", "oracle-session"),
+        choices=(
+            "lazymem",
+            "semafuse-lazymem",
+            "rag20",
+            "rag50",
+            "oracle-turn",
+            "oracle-session",
+        ),
         required=True,
     )
+    _add_semafuse_runner_arguments(run)
     run.add_argument("--output", required=True)
     run.add_argument("--split-manifest")
     run.add_argument("--split", choices=("train", "validation", "test"), default="test")
@@ -488,7 +600,14 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--generic-judge", action="store_true")
     run.add_argument("--approximate-tokens", action="store_true")
     run.add_argument("--acknowledge-locomo-noncommercial", action="store_true")
-    run.add_argument("--allow-nonpaper-count", action="store_true", help=argparse.SUPPRESS)
+    run.add_argument(
+        "--allow-nonpaper-count",
+        action="store_true",
+        help=(
+            "permit fixture-sized LongMemEval input without a split manifest; "
+            "only valid for custom-ablation local smoke runs"
+        ),
+    )
 
     latency_run = subparsers.add_parser(
         "run-latency",
@@ -499,9 +618,17 @@ def build_parser() -> argparse.ArgumentParser:
     latency_run.add_argument("--input", required=True)
     latency_run.add_argument(
         "--method",
-        choices=("lazymem", "rag20", "rag50", "oracle-turn", "oracle-session"),
+        choices=(
+            "lazymem",
+            "semafuse-lazymem",
+            "rag20",
+            "rag50",
+            "oracle-turn",
+            "oracle-session",
+        ),
         required=True,
     )
+    _add_semafuse_runner_arguments(latency_run)
     latency_run.add_argument("--output", required=True)
     latency_run.add_argument("--split-manifest")
     latency_run.add_argument(
@@ -511,7 +638,12 @@ def build_parser() -> argparse.ArgumentParser:
     latency_run.add_argument("--approximate-tokens", action="store_true")
     latency_run.add_argument("--acknowledge-locomo-noncommercial", action="store_true")
     latency_run.add_argument(
-        "--allow-nonpaper-count", action="store_true", help=argparse.SUPPRESS
+        "--allow-nonpaper-count",
+        action="store_true",
+        help=(
+            "permit fixture-sized LongMemEval input without a split manifest; "
+            "only valid for custom-ablation local smoke runs"
+        ),
     )
     return parser
 

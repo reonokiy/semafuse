@@ -4,7 +4,9 @@ use super::{
     },
     window::{HistoryWindowConfig, SpanMergeRule},
 };
-use crate::inference::{GenerationOptions, OpenAiEndpoint, PromptProcessorBackend, RerankEndpoint};
+use crate::inference::{
+    EmbeddingBackend, GenerationOptions, PromptProcessorBackend, RerankBackend,
+};
 use anyhow::{Result, ensure};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -26,8 +28,8 @@ fn default_profile() -> ProtocolProfile {
 pub(super) struct LazyMemConfig {
     #[serde(default = "default_profile")]
     pub(super) protocol: ProtocolProfile,
-    pub(super) embedding: OpenAiEndpoint,
-    pub(super) reranker: RerankEndpoint,
+    pub(super) embedding: EmbeddingBackend,
+    pub(super) reranker: RerankBackend,
     pub(super) processor: PromptProcessorBackend,
     #[serde(default)]
     pub(super) retrieval: RetrievalConfig,

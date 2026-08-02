@@ -64,6 +64,7 @@ impl MemoryStrategy for HistoryStrategy {
                 .into_iter()
                 .map(RecallItem::from)
                 .collect(),
+            metadata: Default::default(),
         })
     }
 }

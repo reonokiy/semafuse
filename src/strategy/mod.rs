@@ -20,6 +20,7 @@ use crate::{
 };
 use anyhow::{Context, Result, ensure};
 use async_trait::async_trait;
+use serde_json::{Map, Value};
 
 /// A committed batch of newly ingested canonical events delivered to a memory strategy.
 ///
@@ -50,6 +51,12 @@ pub struct RecallRequest {
 pub struct RecallResult {
     /// Ranked event-backed or strategy-derived memories selected as context.
     pub items: Vec<RecallItem>,
+    /// Strategy-owned, non-context trace metadata for the completed recall.
+    ///
+    /// This remains available when no context item is emitted, which lets
+    /// callers audit retrieval and timing without treating an empty memory as
+    /// a zero-cost operation.
+    pub metadata: Map<String, Value>,
 }
 
 /// Combined read interface exposed to strategy implementations.
@@ -172,19 +179,29 @@ pub async fn recall_at(
     query: SearchQuery,
     query_time_ms: i64,
 ) -> Result<Vec<RecallItem>> {
+    Ok(recall_result_at(store, config, query, query_time_ms)
+        .await?
+        .items)
+}
+
+/// Routes a query with an explicit reference time and retains strategy trace
+/// metadata even when the strategy selects no context items.
+pub async fn recall_result_at(
+    store: &SqliteStore,
+    config: &Config,
+    query: SearchQuery,
+    query_time_ms: i64,
+) -> Result<RecallResult> {
     validate(config)?;
-    Ok(
-        configured_strategy(&config.strategies.recall, &config.strategies)?
-            .recall(
-                store,
-                &RecallRequest {
-                    query,
-                    query_time_ms,
-                },
-            )
-            .await?
-            .items,
-    )
+    configured_strategy(&config.strategies.recall, &config.strategies)?
+        .recall(
+            store,
+            &RecallRequest {
+                query,
+                query_time_ms,
+            },
+        )
+        .await
 }
 
 /// Rebuilds one enabled strategy from all canonical events.

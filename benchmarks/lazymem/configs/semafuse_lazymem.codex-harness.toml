@@ -1,0 +1,92 @@
+[reproduction]
+name = "Semafuse production LazyMem benchmark with local Codex completion"
+source_paper_arxiv_id = "2607.22690v2"
+# The strategy under test is Semafuse and the completion backend is Codex, so
+# this is deliberately an implementation ablation rather than a paper row.
+status = "custom-ablation"
+paper_comparable = false
+
+# Every Codex CLI call uses the pinned model below, an isolated temporary
+# workspace, a read-only sandbox, no user/project config or rules, and a
+# disabled tool/web/plugin surface. `model` is intentionally explicit so a
+# changing local Codex default cannot change a resumed benchmark identity.
+
+[dataset.longmemeval]
+expected_questions = 500
+train = 360
+validation = 40
+test = 100
+split_seed = 42
+
+[dataset.locomo]
+conversation_ids = ["conv-49", "conv-50"]
+categories = [1, 2, 3, 4]
+expected_questions = 314
+license = "CC-BY-NC-4.0"
+
+[retrieval]
+# These coordinates remain in the journal identity. The product method uses
+# --semafuse-config for retrieval and windowing, not this Python implementation.
+candidate_limit = 50
+channel_limit = 100
+fused_limit = 100
+rrf_k = 60
+dense_model = "Qwen/Qwen3-Embedding-8B"
+reranker_model = "BAAI/bge-reranker-v2-m3"
+sparse_backend = "rank-bm25"
+sparse_tokenization = "ascii-alnum-underscore-hyphen-lower"
+bm25_k1 = 1.5
+bm25_b = 0.75
+bm25_epsilon = 0.25
+
+[window]
+radius = 2
+max_messages = 8
+stride = 7
+merge_rule = "code"
+
+# `mpm` is unused by --method semafuse-lazymem because Semafuse runs its own
+# processor. It is configured nevertheless so the clean-room `lazymem` method
+# can use the same all-local Codex provider. Keep the CLI concurrency at one:
+# each request launches an independent Codex process.
+[mpm]
+backend = "codex_cli"
+command = "codex"
+model = "gpt-5.6-sol"
+concurrency = 1
+max_tokens = 3072
+temperature = 0.1
+top_p = 0.95
+enable_thinking = true
+timeout_s = 300
+retries = 0
+max_output_bytes = 1048576
+
+[answer]
+backend = "codex_cli"
+command = "codex"
+model = "gpt-5.6-sol"
+temperature = 0.0
+max_tokens = 512
+enable_thinking = true
+timeout_s = 300
+retries = 0
+max_output_bytes = 1048576
+
+[judge]
+backend = "codex_cli"
+command = "codex"
+model = "gpt-5.6-sol"
+temperature = 0.0
+timeout_s = 300
+retries = 0
+max_output_bytes = 1048576
+
+[metrics]
+primary = "binary-llm-judge"
+tokenizer_model = "Qwen/Qwen3-32B"
+all_at_50_uses_neighbor_expansion = true
+latency_question_concurrency = 1
+latency_mpm_concurrency = 1
+latency_warmup_runs = 3
+latency_measured_runs = 3

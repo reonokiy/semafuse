@@ -1,3 +1,4 @@
+use super::SemafusedEndpointConfig;
 use super::http::{default_retries, default_timeout_secs, post_json, validate_transport};
 use anyhow::{Context, Result, ensure};
 use serde::Deserialize;
@@ -28,6 +29,13 @@ pub(crate) struct RerankEndpoint {
     timeout_secs: u64,
     #[serde(default = "default_retries")]
     max_retries: usize,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(tag = "backend", rename_all = "snake_case", deny_unknown_fields)]
+pub(crate) enum RerankBackend {
+    OpenaiCompatible { endpoint: RerankEndpoint },
+    Semafused { endpoint: SemafusedEndpointConfig },
 }
 
 impl RerankEndpoint {
@@ -121,5 +129,35 @@ impl RerankEndpoint {
             .enumerate()
             .map(|(index, score)| score.with_context(|| format!("missing reranker index {index}")))
             .collect()
+    }
+}
+
+impl RerankBackend {
+    pub(crate) fn validate(&self, label: &str) -> Result<()> {
+        match self {
+            Self::OpenaiCompatible { endpoint } => endpoint.validate(label),
+            Self::Semafused { endpoint } => endpoint.validate(label),
+        }
+    }
+
+    pub(crate) fn backend_name(&self) -> &'static str {
+        match self {
+            Self::OpenaiCompatible { .. } => "openai_compatible",
+            Self::Semafused { .. } => "semafused",
+        }
+    }
+
+    pub(crate) fn model_identity(&self) -> Option<&str> {
+        match self {
+            Self::OpenaiCompatible { endpoint } => endpoint.model.as_deref(),
+            Self::Semafused { endpoint } => Some(endpoint.model_fingerprint()),
+        }
+    }
+
+    pub(crate) async fn rerank(&self, query: &str, documents: &[String]) -> Result<Vec<f64>> {
+        match self {
+            Self::OpenaiCompatible { endpoint } => endpoint.rerank(query, documents).await,
+            Self::Semafused { endpoint } => endpoint.rerank(query, documents).await,
+        }
     }
 }

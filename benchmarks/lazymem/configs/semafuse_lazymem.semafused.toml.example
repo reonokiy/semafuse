@@ -1,0 +1,56 @@
+# Semafuse LazyMem benchmark using the separately managed local semafused models service.
+#
+# Start semafused first, then run:
+#   cargo run --bin semafuse -- daemon status --socket /run/user/1000/semafuse/semafused.sock
+# Replace the socket path and both fingerprints below with that status output.
+# TOML does not expand $XDG_RUNTIME_DIR. Changing either fingerprint changes the
+# vector namespace, so rebuild the LazyMem strategy before recalling old data.
+
+[strategies]
+enabled = ["lazymem"]
+recall = "lazymem"
+
+[strategies.settings.lazymem]
+protocol = "custom"
+embedding_batch_size = 8
+
+[strategies.settings.lazymem.embedding]
+backend = "semafused"
+
+[strategies.settings.lazymem.embedding.endpoint]
+socket_path = "/run/user/1000/semafuse/semafused.sock"
+model_fingerprint = "sha256:REPLACE_WITH_EMBEDDING_FINGERPRINT"
+connect_timeout_ms = 1000
+request_timeout_ms = 600000
+
+[strategies.settings.lazymem.reranker]
+backend = "semafused"
+
+[strategies.settings.lazymem.reranker.endpoint]
+socket_path = "/run/user/1000/semafuse/semafused.sock"
+model_fingerprint = "sha256:REPLACE_WITH_RERANKER_FINGERPRINT"
+connect_timeout_ms = 1000
+request_timeout_ms = 600000
+
+[strategies.settings.lazymem.processor]
+backend = "codex_cli"
+model = "gpt-5.6-sol"
+command = "codex"
+timeout_secs = 600
+max_output_bytes = 1048576
+
+[strategies.settings.lazymem.retrieval]
+dense_limit = 100
+sparse_limit = 100
+fused_limit = 100
+rerank_top_n = 50
+require_dense_index = true
+
+[strategies.settings.lazymem.window]
+radius = 2
+merge_rule = "repository_contiguous"
+max_messages = 8
+stride = 7
+
+[strategies.settings.lazymem.generation]
+max_concurrency = 1

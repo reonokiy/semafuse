@@ -8,7 +8,10 @@ use anyhow::{Result, ensure};
 use config::{Environment, File};
 use serde::Deserialize;
 use serde_json::Value;
-use std::{collections::HashMap, path::PathBuf};
+use std::{
+    collections::HashMap,
+    path::{Path, PathBuf},
+};
 
 /// Returns the data directory, honoring `SEMAFUSE_DATA_DIR`.
 pub fn default_data_dir() -> PathBuf {
@@ -126,11 +129,37 @@ fn default_blob_scheme() -> String {
 /// by [`crate::strategy::validate`].
 pub fn load() -> Result<Config> {
     let path = default_config_path();
+    load_with_path(&path, false)
+}
+
+/// Loads configuration from an explicit TOML file, then applies `SEMAFUSE__...`
+/// environment overrides.
+///
+/// Unlike [`load`], this function requires the supplied file to exist. It is
+/// intended for isolated tools, such as benchmark runners, that must never
+/// silently fall back to a user's ambient default configuration.
+pub fn load_from_path(path: impl AsRef<Path>) -> Result<Config> {
+    let path = path.as_ref();
+    ensure!(
+        path.is_file(),
+        "configuration file does not exist or is not a regular file: {}",
+        path.display()
+    );
+    load_with_path(path, true)
+}
+
+fn load_with_path(path: &Path, required: bool) -> Result<Config> {
     let mut builder = config::Config::builder()
         .set_default("strategies.enabled", default_enabled())?
         .set_default("strategies.recall", default_recall())?;
     if path.exists() {
-        builder = builder.add_source(File::from(path));
+        builder = builder.add_source(File::from(path.to_path_buf()));
+    } else {
+        ensure!(
+            !required,
+            "configuration file does not exist: {}",
+            path.display()
+        );
     }
     let mut config: Config = builder
         .add_source(

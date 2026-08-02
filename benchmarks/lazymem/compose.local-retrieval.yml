@@ -1,0 +1,30 @@
+# Local CPU retrieval services for the Semafuse LazyMem smoke run.
+#
+# They deliberately use smaller models than the paper/product template so the
+# full Semafuse ingestion/index/retrieval/MPM path can be exercised on a
+# development machine.  Do not use this compose file for a paper-comparable
+# score.  The named volumes retain downloaded weights between runs.
+services:
+  embedding:
+    image: ghcr.io/huggingface/text-embeddings-inference:cpu-1.9
+    command:
+      - --model-id
+      - Qwen/Qwen3-Embedding-0.6B
+    ports:
+      - "127.0.0.1:8001:80"
+    volumes:
+      - semafuse_lazymem_embedding_cache:/data
+
+  reranker:
+    image: ghcr.io/huggingface/text-embeddings-inference:cpu-1.9
+    command:
+      - --model-id
+      - BAAI/bge-reranker-v2-m3
+    ports:
+      - "127.0.0.1:8002:80"
+    volumes:
+      - semafuse_lazymem_reranker_cache:/data
+
+volumes:
+  semafuse_lazymem_embedding_cache:
+  semafuse_lazymem_reranker_cache:

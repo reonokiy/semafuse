@@ -36,13 +36,17 @@ use anyhow::{Context, Result, ensure};
 use async_trait::async_trait;
 use serde_json::{Map, Value, json};
 use sha2::{Digest, Sha256};
-use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use std::{
+    collections::{BTreeMap, BTreeSet, HashMap, HashSet},
+    time::{Duration, Instant},
+};
 use tokio::task::JoinSet;
 
 pub(in crate::strategy) const REGISTRATION: StrategyRegistration =
     StrategyRegistration::new("lazymem", build);
 
 const NAMESPACE: &str = "lazymem";
+const BENCHMARK_TRACE_SCHEMA_VERSION: &str = "semafuse.lazymem-recall/v1";
 
 fn build(settings: Option<&Value>) -> Result<Box<dyn MemoryStrategy>> {
     let settings = settings
@@ -89,7 +93,7 @@ impl MemoryStrategy for LazyMemStrategy {
                 mutations.push(MemoryMutation::UpsertVector(StrategyEventVector {
                     namespace: NAMESPACE.into(),
                     event_id: event.id.clone(),
-                    model: self.config.embedding.model.clone(),
+                    model: self.config.embedding.model_identity().to_owned(),
                     values,
                 }));
             }
@@ -103,12 +107,16 @@ impl MemoryStrategy for LazyMemStrategy {
         request: &RecallRequest,
     ) -> Result<RecallResult> {
         if request.query.limit == 0 {
-            return Ok(RecallResult { items: Vec::new() });
+            return Ok(RecallResult {
+                items: Vec::new(),
+                metadata: Map::new(),
+            });
         }
         ensure!(
             !request.query.text.trim().is_empty(),
             "lazymem recall requires a non-empty query"
         );
+        let recall_started = Instant::now();
 
         let mut effective_query = request.query.clone();
         effective_query.until_ms = Some(
@@ -125,11 +133,26 @@ impl MemoryStrategy for LazyMemStrategy {
         );
         let corpus = context.scoped_message_events(&effective_query).await?;
         if corpus.is_empty() {
-            return Ok(RecallResult { items: Vec::new() });
+            let elapsed = recall_started.elapsed();
+            let timing = timing_metadata(elapsed, Duration::ZERO, Duration::ZERO, elapsed);
+            return Ok(RecallResult {
+                items: Vec::new(),
+                metadata: Map::from_iter([
+                    ("timing".into(), timing.clone()),
+                    (
+                        "strategy_benchmark_trace".into(),
+                        strategy_benchmark_trace(None, None, &[], &timing),
+                    ),
+                ]),
+            });
         }
         if self.config.retrieval.require_dense_index {
             let indexed = context
-                .indexed_event_ids(NAMESPACE, &self.config.embedding.model, &effective_query)
+                .indexed_event_ids(
+                    NAMESPACE,
+                    self.config.embedding.model_identity(),
+                    &effective_query,
+                )
                 .await?;
             let corpus_ids = corpus
                 .iter()
@@ -147,17 +170,40 @@ impl MemoryStrategy for LazyMemStrategy {
             ensure!(
                 missing.is_empty() && unexpected.is_empty(),
                 "lazymem dense index does not exactly cover the scoped message corpus for model {} (missing {}, unexpected {}; first missing: {:?}); rebuild the strategy after changing models or data",
-                self.config.embedding.model,
+                self.config.embedding.model_identity(),
                 missing.len(),
                 unexpected.len(),
                 missing.first()
             );
         }
 
+        let retrieval_started = Instant::now();
         let retrieval = self.retrieve(context, &effective_query, &corpus).await?;
+        let retrieval_elapsed = retrieval_started.elapsed();
         if retrieval.reranked.is_empty() {
-            return Ok(RecallResult { items: Vec::new() });
+            let timing = timing_metadata(
+                retrieval_elapsed,
+                Duration::ZERO,
+                Duration::ZERO,
+                recall_started.elapsed(),
+            );
+            return Ok(RecallResult {
+                items: Vec::new(),
+                metadata: Map::from_iter([
+                    ("rrf".into(), serde_json::to_value(&retrieval.rrf)?),
+                    (
+                        "rerank".into(),
+                        serde_json::to_value(&retrieval.rerank_trace)?,
+                    ),
+                    ("timing".into(), timing.clone()),
+                    (
+                        "strategy_benchmark_trace".into(),
+                        strategy_benchmark_trace(Some(&retrieval), None, &[], &timing),
+                    ),
+                ]),
+            });
         }
+        let window_construction_started = Instant::now();
         let history = load_history(
             &corpus,
             &retrieval
@@ -167,13 +213,41 @@ impl MemoryStrategy for LazyMemStrategy {
                 .collect::<Vec<_>>(),
             self.config.window_config(),
         )?;
+        let window_construction_elapsed = window_construction_started.elapsed();
+        let processing_started = Instant::now();
         let responses = self.process_windows(request, &history.windows).await?;
         let processing = combine_window_responses(&ProcessingInput {
             windows: history.windows.clone(),
             responses,
         })?;
+        let processing_elapsed = processing_started.elapsed();
         if processing.messages.is_empty() {
-            return Ok(RecallResult { items: Vec::new() });
+            let timing = timing_metadata(
+                retrieval_elapsed,
+                window_construction_elapsed,
+                processing_elapsed,
+                recall_started.elapsed(),
+            );
+            return Ok(RecallResult {
+                items: Vec::new(),
+                metadata: Map::from_iter([
+                    ("rrf".into(), serde_json::to_value(&retrieval.rrf)?),
+                    (
+                        "rerank".into(),
+                        serde_json::to_value(&retrieval.rerank_trace)?,
+                    ),
+                    ("windows".into(), serde_json::to_value(&history.trace)?),
+                    (
+                        "processing".into(),
+                        redacted_processing_trace(&processing.trace),
+                    ),
+                    ("timing".into(), timing.clone()),
+                    (
+                        "strategy_benchmark_trace".into(),
+                        strategy_benchmark_trace(Some(&retrieval), Some(&history), &[], &timing),
+                    ),
+                ]),
+            });
         }
 
         let source_event_ids = processing
@@ -190,6 +264,13 @@ impl MemoryStrategy for LazyMemStrategy {
             digest.update(message.compressed_content.as_bytes());
         }
         let id = format!("recall_{}", &hex::encode(digest.finalize())[..24]);
+        let recall_elapsed = recall_started.elapsed();
+        let timing = timing_metadata(
+            retrieval_elapsed,
+            window_construction_elapsed,
+            processing_elapsed,
+            recall_elapsed,
+        );
         let metadata = Map::from_iter([
             (
                 "protocol".into(),
@@ -197,8 +278,22 @@ impl MemoryStrategy for LazyMemStrategy {
             ),
             ("query_time_ms".into(), json!(request.query_time_ms)),
             ("effective_until_ms".into(), json!(effective_query.until_ms)),
-            ("embedding_model".into(), json!(self.config.embedding.model)),
-            ("reranker_model".into(), json!(self.config.reranker.model)),
+            (
+                "embedding_backend".into(),
+                json!(self.config.embedding.backend_name()),
+            ),
+            (
+                "embedding_model".into(),
+                json!(self.config.embedding.model_identity()),
+            ),
+            (
+                "reranker_backend".into(),
+                json!(self.config.reranker.backend_name()),
+            ),
+            (
+                "reranker_model".into(),
+                json!(self.config.reranker.model_identity()),
+            ),
             (
                 "processor".into(),
                 serde_json::to_value(self.config.processor.identity())?,
@@ -232,6 +327,16 @@ impl MemoryStrategy for LazyMemStrategy {
                 "processing".into(),
                 redacted_processing_trace(&processing.trace),
             ),
+            ("timing".into(), timing.clone()),
+            (
+                "strategy_benchmark_trace".into(),
+                strategy_benchmark_trace(
+                    Some(&retrieval),
+                    Some(&history),
+                    &source_event_ids,
+                    &timing,
+                ),
+            ),
         ]);
         let score = retrieval
             .reranked
@@ -245,12 +350,56 @@ impl MemoryStrategy for LazyMemStrategy {
                 namespace: NAMESPACE.into(),
                 id,
                 content,
-                metadata,
+                metadata: metadata.clone(),
                 source_event_ids,
                 score,
             }],
+            metadata,
         })
     }
+}
+
+fn timing_metadata(
+    retrieval: Duration,
+    window_construction: Duration,
+    processing: Duration,
+    total: Duration,
+) -> Value {
+    json!({
+        "retrieval_ms": retrieval.as_secs_f64() * 1_000.0,
+        "window_construction_ms": window_construction.as_secs_f64() * 1_000.0,
+        "processing_ms": processing.as_secs_f64() * 1_000.0,
+        "total_ms": total.as_secs_f64() * 1_000.0,
+    })
+}
+
+fn strategy_benchmark_trace(
+    retrieval: Option<&RetrievalOutput>,
+    history: Option<&HistoryWindowOutput>,
+    source_event_ids: &[String],
+    timing: &Value,
+) -> Value {
+    let retrieved_event_ids = retrieval
+        .map(|value| value.rerank_trace.output_order.clone())
+        .unwrap_or_default();
+    let mut covered_event_ids = Vec::new();
+    let mut seen = HashSet::new();
+    if let Some(history) = history {
+        for window in &history.trace.windows {
+            for event_id in &window.message_ids {
+                if seen.insert(event_id.clone()) {
+                    covered_event_ids.push(event_id.clone());
+                }
+            }
+        }
+    }
+    json!({
+        "schema_version": BENCHMARK_TRACE_SCHEMA_VERSION,
+        "retrieved_event_ids": retrieved_event_ids,
+        "covered_event_ids": covered_event_ids,
+        "source_event_ids": source_event_ids,
+        "timing_ms": timing,
+    })
 }
 
 struct RetrievalOutput {
@@ -281,7 +430,7 @@ impl LazyMemStrategy {
         let dense = context
             .query_vectors(&VectorQuery {
                 namespace: NAMESPACE.into(),
-                model: self.config.embedding.model.clone(),
+                model: self.config.embedding.model_identity().to_owned(),
                 values: query_vector,
                 scope: dense_scope,
             })
@@ -532,8 +681,8 @@ mod tests {
     fn paper_profile_rejects_protocol_drift() {
         let value = json!({
             "protocol": "paper-v2",
-            "embedding": {"base_url": "http://localhost:8001/v1", "model": "embed"},
-            "reranker": {"base_url": "http://localhost:8002", "model": "reranker"},
+            "embedding": {"backend": "openai_compatible", "endpoint": {"base_url": "http://localhost:8001/v1", "model": "embed"}},
+            "reranker": {"backend": "openai_compatible", "endpoint": {"base_url": "http://localhost:8002", "model": "reranker"}},
             "processor": {"backend": "openai_compatible", "endpoint": {"base_url": "http://localhost:8003/v1", "model": "processor"}},
             "retrieval": {"rerank_top_n": 49}
         });
@@ -541,11 +690,45 @@ mod tests {
     }
 
     #[test]
-    fn custom_profile_allows_explicit_ablation_settings() {
+    fn untagged_inference_endpoints_are_rejected() {
         let value = json!({
             "protocol": "custom",
             "embedding": {"base_url": "http://localhost:8001/v1", "model": "embed"},
             "reranker": {"base_url": "http://localhost:8002", "model": "reranker"},
+            "processor": {"backend": "openai_compatible", "endpoint": {"base_url": "http://localhost:8003/v1", "model": "processor"}}
+        });
+        assert!(build(Some(&value)).is_err());
+    }
+
+    #[test]
+    fn semafused_strategy_build_only_validates_connection_coordinates() {
+        let value = json!({
+            "protocol": "custom",
+            "embedding": {
+                "backend": "semafused",
+                "endpoint": {
+                    "socket_path": "/tmp/semafused-test.sock",
+                    "model_fingerprint": "sha256:embedding"
+                }
+            },
+            "reranker": {
+                "backend": "semafused",
+                "endpoint": {
+                    "socket_path": "/tmp/semafused-test.sock",
+                    "model_fingerprint": "sha256:reranker"
+                }
+            },
+            "processor": {"backend": "openai_compatible", "endpoint": {"base_url": "http://localhost:8003/v1", "model": "processor"}}
+        });
+        assert!(build(Some(&value)).is_ok());
+    }
+
+    #[test]
+    fn custom_profile_allows_explicit_ablation_settings() {
+        let value = json!({
+            "protocol": "custom",
+            "embedding": {"backend": "openai_compatible", "endpoint": {"base_url": "http://localhost:8001/v1", "model": "embed"}},
+            "reranker": {"backend": "openai_compatible", "endpoint": {"base_url": "http://localhost:8002", "model": "reranker"}},
             "processor": {"backend": "openai_compatible", "endpoint": {"base_url": "http://localhost:8003/v1", "model": "processor"}},
             "retrieval": {"dense_limit": 20, "sparse_limit": 20, "fused_limit": 20, "rerank_top_n": 10, "require_dense_index": false},
             "window": {"radius": 1, "merge_rule": "repository_contiguous", "max_messages": 4, "stride": 3}
@@ -556,8 +739,8 @@ mod tests {
     #[test]
     fn codex_processor_is_an_explicit_custom_profile_ablation() {
         let base = json!({
-            "embedding": {"base_url": "http://localhost:8001/v1", "model": "embed"},
-            "reranker": {"base_url": "http://localhost:8002", "model": "reranker"},
+            "embedding": {"backend": "openai_compatible", "endpoint": {"base_url": "http://localhost:8001/v1", "model": "embed"}},
+            "reranker": {"backend": "openai_compatible", "endpoint": {"base_url": "http://localhost:8002", "model": "reranker"}},
             "processor": {"backend": "codex_cli", "model": "gpt-5.2-codex"}
         });
         assert!(build(Some(&base)).is_err());
@@ -577,8 +760,8 @@ mod tests {
     fn processor_backend_configuration_rejects_unknown_fields() {
         let value = json!({
             "protocol": "custom",
-            "embedding": {"base_url": "http://localhost:8001/v1", "model": "embed"},
-            "reranker": {"base_url": "http://localhost:8002", "model": "reranker"},
+            "embedding": {"backend": "openai_compatible", "endpoint": {"base_url": "http://localhost:8001/v1", "model": "embed"}},
+            "reranker": {"backend": "openai_compatible", "endpoint": {"base_url": "http://localhost:8002", "model": "reranker"}},
             "processor": {
                 "backend": "codex_cli",
                 "model": "gpt-5.2-codex",
@@ -591,8 +774,8 @@ mod tests {
     fn offline_custom_strategy() -> Box<dyn MemoryStrategy> {
         build(Some(&json!({
             "protocol": "custom",
-            "embedding": {"base_url": "http://127.0.0.1:9/v1", "model": "embed"},
-            "reranker": {"base_url": "http://127.0.0.1:9", "model": "reranker"},
+            "embedding": {"backend": "openai_compatible", "endpoint": {"base_url": "http://127.0.0.1:9/v1", "model": "embed"}},
+            "reranker": {"backend": "openai_compatible", "endpoint": {"base_url": "http://127.0.0.1:9", "model": "reranker"}},
             "processor": {"backend": "openai_compatible", "endpoint": {"base_url": "http://127.0.0.1:9/v1", "model": "processor"}},
             "retrieval": {"require_dense_index": false}
         })))
@@ -674,6 +857,11 @@ mod tests {
             .await
             .unwrap();
         assert!(result.items.is_empty());
+        assert!(result.metadata["timing"]["retrieval_ms"].is_number());
+        assert_eq!(
+            result.metadata["strategy_benchmark_trace"]["schema_version"],
+            BENCHMARK_TRACE_SCHEMA_VERSION
+        );
     }
 
     #[tokio::test]
@@ -785,8 +973,8 @@ mod tests {
         let endpoint = format!("http://{address}");
         let settings = json!({
             "protocol": "paper-v2",
-            "embedding": {"base_url": format!("{endpoint}/v1"), "model": "embed"},
-            "reranker": {"base_url": endpoint, "model": "reranker"},
+            "embedding": {"backend": "openai_compatible", "endpoint": {"base_url": format!("{endpoint}/v1"), "model": "embed"}},
+            "reranker": {"backend": "openai_compatible", "endpoint": {"base_url": endpoint, "model": "reranker"}},
             "processor": {"backend": "openai_compatible", "endpoint": {"base_url": format!("http://{address}/v1"), "model": "processor"}}
         });
         let strategy = build(Some(&settings)).unwrap();
@@ -848,6 +1036,11 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(result.items.len(), 1);
+        assert!(result.metadata["timing"]["total_ms"].is_number());
+        assert_eq!(
+            result.metadata["strategy_benchmark_trace"]["schema_version"],
+            BENCHMARK_TRACE_SCHEMA_VERSION
+        );
         match &result.items[0] {
             RecallItem::Memory {
                 namespace,

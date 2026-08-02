@@ -9,10 +9,14 @@
 #![warn(missing_docs)]
 
 pub mod adapters;
+/// Isolated JSONL benchmark support that exercises the production strategies.
+pub mod benchmark;
 /// Content-addressed attachment storage and extraction.
 pub mod blob;
 /// Configuration defaults, loading, and validation.
 pub mod config;
+#[doc(hidden)]
+pub mod daemon_ipc;
 /// Portable export and explicit retention operations.
 pub mod governance;
 /// Real-time hook ingestion and durable spool replay.

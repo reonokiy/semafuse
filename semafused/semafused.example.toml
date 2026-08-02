@@ -1,0 +1,21 @@
+# TOML does not expand environment variables. Replace the UID and every model
+# path below with absolute paths valid for the account running semafused.
+
+[daemon]
+socket_path = "/run/user/1000/semafuse/semafused.sock"
+max_connections = 64
+shutdown_grace_ms = 5000
+
+[services.models]
+max_concurrent_inferences = 1
+
+[services.models.embedding]
+model_dir = "/absolute/path/to/Qwen3-Embedding-0.6B"
+# Full attention is memory intensive. Raise these only after measuring the host.
+max_length = 2048
+batch_size = 1
+
+[services.models.reranker]
+model_dir = "/absolute/path/to/bge-reranker-v2-m3"
+max_length = 1024
+batch_size = 1
