@@ -1,0 +1,26 @@
+[
+  {
+    "context": "Mara entered the archive before dawn. She found the cobalt key beneath the third shelf. At noon, Mara used the cobalt key to open the observatory.",
+    "questions": [
+      "Mara entered the archive before dawn. What happened next?",
+      "Mara found the cobalt key beneath the third shelf. What happened next?"
+    ],
+    "answers": [
+      ["She found the cobalt key beneath the third shelf."],
+      ["Mara used the cobalt key to open the observatory."]
+    ],
+    "metadata": {
+      "source": "eventqa_full",
+      "qa_pair_ids": ["fixture-event-0", "fixture-event-1"]
+    }
+  },
+  {
+    "context": "[1] The harbor master is Elena Voss. [2] The harbor master is Tomas Reed. [3] Tomas Reed works in Northport.",
+    "questions": ["Who is the current harbor master?"],
+    "answers": [["Tomas Reed"]],
+    "metadata": {
+      "source": "factconsolidation_sh_262k",
+      "qa_pair_ids": ["fixture-fact-0"]
+    }
+  }
+]

@@ -1,0 +1,21 @@
+[build-system]
+requires = ["hatchling>=1.25"]
+build-backend = "hatchling.build"
+
+[project]
+name = "semafuse-memoryagentbench"
+version = "0.1.0"
+description = "Pinned, label-isolated MemoryAgentBench preparation and scoring harness"
+requires-python = ">=3.10"
+dependencies = [
+  "datasets==5.0.1",
+  "nltk==3.10.2",
+  "rank-bm25==0.2.2",
+  "tiktoken==0.13.0",
+]
+
+[project.scripts]
+semafuse-memoryagentbench = "memoryagentbench_harness.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["memoryagentbench_harness"]

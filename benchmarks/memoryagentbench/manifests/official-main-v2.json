@@ -1,0 +1,134 @@
+{
+  "schema_version": 1,
+  "dataset": {
+    "repo_id": "ai-hyz/MemoryAgentBench",
+    "revision": "7ea066982b140a19337e17e60d45d4076e042faf",
+    "license": "mit",
+    "files": {
+      "data/Accurate_Retrieval-00000-of-00001.parquet": {
+        "bytes": 20024386,
+        "lfs_sha256": "56c3cd80fb6731a3e53cd1a6be3148f54df60ff2d290ee50e28f8acebf9655c1"
+      },
+      "data/Conflict_Resolution-00000-of-00001.parquet": {
+        "bytes": 1491588,
+        "lfs_sha256": "24d5c3f09ce0ce15625cb9f8a98f44f0d864ca6c94d7b4ad04eb697ca3a5ff45"
+      },
+      "data/Long_Range_Understanding-00000-of-00001.parquet": {
+        "bytes": 49342452,
+        "lfs_sha256": "5ab175461954db67770d4a4cb69e569b513ebb96aceb9ee79b57f67488bcd539"
+      },
+      "data/Test_Time_Learning-00000-of-00001.parquet": {
+        "bytes": 3947476,
+        "lfs_sha256": "5338753be48f925d03318eed66117286e3489025fabe050a547bd086cd7d79c0"
+      }
+    },
+    "split_rows": {
+      "Accurate_Retrieval": 22,
+      "Test_Time_Learning": 6,
+      "Long_Range_Understanding": 110,
+      "Conflict_Resolution": 8
+    }
+  },
+  "reference_implementation": {
+    "repository": "https://github.com/HUST-AI-HYZ/MemoryAgentBench",
+    "revision": "455306dcabc3842526eb83cd4e225e5d486c5c5d",
+    "license": "MIT"
+  },
+  "paper": {
+    "arxiv_id": "2507.05257",
+    "arxiv_revision_used_for_protocol_audit": "v2",
+    "openreview_id": "DT7JyQC3MR",
+    "venue": "ICLR 2026",
+    "published_category_name": "Selective Forgetting",
+    "current_dataset_split_name": "Conflict_Resolution"
+  },
+  "paper_track": {
+    "generator": "gpt-4o-mini",
+    "generator_alias_is_not_version_pinned_upstream": true,
+    "temperature": 0.7,
+    "top_k": 10,
+    "tokenizer": "tiktoken:gpt-4o-mini",
+    "sentence_splitter": "nltk.sent_tokenize:punkt",
+    "primary_metric": "substring_exact_match",
+    "score_scale": "percent",
+    "query_prompt_track": "rag_agent",
+    "harness_dependency_versions": {
+      "datasets": "5.0.1",
+      "nltk": "3.10.2",
+      "rank-bm25": "0.2.2",
+      "tiktoken": "0.13.0"
+    }
+  },
+  "sources": {
+    "ruler_qa1_197K": {
+      "split": "Accurate_Retrieval",
+      "competency": "accurate_retrieval",
+      "paper_name": "SH-QA",
+      "expected_contexts": 1,
+      "expected_queries": 100,
+      "chunk_size_tokens": 512,
+      "generation_max_tokens": 50,
+      "prompt_family": "ruler_qa",
+      "primary_metric": "substring_exact_match"
+    },
+    "ruler_qa2_421K": {
+      "split": "Accurate_Retrieval",
+      "competency": "accurate_retrieval",
+      "paper_name": "MH-QA",
+      "expected_contexts": 1,
+      "expected_queries": 100,
+      "chunk_size_tokens": 512,
+      "generation_max_tokens": 50,
+      "prompt_family": "ruler_qa",
+      "primary_metric": "substring_exact_match"
+    },
+    "eventqa_full": {
+      "split": "Accurate_Retrieval",
+      "competency": "accurate_retrieval",
+      "paper_name": "EventQA",
+      "expected_contexts": 5,
+      "expected_queries": 500,
+      "chunk_size_tokens": 4096,
+      "generation_max_tokens": 40,
+      "prompt_family": "eventqa",
+      "primary_metric": "substring_exact_match"
+    },
+    "factconsolidation_sh_262k": {
+      "split": "Conflict_Resolution",
+      "competency": "selective_forgetting",
+      "paper_name": "FC-SH",
+      "expected_contexts": 1,
+      "expected_queries": 100,
+      "chunk_size_tokens": 512,
+      "generation_max_tokens": 10,
+      "prompt_family": "factconsolidation",
+      "primary_metric": "substring_exact_match"
+    },
+    "factconsolidation_mh_262k": {
+      "split": "Conflict_Resolution",
+      "competency": "selective_forgetting",
+      "paper_name": "FC-MH",
+      "expected_contexts": 1,
+      "expected_queries": 100,
+      "chunk_size_tokens": 512,
+      "generation_max_tokens": 10,
+      "prompt_family": "factconsolidation",
+      "primary_metric": "substring_exact_match"
+    }
+  },
+  "published_main_table_percent": {
+    "BM25": {"SH-QA": 66.0, "MH-QA": 56.0, "EventQA": 74.6, "FC-SH": 48.0, "FC-MH": 3.0},
+    "Text-Embed-3-Small": {"SH-QA": 60.0, "MH-QA": 44.0, "EventQA": 63.0, "FC-SH": 28.0, "FC-MH": 3.0},
+    "HippoRAG-v2": {"SH-QA": 76.0, "MH-QA": 66.0, "EventQA": 67.6, "FC-SH": 54.0, "FC-MH": 5.0},
+    "Mem0": {"SH-QA": 25.0, "MH-QA": 32.0, "EventQA": 37.5, "FC-SH": 18.0, "FC-MH": 2.0},
+    "Cognee": {"SH-QA": 31.0, "MH-QA": 26.0, "EventQA": 26.8, "FC-SH": 28.0, "FC-MH": 3.0},
+    "GPT-4o-mini-full-context": {"SH-QA": 64.0, "MH-QA": 43.0, "EventQA": 59.0, "FC-SH": 45.0, "FC-MH": 5.0}
+  },
+  "reproducibility_caveats": [
+    "The upstream reference loader requests revision=main, so the paper does not identify an immutable dataset commit. This harness pins the current official snapshot instead of claiming a bit-identical historical snapshot.",
+    "The paper specifies 512-token chunks for SH-QA, MH-QA, LME(S*) and FactConsolidation, but the current repository YAML files default to 4096. This manifest follows the paper main-experiment text.",
+    "The paper says RAG settings are standardized around TopK=10, while the current official Mem0 YAML sets retrieve_num=100 and its expensive-memory methods use 4096-token chunks. Published Mem0 values are therefore contextual baselines, not a controlled common-policy retriever comparison.",
+    "The published scores combine retrieval or memory construction with GPT-4o-mini answer generation. Retrieval-only diagnostics are not directly comparable.",
+    "Upstream names the fourth competency Selective Forgetting in the paper and Conflict Resolution in the current README/dataset split. The underlying FactConsolidation sources are the same benchmark family."
+  ]
+}

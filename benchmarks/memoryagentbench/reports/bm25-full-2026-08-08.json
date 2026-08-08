@@ -1,0 +1,194 @@
+{
+  "schema_version": 1,
+  "benchmark": "MemoryAgentBench-main",
+  "track": "retrieval-only-rank-bm25-0.2.2",
+  "official_benchmark_score": false,
+  "metric_notice": "All coverage values are non-official retrieval diagnostics; the paper reports end-to-end answer accuracy after an LLM reader.",
+  "finished_at_utc": "2026-08-08T18:34:30.577904+00:00",
+  "dataset": {
+    "repo_id": "ai-hyz/MemoryAgentBench",
+    "revision": "7ea066982b140a19337e17e60d45d4076e042faf",
+    "license": "mit",
+    "verified_files": [
+      {
+        "filename": "data/Accurate_Retrieval-00000-of-00001.parquet",
+        "bytes": 20024386,
+        "sha256": "56c3cd80fb6731a3e53cd1a6be3148f54df60ff2d290ee50e28f8acebf9655c1"
+      },
+      {
+        "filename": "data/Conflict_Resolution-00000-of-00001.parquet",
+        "bytes": 1491588,
+        "sha256": "24d5c3f09ce0ce15625cb9f8a98f44f0d864ca6c94d7b4ad04eb697ca3a5ff45"
+      }
+    ]
+  },
+  "provenance": {
+    "source_manifest_sha256": "1a941a808ac3573dc603084a3ff2d3d99d9b2529e47b3e70e3f6fbb63198d406",
+    "harness_tree_sha256": "4bb8bfc38bc32ea9f4071899066ed3dd3e2546fe4e5fa46e5bc4c65c049435cb",
+    "suite_report_sha256": "ed0beb5b0544340bd774eac3a2ff073de44cf9df5f81d6ebd5b1dd0eb01468d9",
+    "sha256sums_sha256": "c356d72a3eb9e4e164719c35c4640c901e29b1cbef898f99a35e7b976bec1777"
+  },
+  "environment": {
+    "python": "3.12.13",
+    "direct_packages": {
+      "datasets": "5.0.1",
+      "nltk": "3.10.2",
+      "rank-bm25": "0.2.2",
+      "tiktoken": "0.13.0"
+    }
+  },
+  "reproduction_command": "benchmarks/memoryagentbench/.venv/bin/python -m memoryagentbench_harness run-suite --output-dir benchmarks/memoryagentbench/results/bm25-full --cache-dir benchmarks/memoryagentbench/prepared/hf-cache",
+  "run": {
+    "cache_state": "warm",
+    "wall_seconds": 21.95797638199292,
+    "contexts": 9,
+    "memories": 3032,
+    "queries": 900,
+    "paid_api_calls": 0,
+    "reader": null,
+    "official_answer_count": 0
+  },
+  "metric_definitions": {
+    "answer_coverage_at_k": "Gold answer string occurs in the Top-K retrieved chunks.",
+    "answer_surface_oracle_coverage": "Gold answer string occurs anywhere in the complete memory; this is the proxy metric's ceiling.",
+    "answer_coverage_given_surface_present": "Top-K answer coverage restricted to questions whose answer string occurs somewhere in complete memory."
+  },
+  "aggregate_metrics_percent": {
+    "answer_coverage_at_k": 29.333333333333332,
+    "answer_surface_oracle_coverage": 44.888888888888886,
+    "answer_coverage_given_surface_present": 65.34653465346534
+  },
+  "aggregate_metric_counts": {
+    "answer_coverage_at_k": 900,
+    "answer_surface_oracle_coverage": 900,
+    "answer_coverage_given_surface_present": 404
+  },
+  "tasks": {
+    "ruler_qa1_197K": {
+      "paper_name": "SH-QA",
+      "contexts": 1,
+      "memories": 412,
+      "queries": 100,
+      "chunk_size_tokens": 512,
+      "top_k": 10,
+      "metrics_percent": {
+        "answer_coverage_at_k": 71.0,
+        "answer_surface_oracle_coverage": 100.0,
+        "answer_coverage_given_surface_present": 71.0
+      },
+      "metric_counts": {
+        "answer_coverage_at_k": 100,
+        "answer_surface_oracle_coverage": 100,
+        "answer_coverage_given_surface_present": 100
+      },
+      "timing_seconds": {
+        "prepare": 1.4593689299654216,
+        "bm25_retrieval": 0.15156943211331964,
+        "score": 0.3239530420396477,
+        "total": 1.934891404118389
+      }
+    },
+    "ruler_qa2_421K": {
+      "paper_name": "MH-QA",
+      "contexts": 1,
+      "memories": 875,
+      "queries": 100,
+      "chunk_size_tokens": 512,
+      "top_k": 10,
+      "metrics_percent": {
+        "answer_coverage_at_k": 69.0,
+        "answer_surface_oracle_coverage": 100.0,
+        "answer_coverage_given_surface_present": 69.0
+      },
+      "metric_counts": {
+        "answer_coverage_at_k": 100,
+        "answer_surface_oracle_coverage": 100,
+        "answer_coverage_given_surface_present": 100
+      },
+      "timing_seconds": {
+        "prepare": 0.46191911899950355,
+        "bm25_retrieval": 0.5377335461089388,
+        "score": 0.4016453140648082,
+        "total": 1.4012979791732505
+      }
+    },
+    "eventqa_full": {
+      "paper_name": "EventQA",
+      "contexts": 5,
+      "memories": 671,
+      "queries": 500,
+      "chunk_size_tokens": 4096,
+      "top_k": 10,
+      "metrics_percent": {
+        "answer_coverage_at_k": 0.2,
+        "answer_surface_oracle_coverage": 0.8,
+        "answer_coverage_given_surface_present": 25.0
+      },
+      "metric_counts": {
+        "answer_coverage_at_k": 500,
+        "answer_surface_oracle_coverage": 500,
+        "answer_coverage_given_surface_present": 4
+      },
+      "timing_seconds": {
+        "prepare": 2.8223686310229823,
+        "bm25_retrieval": 4.599951316951774,
+        "score": 8.69936708000023,
+        "total": 16.121687027974986
+      }
+    },
+    "factconsolidation_sh_262k": {
+      "paper_name": "FC-SH",
+      "contexts": 1,
+      "memories": 537,
+      "queries": 100,
+      "chunk_size_tokens": 512,
+      "top_k": 10,
+      "metrics_percent": {
+        "answer_coverage_at_k": 91.0,
+        "answer_surface_oracle_coverage": 100.0,
+        "answer_coverage_given_surface_present": 91.0
+      },
+      "metric_counts": {
+        "answer_coverage_at_k": 100,
+        "answer_surface_oracle_coverage": 100,
+        "answer_coverage_given_surface_present": 100
+      },
+      "timing_seconds": {
+        "prepare": 0.6044980220030993,
+        "bm25_retrieval": 0.21160472196061164,
+        "score": 0.2912874040193856,
+        "total": 1.1073901479830965
+      }
+    },
+    "factconsolidation_mh_262k": {
+      "paper_name": "FC-MH",
+      "contexts": 1,
+      "memories": 537,
+      "queries": 100,
+      "chunk_size_tokens": 512,
+      "top_k": 10,
+      "metrics_percent": {
+        "answer_coverage_at_k": 32.0,
+        "answer_surface_oracle_coverage": 100.0,
+        "answer_coverage_given_surface_present": 32.0
+      },
+      "metric_counts": {
+        "answer_coverage_at_k": 100,
+        "answer_surface_oracle_coverage": 100,
+        "answer_coverage_given_surface_present": 100
+      },
+      "timing_seconds": {
+        "prepare": 0.6020594229921699,
+        "bm25_retrieval": 0.33232257096096873,
+        "score": 0.3209327229997143,
+        "total": 1.255314716952853
+      }
+    }
+  },
+  "limitations": [
+    "This receipt contains no paper-comparable answer score because no LLM reader was called.",
+    "EventQA has only 4/500 surface-answer-present questions, so its 0.2% raw coverage and 25% conditional coverage do not measure evidence recall reliably.",
+    "FC-MH answer coverage does not prove retrieval of all supporting hops or correct composition.",
+    "The five sources do not expose a shared gold-chunk relevance annotation, so the 29.333% aggregate is diagnostic only."
+  ]
+}
