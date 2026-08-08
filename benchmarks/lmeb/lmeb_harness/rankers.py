@@ -29,6 +29,15 @@ _ENGLISH_STOPWORDS = frozenset(
 )
 
 
+def _nonnegative_latency(value: Any, path: str) -> float:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise HarnessError(f"{path} must be a finite non-negative number")
+    normalized = float(value)
+    if not math.isfinite(normalized) or normalized < 0:
+        raise HarnessError(f"{path} must be a finite non-negative number")
+    return normalized
+
+
 def _tokens(text: str, remove_stopwords: bool) -> list[str]:
     words = _TOKEN_PATTERN.findall(text.lower())
     return [word for word in words if not remove_stopwords or word not in _ENGLISH_STOPWORDS]
@@ -265,11 +274,55 @@ class SemafuseJsonlRanker:
             stage: normalize_ranking(values.get(stage), f"stage_rankings.{stage}")
             for stage in self.stages
         }
+        retrieval_latency = _nonnegative_latency(
+            response.get("retrieval_latency_s"), "retrieval_latency_s"
+        )
+        processing_latency = _nonnegative_latency(
+            response.get("processing_latency_s"), "processing_latency_s"
+        )
         metadata = {
             "candidate_scene_id": candidates.scene_id,
-            "retrieval_latency_s": response.get("retrieval_latency_s"),
-            "processing_latency_s": response.get("processing_latency_s"),
+            "retrieval_latency_s": retrieval_latency,
+            "processing_latency_s": processing_latency,
         }
+        runner_metadata = response.get("metadata")
+        if runner_metadata is not None:
+            if not isinstance(runner_metadata, dict):
+                raise HarnessError("semafuse response metadata must be an object")
+            trace = runner_metadata.get("benchmark_trace")
+            if trace is not None:
+                if not isinstance(trace, dict):
+                    raise HarnessError("semafuse metadata.benchmark_trace must be an object")
+                timing = trace.get("timing_s")
+                if not isinstance(timing, dict):
+                    raise HarnessError(
+                        "semafuse metadata.benchmark_trace.timing_s must be an object"
+                    )
+                timing_fields = (
+                    "ingest",
+                    "index",
+                    "recall_total",
+                    "strategy_recall_total",
+                    "retrieval",
+                    "window_and_processing",
+                )
+                metadata["runner_timing_s"] = {
+                    field: _nonnegative_latency(
+                        timing.get(field), f"metadata.benchmark_trace.timing_s.{field}"
+                    )
+                    for field in timing_fields
+                }
+                for source, destination in (
+                    ("isolation", "runner_isolation"),
+                    ("timing_source", "runner_timing_source"),
+                    ("execution_mode", "runner_execution_mode"),
+                ):
+                    value = trace.get(source)
+                    if not isinstance(value, str) or not value:
+                        raise HarnessError(
+                            f"metadata.benchmark_trace.{source} must be a non-empty string"
+                        )
+                    metadata[destination] = value
         return rankings, metadata
 
     def close(self) -> None:

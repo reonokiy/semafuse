@@ -72,6 +72,13 @@ Inline API keys, tokens, authorization headers, passwords, and secret-looking
 command arguments are rejected. Supply secrets through the parent environment
 and list only optional variable names in `ranker.env_names`; values are never
 serialized.
+
+When the backend returns Semafuse's `metadata.benchmark_trace`, the harness
+also preserves its validated ingest, index, recall, retrieval, and processing
+timings. Task results summarize both retrieval-only latency and the cold
+per-query construction/pipeline latency at mean, p50, and p95. Older result
+artifacts that predate this field remain score-valid, but their reported
+latency covers only retrieval and processing and must be labeled accordingly.
 Use the Rust runner in retrieval-only mode, for example:
 
 ```json

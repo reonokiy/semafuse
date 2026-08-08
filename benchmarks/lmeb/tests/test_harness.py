@@ -92,6 +92,51 @@ class MetricsTests(unittest.TestCase):
 
 
 class DatasetAndRunnerTests(unittest.TestCase):
+    def test_official_numeric_json_ids_match_string_qrels(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            corpus = root / "corpus.jsonl"
+            queries = root / "queries.jsonl"
+            qrels = root / "qrels.tsv"
+            candidates = root / "candidates.jsonl"
+            corpus.write_text('{"id": 7, "text": "relevant document"}\n', encoding="utf-8")
+            queries.write_text('{"id": 3, "text": "relevant"}\n', encoding="utf-8")
+            qrels.write_text("3\t7\t1\n", encoding="utf-8")
+            candidates.write_text(
+                '{"scene_id": 3, "candidate_doc_ids": [7]}\n', encoding="utf-8"
+            )
+            raw = {
+                "schema_version": 1,
+                "run": {
+                    "name": "numeric-ids",
+                    "protocol": "paper-reproduction",
+                    "instruction_setting": "without",
+                    "output_dir": str(root / "results"),
+                    "resume": True,
+                },
+                "ranker": {"kind": "bm25"},
+                "tasks": [
+                    {
+                        "id": "CovidQA/Covid-QA",
+                        "dataset": "CovidQA",
+                        "subset": "Covid-QA",
+                        "memory_type": "LMEB_Semantic",
+                        "corpus": str(corpus),
+                        "queries": str(queries),
+                        "qrels": str(qrels),
+                        "candidates": str(candidates),
+                        "candidate_match": "official",
+                        "license": "fixture",
+                    }
+                ],
+            }
+            manifest_path = root / "manifest.json"
+            manifest_path.write_text(json.dumps(raw), encoding="utf-8")
+            task = load_task(load_manifest(manifest_path).tasks[0])
+            self.assertEqual(tuple(task.queries), ("3",))
+            self.assertEqual(tuple(task.corpus), ("7",))
+            self.assertEqual(resolve_candidates(task, "3").doc_ids, ("7",))
+
     def test_official_prefix_candidate_mapping(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             manifest = load_manifest(write_manifest(Path(temporary), {"kind": "bm25"}))
@@ -161,6 +206,19 @@ class DatasetAndRunnerTests(unittest.TestCase):
             stages = result["tasks"]["LoCoMo/single_hop"]["metrics"]["stages"]
             self.assertEqual(set(stages), {"dense", "bm25", "rrf", "retrieved"})
             self.assertIn("common-policy deviation", result["fidelity"]["candidate_filter"])
+            task_dir = next((result_path.parent / "tasks").iterdir())
+            rows = [
+                json.loads(line)
+                for line in (task_dir / "predictions.jsonl").read_text(encoding="utf-8").splitlines()
+            ]
+            self.assertEqual(rows[0]["metadata"]["runner_timing_s"]["ingest"], 0.02)
+            self.assertEqual(
+                rows[0]["metadata"]["runner_isolation"],
+                "fresh_sqlite_memory_per_question",
+            )
+            latency = result["tasks"]["LoCoMo/single_hop"]["latency"]
+            self.assertEqual(latency["runner_construction_s"]["mean"], 0.05)
+            self.assertEqual(latency["runner_cold_pipeline_s"]["mean"], 0.06)
 
     def test_paper_label_rejects_cold_candidate_semafuse(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

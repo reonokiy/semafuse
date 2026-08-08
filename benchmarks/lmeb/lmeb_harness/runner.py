@@ -189,6 +189,50 @@ def _average_metrics(values: list[Mapping[str, float | None]]) -> dict[str, floa
     return output
 
 
+def _summarize_latencies(
+    completed: Mapping[str, tuple[Mapping[str, list[RankingEntry]], Mapping[str, Any]]],
+) -> dict[str, Mapping[str, float | int]]:
+    values: dict[str, list[float]] = {}
+    for _, metadata in completed.values():
+        for field in ("retrieval_latency_s", "processing_latency_s"):
+            value = metadata.get(field)
+            if isinstance(value, (int, float)) and not isinstance(value, bool):
+                values.setdefault(field, []).append(float(value))
+        runner_timing = metadata.get("runner_timing_s")
+        if isinstance(runner_timing, Mapping):
+            for field, value in runner_timing.items():
+                if isinstance(value, (int, float)) and not isinstance(value, bool):
+                    values.setdefault(f"runner_{field}_s", []).append(float(value))
+            construction_fields = (runner_timing.get("ingest"), runner_timing.get("index"))
+            pipeline_fields = (*construction_fields, runner_timing.get("recall_total"))
+            if all(
+                isinstance(value, (int, float)) and not isinstance(value, bool)
+                for value in construction_fields
+            ):
+                values.setdefault("runner_construction_s", []).append(
+                    sum(float(value) for value in construction_fields)
+                )
+            if all(
+                isinstance(value, (int, float)) and not isinstance(value, bool)
+                for value in pipeline_fields
+            ):
+                values.setdefault("runner_cold_pipeline_s", []).append(
+                    sum(float(value) for value in pipeline_fields)
+                )
+
+    summaries: dict[str, Mapping[str, float | int]] = {}
+    for field, observations in sorted(values.items()):
+        ordered = sorted(observations)
+        count = len(ordered)
+        summaries[field] = {
+            "count": count,
+            "mean": sum(ordered) / count,
+            "p50": ordered[int((count - 1) * 0.50)],
+            "p95": ordered[int((count - 1) * 0.95)],
+        }
+    return summaries
+
+
 def _aggregate(task_results: Mapping[str, Any]) -> dict[str, Any]:
     stages = sorted(
         {stage for result in task_results.values() for stage in result["metrics"]["stages"]}
@@ -358,6 +402,7 @@ def run_manifest(
                     "candidate_scenes": len(task.candidates),
                 },
                 "metrics": {"stages": stage_metrics},
+                "latency": _summarize_latencies(completed),
                 "artifacts": {
                     "predictions": str(final_predictions.relative_to(run_dir)),
                     "predictions_sha256": sha256_file(final_predictions),

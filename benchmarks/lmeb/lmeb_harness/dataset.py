@@ -53,11 +53,22 @@ def _record_string(record: Mapping[str, Any], field: str, where: str, *, optiona
     return value
 
 
+def _record_id(record: Mapping[str, Any], field: str, where: str) -> str:
+    """Canonicalize Hub JSON scalar IDs to the string form used by qrels TSV files."""
+    value = record.get(field)
+    if isinstance(value, bool) or not isinstance(value, (str, int)):
+        raise HarnessError(f"{where}.{field} must be a non-empty string or integer")
+    canonical = str(value)
+    if not canonical:
+        raise HarnessError(f"{where}.{field} must be a non-empty string or integer")
+    return canonical
+
+
 def _load_corpus(path: Path) -> dict[str, Document]:
     corpus: dict[str, Document] = {}
     for line, record in _jsonl(path):
         where = f"{path}:{line}"
-        doc_id = _record_string(record, "id", where)
+        doc_id = _record_id(record, "id", where)
         if doc_id in corpus:
             raise HarnessError(f"duplicate corpus id {doc_id!r} at {where}")
         document = Document(
@@ -77,7 +88,7 @@ def _load_queries(path: Path) -> dict[str, Query]:
     queries: dict[str, Query] = {}
     for line, record in _jsonl(path):
         where = f"{path}:{line}"
-        query_id = _record_string(record, "id", where)
+        query_id = _record_id(record, "id", where)
         if query_id in queries:
             raise HarnessError(f"duplicate query id {query_id!r} at {where}")
         queries[query_id] = Query(query_id, _record_string(record, "text", where))
@@ -127,15 +138,20 @@ def _load_candidates(path: Path | None) -> dict[str, tuple[str, ...]]:
     candidates: dict[str, tuple[str, ...]] = {}
     for line, record in _jsonl(path):
         where = f"{path}:{line}"
-        scene_id = _record_string(record, "scene_id", where)
+        scene_id = _record_id(record, "scene_id", where)
         values = record.get("candidate_doc_ids")
-        if not isinstance(values, list) or not all(isinstance(value, str) for value in values):
-            raise HarnessError(f"{where}.candidate_doc_ids must be a string array")
-        if len(values) != len(set(values)):
+        if not isinstance(values, list) or not all(
+            not isinstance(value, bool) and isinstance(value, (str, int)) for value in values
+        ):
+            raise HarnessError(f"{where}.candidate_doc_ids must be a string/integer array")
+        canonical_values = tuple(str(value) for value in values)
+        if any(not value for value in canonical_values):
+            raise HarnessError(f"{where}.candidate_doc_ids must not contain empty IDs")
+        if len(canonical_values) != len(set(canonical_values)):
             raise HarnessError(f"duplicate candidate doc id at {where}")
         if scene_id in candidates:
             raise HarnessError(f"duplicate candidate scene_id {scene_id!r} at {where}")
-        candidates[scene_id] = tuple(values)
+        candidates[scene_id] = canonical_values
     return candidates
 
 
