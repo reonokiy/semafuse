@@ -1,2 +1,4 @@
 # Official self-hosted OSS repository, pinned 2026-08-08.
 mem0ai @ git+https://github.com/mem0ai/mem0.git@4debc58a83377b18be81ae1e5969a300736b2fac
+# Reader-token counting for the pinned Hugging Face tokenizer in real runs.
+transformers==5.14.1

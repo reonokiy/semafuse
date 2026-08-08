@@ -1,0 +1,46 @@
+{
+  "adapter": {
+    "kind": "mem0_oss",
+    "config": {
+      "scope_id": "locomo314-history",
+      "infer": false,
+      "provenance_policy": "exact_message",
+      "search_threshold": 0.0,
+      "rerank": false,
+      "memory_config": {
+        "version": "v1.1",
+        "llm": {
+          "provider": "openai",
+          "config": {
+            "model": "google/gemini-2.5-flash-lite",
+            "openai_base_url": "https://openrouter.ai/api/v1",
+            "api_key_env": "OPENROUTER_API_KEY"
+          }
+        },
+        "embedder": {
+          "provider": "openai",
+          "config": {
+            "model": "perplexity/pplx-embed-v1-0.6b",
+            "openai_base_url": "https://openrouter.ai/api/v1",
+            "api_key_env": "OPENROUTER_API_KEY"
+          }
+        },
+        "vector_store": {
+          "provider": "qdrant",
+          "config": {
+            "path": "/tmp/semafuse-mem0-locomo314-qdrant",
+            "collection_name": "semafuse_mem0_locomo314_raw",
+            "embedding_model_dims": 1024
+          }
+        },
+        "history_db_path": "/tmp/semafuse-mem0-locomo314-history.db"
+      }
+    }
+  },
+  "tokenizer": {
+    "kind": "huggingface",
+    "model": "Qwen/Qwen3-32B",
+    "revision": "9216db5781bf21249d130ec9da846c4624c16137"
+  },
+  "run_policy": {"track": "development"}
+}

@@ -1,0 +1,21 @@
+{
+  "adapter": {
+    "kind": "amem",
+    "config": {
+      "model_name": "sentence-transformers/all-MiniLM-L6-v2",
+      "model_revision": "1110a243fdf4706b3f48f1d95db1a4f5529b4d41",
+      "model_cache_dir": "/tmp/semafuse-amem-hf-cache",
+      "llm_backend": "openai",
+      "llm_model": "google/gemini-2.5-flash-lite",
+      "evo_threshold": 100,
+      "api_key_env": "OPENROUTER_API_KEY",
+      "openai_base_url": "https://openrouter.ai/api/v1"
+    }
+  },
+  "tokenizer": {
+    "kind": "huggingface",
+    "model": "Qwen/Qwen3-32B",
+    "revision": "9216db5781bf21249d130ec9da846c4624c16137"
+  },
+  "run_policy": {"track": "development"}
+}

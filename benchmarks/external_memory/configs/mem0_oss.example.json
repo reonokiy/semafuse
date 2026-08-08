@@ -4,6 +4,7 @@
     "config": {
       "scope_id": "benchmark-history",
       "infer": true,
+      "provenance_policy": "origin_only",
       "search_threshold": 0.1,
       "rerank": false,
       "memory_config": {

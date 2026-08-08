@@ -4,6 +4,7 @@ import json
 import os
 import sys
 import tempfile
+import types
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -129,11 +130,21 @@ class ExternalMemoryContractTests(unittest.TestCase):
             return real_import(name, *args, **kwargs)
 
         with patch.dict(os.environ, {"TEST_API_KEY": "not-a-real-secret"}):
-            amem = AMemAdapter({"llm_backend": "openai", "api_key_env": "TEST_API_KEY"})
+            amem = AMemAdapter(
+                {
+                    "model_name": "sentence-transformers/all-MiniLM-L6-v2",
+                    "model_revision": "1" * 40,
+                    "llm_backend": "openai",
+                    "llm_model": "test/model",
+                    "api_key_env": "TEST_API_KEY",
+                    "openai_base_url": "https://openrouter.ai/api/v1",
+                }
+            )
             mem0 = Mem0OssAdapter(
                 {
                     "memory_config": {},
                     "scope_id": "test",
+                    "infer": False,
                 }
             )
         with patch("builtins.__import__", side_effect=reject):
@@ -183,8 +194,9 @@ class ExternalMemoryContractTests(unittest.TestCase):
             def __init__(self) -> None:
                 self.calls: list[dict] = []
 
-            def add(self, messages: list[dict], **kwargs: object) -> None:
+            def add(self, messages: list[dict], **kwargs: object) -> dict:
                 self.calls.append({"messages": messages, **kwargs})
+                return {"results": [{"id": f"memory-{len(self.calls)}", "event": "ADD"}]}
 
         adapter = Mem0OssAdapter({"memory_config": {}, "scope_id": "history", "infer": False})
         memory = MemoryStub()
@@ -201,6 +213,104 @@ class ExternalMemoryContractTests(unittest.TestCase):
         self.assertEqual(len(memory.calls), 2)
         self.assertEqual(memory.calls[0]["metadata"]["semafuse_source_ids"], ["source-1"])
         self.assertEqual(memory.calls[1]["metadata"]["semafuse_source_ids"], ["source-2"])
+        self.assertEqual(adapter._provenance["memory-1"][0], ("source-1",))
+        self.assertEqual(adapter._provenance["memory-2"][0], ("source-2",))
+
+    def test_mem0_inference_requires_explicit_conservative_provenance(self) -> None:
+        with self.assertRaisesRegex(ConfigurationError, "origin_only"):
+            Mem0OssAdapter({"memory_config": {}, "scope_id": "history", "infer": True})
+        adapter = Mem0OssAdapter(
+            {
+                "memory_config": {},
+                "scope_id": "history",
+                "infer": True,
+                "provenance_policy": "origin_only",
+            }
+        )
+        self.assertEqual(adapter._provenance_policy, "origin_only")
+
+    def test_mem0_search_fails_closed_on_untracked_or_conflicting_provenance(self) -> None:
+        class MemoryStub:
+            result: dict
+
+            def search(self, *_: object, **__: object) -> dict:
+                return {"results": [self.result]}
+
+        adapter = Mem0OssAdapter({"memory_config": {}, "scope_id": "history", "infer": False})
+        memory = MemoryStub()
+        memory.result = {"id": "m1", "memory": "fact", "score": 0.5, "metadata": {}}
+        adapter._memory = memory
+        with self.assertRaisesRegex(RuntimeError, "untracked memory"):
+            adapter.search("fact", 1)
+
+        adapter._provenance["m1"] = (("source-1",), "session", None)
+        memory.result["metadata"] = {
+            "semafuse_source_ids": ["different-source"],
+            "semafuse_session": "session",
+            "semafuse_timestamp": "",
+        }
+        with self.assertRaisesRegex(RuntimeError, "disagrees with tracked source"):
+            adapter.search("fact", 1)
+
+    def test_amem_requires_and_scopes_explicit_openai_base_url(self) -> None:
+        base = {
+            "model_name": "sentence-transformers/all-MiniLM-L6-v2",
+            "model_revision": "1" * 40,
+            "llm_backend": "openai",
+            "llm_model": "test/model",
+            "api_key_env": "TEST_API_KEY",
+        }
+        with self.assertRaisesRegex(ConfigurationError, "model_revision"):
+            AMemAdapter({key: value for key, value in base.items() if key != "model_revision"})
+
+        with patch.dict(os.environ, {"TEST_API_KEY": "not-a-real-secret"}):
+            with self.assertRaisesRegex(ConfigurationError, "openai_base_url"):
+                AMemAdapter(base)
+            adapter = AMemAdapter(
+                {**base, "openai_base_url": "https://openrouter.ai/api/v1"}
+            )
+
+        observed: list[tuple[str | None, str | None]] = []
+
+        class SystemStub:
+            def __init__(self, **kwargs: object) -> None:
+                observed.append((os.environ.get("OPENAI_BASE_URL"), str(kwargs.get("model_name"))))
+
+        module = types.ModuleType("agentic_memory.memory_system")
+        module.AgenticMemorySystem = SystemStub
+        hub_module = types.ModuleType("huggingface_hub")
+        hub_module.snapshot_download = lambda **_: "/tmp/exact-minilm-snapshot"
+        with patch.dict(
+            sys.modules,
+            {"agentic_memory.memory_system": module, "huggingface_hub": hub_module},
+        ):
+            with patch.dict(os.environ, {"OPENAI_BASE_URL": "https://original.example/v1"}):
+                adapter.reset()
+                self.assertEqual(os.environ["OPENAI_BASE_URL"], "https://original.example/v1")
+        self.assertEqual(
+            observed,
+            [("https://openrouter.ai/api/v1", "/tmp/exact-minilm-snapshot")],
+        )
+
+    def test_amem_fails_closed_on_unknown_or_conflicting_provenance(self) -> None:
+        class MemoryStub:
+            def add_note(self, *_: object, **__: object) -> str:
+                return "same-id"
+
+            def search_agentic(self, *_: object, **__: object) -> list[dict[str, object]]:
+                return [{"id": "unknown-id", "content": "fact", "score": 0.5}]
+
+        adapter = object.__new__(AMemAdapter)
+        adapter._memory = MemoryStub()
+        adapter._provenance = {}
+        with self.assertRaisesRegex(RuntimeError, "untracked memory"):
+            adapter.search("fact", 1)
+
+        first = Message(role="user", content="one", source_id="source-1")
+        second = Message(role="user", content="two", source_id="source-2")
+        adapter.add([first], "session", None)
+        with self.assertRaisesRegex(RuntimeError, "multiple sources"):
+            adapter.add([second], "session", None)
 
     def test_joined_context_is_counted_exactly(self) -> None:
         class NonAdditiveCounter(TokenCounter):
@@ -256,11 +366,28 @@ class ExternalMemoryContractTests(unittest.TestCase):
         with self.assertRaises(ProtocolError):
             validate_response(response([item], "different", 1), request)
 
-    def test_protected_tracks_require_verified_immutable_locks(self) -> None:
+    def test_protected_tracks_require_model_identity_and_complete_environment_lock(self) -> None:
         path = Path(self.temp.name) / "protected.json"
         raw = {
-            "adapter": {"kind": "mem0_oss", "config": {"memory_config": {}, "scope_id": "h"}},
-            "tokenizer": {"kind": "whitespace"},
+            "adapter": {
+                "kind": "mem0_oss",
+                "config": {
+                    "memory_config": {
+                        "llm": {"provider": "openai", "config": {"model": "test/llm"}},
+                        "embedder": {
+                            "provider": "openai",
+                            "config": {"model": "test/embedding"},
+                        },
+                    },
+                    "scope_id": "h",
+                    "infer": False,
+                },
+            },
+            "tokenizer": {
+                "kind": "huggingface",
+                "model": "test/tokenizer",
+                "revision": "1" * 40,
+            },
             "run_policy": {"track": "common-policy-v1"},
         }
         path.write_text(json.dumps(raw), encoding="utf-8")
@@ -275,13 +402,40 @@ class ExternalMemoryContractTests(unittest.TestCase):
                 "lock_status": "verified",
             },
             "models": {
-                role: {"revision": sha, "lock_status": "verified"}
-                for role in ("memory_llm", "embedding", "reader_tokenizer")
+                "memory_llm": {
+                    "provider": "openai",
+                    "model": "test/llm",
+                    "revision": sha,
+                    "lock_status": "verified",
+                },
+                "embedding": {
+                    "provider": "openai",
+                    "model": "test/embedding",
+                    "revision": sha,
+                    "lock_status": "verified",
+                },
+                "reader_tokenizer": {
+                    "provider": "huggingface",
+                    "model": "test/tokenizer",
+                    "revision": sha,
+                    "lock_status": "verified",
+                },
             },
         }
         path.write_text(json.dumps(raw), encoding="utf-8")
-        loaded = WorkerConfig.load(path)
-        self.assertEqual(loaded.run_policy["track"], "common-policy-v1")
+        with self.assertRaisesRegex(ConfigurationError, "transitive dependency lock"):
+            WorkerConfig.load(path)
+
+        raw["run_policy"]["models"]["reader_tokenizer"]["revision"] = "3" * 40
+        path.write_text(json.dumps(raw), encoding="utf-8")
+        with self.assertRaisesRegex(ConfigurationError, "reader_tokenizer revision"):
+            WorkerConfig.load(path)
+
+        raw["run_policy"]["models"]["reader_tokenizer"]["revision"] = sha
+        raw["run_policy"]["models"]["memory_llm"].pop("provider")
+        path.write_text(json.dumps(raw), encoding="utf-8")
+        with self.assertRaisesRegex(ConfigurationError, "provider, model, revision"):
+            WorkerConfig.load(path)
 
 
 if __name__ == "__main__":

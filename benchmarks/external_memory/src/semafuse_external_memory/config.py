@@ -21,6 +21,15 @@ _UPSTREAM_REVISIONS = {
 _PROTECTED_TRACKS = {"common-policy-v1", "paper-reproduction", "paper-reproduction-substituted"}
 _MODEL_ROLES = {"memory_llm", "embedding", "reader_tokenizer"}
 
+# The method requirement files currently pin the upstream repositories but not
+# every transitive wheel (including platform-specific CPU/GPU variants).  A
+# protected result must not imply a fully locked environment until a reviewed
+# transitive lock is registered here.  Development runs remain available.
+_TRANSITIVE_LOCK_SHA256: dict[str, str | None] = {
+    "amem": None,
+    "mem0_oss": None,
+}
+
 
 @dataclass(frozen=True)
 class WorkerConfig:
@@ -46,7 +55,7 @@ class WorkerConfig:
         if not isinstance(raw["tokenizer"], dict):
             raise ConfigurationError("tokenizer must be an object")
         reject_inline_secrets(adapter_config)
-        _validate_run_policy(kind, raw["run_policy"])
+        _validate_run_policy(kind, adapter_config, raw["tokenizer"], raw["run_policy"])
         return cls(
             adapter_kind=kind,
             adapter_config=adapter_config,
@@ -55,7 +64,12 @@ class WorkerConfig:
         )
 
 
-def _validate_run_policy(adapter_kind: str, raw: Any) -> None:
+def _validate_run_policy(
+    adapter_kind: str,
+    adapter_config: Mapping[str, Any],
+    tokenizer: Mapping[str, Any],
+    raw: Any,
+) -> None:
     if not isinstance(raw, dict) or "track" not in raw or not isinstance(raw["track"], str):
         raise ConfigurationError("run_policy must contain a string track")
     track = raw["track"]
@@ -83,9 +97,15 @@ def _validate_run_policy(adapter_kind: str, raw: Any) -> None:
     for role, lock in models.items():
         if not isinstance(role, str) or not role:
             raise ConfigurationError("run_policy.models keys must be non-empty strings")
-        _validate_lock(lock, f"run_policy.models.{role}")
+        _validate_model_lock(lock, f"run_policy.models.{role}")
+    _validate_model_identities(adapter_kind, adapter_config, tokenizer, models)
     if track.startswith("paper-"):
         _validate_lock(raw["paper_protocol"], "run_policy.paper_protocol")
+    if _TRANSITIVE_LOCK_SHA256[adapter_kind] is None:
+        raise ConfigurationError(
+            f"{adapter_kind} has no reviewed complete transitive dependency lock; "
+            "use run_policy.track='development'"
+        )
 
 
 def _validate_lock(raw: Any, path: str, expected: str | None = None) -> None:
@@ -98,6 +118,96 @@ def _validate_lock(raw: Any, path: str, expected: str | None = None) -> None:
         raise ConfigurationError(f"{path}.revision must be an immutable 40-character lowercase SHA")
     if expected is not None and revision != expected:
         raise ConfigurationError(f"{path}.revision does not match this adapter's pinned upstream lock")
+
+
+def _validate_model_lock(raw: Any, path: str) -> None:
+    if not isinstance(raw, dict) or set(raw) != {"provider", "model", "revision", "lock_status"}:
+        raise ConfigurationError(
+            f"{path} must contain exactly provider, model, revision, and lock_status"
+        )
+    for field in ("provider", "model"):
+        value = raw[field]
+        if not isinstance(value, str) or not value.strip():
+            raise ConfigurationError(f"{path}.{field} must be a non-empty string")
+    revision = raw["revision"]
+    if not isinstance(revision, str) or not _GIT_SHA.fullmatch(revision):
+        raise ConfigurationError(f"{path}.revision must be an immutable 40-character lowercase SHA")
+    if raw["lock_status"] != "verified":
+        raise ConfigurationError(f"{path}.lock_status must be verified")
+
+
+def _validate_model_identities(
+    adapter_kind: str,
+    adapter_config: Mapping[str, Any],
+    tokenizer: Mapping[str, Any],
+    models: Mapping[str, Any],
+) -> None:
+    """Match protected manifest identities to the actual adapter configuration."""
+
+    expected: dict[str, tuple[str, str]] = {}
+    if adapter_kind == "amem":
+        backend = adapter_config.get("llm_backend")
+        llm_model = adapter_config.get("llm_model")
+        embedding_model = adapter_config.get("model_name")
+        embedding_revision = adapter_config.get("model_revision")
+        if not all(
+            isinstance(value, str) and value.strip()
+            for value in (backend, llm_model, embedding_model, embedding_revision)
+        ):
+            raise ConfigurationError(
+                "protected A-MEM tracks require explicit llm_backend, llm_model, "
+                "model_name, and model_revision"
+            )
+        expected["memory_llm"] = (backend, llm_model)
+        expected["embedding"] = ("sentence-transformers", embedding_model)
+    elif adapter_kind == "mem0_oss":
+        memory_config = adapter_config.get("memory_config")
+        if not isinstance(memory_config, dict):
+            raise ConfigurationError("protected Mem0 tracks require memory_config")
+        for role, section_name in (("memory_llm", "llm"), ("embedding", "embedder")):
+            section = memory_config.get(section_name)
+            if not isinstance(section, dict) or not isinstance(section.get("config"), dict):
+                raise ConfigurationError(
+                    f"protected Mem0 tracks require memory_config.{section_name}.provider and .config.model"
+                )
+            provider = section.get("provider")
+            model = section["config"].get("model")
+            if (
+                not isinstance(provider, str)
+                or not provider.strip()
+                or not isinstance(model, str)
+                or not model.strip()
+            ):
+                raise ConfigurationError(
+                    f"protected Mem0 tracks require memory_config.{section_name}.provider and .config.model"
+                )
+            expected[role] = (provider, model)
+
+    tokenizer_kind = tokenizer.get("kind")
+    tokenizer_model = tokenizer.get("model")
+    if (
+        tokenizer_kind != "huggingface"
+        or not isinstance(tokenizer_model, str)
+        or not tokenizer_model.strip()
+    ):
+        raise ConfigurationError("protected tracks require a pinned huggingface reader tokenizer")
+    expected["reader_tokenizer"] = ("huggingface", tokenizer_model)
+
+    for role, (provider, model) in expected.items():
+        declared = models[role]
+        if declared["provider"] != provider or declared["model"] != model:
+            raise ConfigurationError(
+                f"run_policy.models.{role} identity does not match the configured provider/model"
+            )
+    tokenizer_revision = tokenizer.get("revision")
+    if models["reader_tokenizer"]["revision"] != tokenizer_revision:
+        raise ConfigurationError(
+            "run_policy.models.reader_tokenizer revision does not match the configured tokenizer"
+        )
+    if adapter_kind == "amem" and models["embedding"]["revision"] != adapter_config["model_revision"]:
+        raise ConfigurationError(
+            "run_policy.models.embedding revision does not match the configured A-MEM model_revision"
+        )
 
 
 def reject_inline_secrets(value: Any, path: str = "adapter.config") -> None:
