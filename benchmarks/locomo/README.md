@@ -175,6 +175,20 @@ python benchmarks/locomo/compact_receipt.py build \
   --output benchmarks/locomo/receipts/locomo314.development.receipt.json
 ```
 
+The repository includes that verified development spec and receipt for the
+completed Semafuse, Mem0 OSS raw, and A-MEM comparison. The large run
+directories remain ignored; the spec pins their summary, journal, and embedded
+manifest hashes, while the compact receipt contains only aggregate metrics,
+latency accounting, immutable identities, and validation claims. Rebuilding
+the receipt requires the corresponding local result directories and fails if
+any pinned byte changes.
+
+`actual_runs.json` records the sequential OpenRouter account-usage observations
+for those runs. Its combined settled window is stronger evidence than the
+individual method windows because gateway usage may settle asynchronously. The
+per-method values are therefore labeled observed account-window deltas, not
+request-level invoices.
+
 The builder fails closed on byte-hash changes; duplicate JSON keys; malformed
 or non-opaque IDs; mixed envelope, manifest, report, or payload run keys;
 missing or duplicate method/question rows; changed evaluator metadata; unequal
@@ -187,6 +201,30 @@ units. It uses one shared question-level paired bootstrap for all methods and
 deltas: seed `20260808`, 10,000 resamples, a specified SplitMix64 stream, and
 linear percentile 95% intervals. It emits candidate-minus-BM25 deltas plus all
 non-baseline method pairs, including wins, ties, and losses.
+
+Each selected method also receives a deterministic `latency` receipt derived
+from its 312 hash-pinned journal rows. `query_wall_s` contains total, mean,
+linear p50, and linear p95. `shared_construction_s` never sums the repeated
+per-query field: Semafuse rows are grouped by the validated anonymous
+`history_identity_sha256`; methods without that identity are accepted only when
+each exact `(shared_construction_s, construction_amortization_n)` bucket covers
+an integral number of full shared attempts. The completed paper-v2 selection
+must prove the exact amortization-denominator multiset `[156, 156]`: one complete
+construction attempt for each source conversation. Merely partitioning 312 rows
+into another pair such as 100 and 212 is rejected. Mixed, partial, inconsistent,
+or unscoped accounting fails closed. Group IDs are not serialized. The receipt
+reports construction total and amortized time per question, plus
+`accounted_wall_s` as query-wall total plus construction counted once per
+validated attempt. Stateless baselines report zero shared construction.
+
+Selected method identities accept only the four evaluator method kinds, validate
+hashes and immutable revisions by type, and preserve model IDs only when they
+match the bounded `organization/model` identifier grammar. Before the receipt
+declares that credentials and absolute paths were not serialized, a recursive
+scan rejects credential-shaped keys and values, POSIX/Windows/home-relative
+absolute paths, `file://` paths, and credential-bearing URIs. Comparison specs
+also reject duplicate `(run, source_method)` selections, and `bm25` may only be
+selected under the declared baseline display name.
 
 Only `development` and `paper-reproduction` labels are accepted. A paper claim
 is rejected unless every run declares itself paper-comparable and all selected

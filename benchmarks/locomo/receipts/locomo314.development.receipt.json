@@ -1,0 +1,645 @@
+{
+  "baseline": "BM25",
+  "benchmark": "LoCoMo",
+  "bootstrap": {
+    "confidence_level": 0.95,
+    "interval": "percentile_linear",
+    "paired_across_all_methods": true,
+    "prng": "SplitMix64 with unbiased rejection sampling",
+    "resamples": 10000,
+    "sampling": "with_replacement",
+    "seed": 20260808,
+    "unit": "opaque_question_id"
+  },
+  "classification": {
+    "label": "development",
+    "paper_reproduction_blockers": [
+      "method A-MEM external track is not paper-reproduction",
+      "method A-MEM lacks a complete protected identity",
+      "method A-MEM lacks an immutable upstream revision",
+      "method A-MEM lacks immutable model revisions",
+      "method Mem0 external track is not paper-reproduction",
+      "method Mem0 lacks a complete protected identity",
+      "method Mem0 lacks an immutable upstream revision",
+      "method Mem0 lacks immutable model revisions",
+      "method Semafuse model revisions are not verified",
+      "run amem-run declares paper_comparable=false",
+      "run mem0-run declares paper_comparable=false",
+      "run semafuse-run declares paper_comparable=false"
+    ],
+    "paper_reproduction_eligible": false
+  },
+  "methods": {
+    "A-MEM": {
+      "latency": {
+        "accounted_wall_s": {
+          "amortized_per_question": 11.470647703246794,
+          "definition": "query wall total plus shared construction counted once per validated attempt",
+          "total": 3578.8420834129997
+        },
+        "query_wall_s": {
+          "denominator": 312,
+          "mean": 0.09251390991666666,
+          "p50": 0.087127935,
+          "p95": 0.13552644369999997,
+          "total": 28.864339894
+        },
+        "shared_construction_s": {
+          "amortization_denominators": [
+            156,
+            156
+          ],
+          "amortized_per_question": 11.378133793330127,
+          "group_identifiers_serialized": false,
+          "grouping": "exact_value_and_construction_amortization_n",
+          "shared_attempt_count": 2,
+          "source_rows": 312,
+          "total": 3549.977743519
+        },
+        "unit": "seconds"
+      },
+      "metrics": {
+        "RecallAll@10": {
+          "ci95": {
+            "lower": 0.27564102564102566,
+            "upper": 0.3814102564102564
+          },
+          "denominator": 312,
+          "mean": 0.3269230769230769
+        },
+        "RecallAll@50": {
+          "ci95": {
+            "lower": 0.4519230769230769,
+            "upper": 0.5608974358974359
+          },
+          "denominator": 312,
+          "mean": 0.5064102564102564
+        },
+        "nDCG@10": {
+          "ci95": {
+            "lower": 0.20310329945696493,
+            "upper": 0.276934586105288
+          },
+          "denominator": 312,
+          "mean": 0.23863471085833846
+        }
+      },
+      "source": {
+        "identity": {
+          "adapter_kind": "amem",
+          "command_sha256": "ddf33570d1bf196831cb9accba50614fc274f36ef2bb35b74793b6f89e5094dc",
+          "id": "amem_openrouter",
+          "kind": "external_jsonl",
+          "model_revisions_sha256": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
+          "protected_identity_complete": false,
+          "track": "development",
+          "upstream_revision": null,
+          "worker_config_sha256": "08ad9d2b720424af1eb4d59d2c03197947ef63e7c690b3af7153134d523a6368"
+        },
+        "method": "amem_openrouter",
+        "run": "amem-run"
+      }
+    },
+    "BM25": {
+      "latency": {
+        "accounted_wall_s": {
+          "amortized_per_question": 0.005889109679487179,
+          "definition": "query wall total plus shared construction counted once per validated attempt",
+          "total": 1.83740222
+        },
+        "query_wall_s": {
+          "denominator": 312,
+          "mean": 0.005889109679487179,
+          "p50": 0.005830846,
+          "p95": 0.00795578755,
+          "total": 1.83740222
+        },
+        "shared_construction_s": {
+          "amortization_denominators": [],
+          "amortized_per_question": 0.0,
+          "group_identifiers_serialized": false,
+          "grouping": "not_applicable",
+          "shared_attempt_count": 0,
+          "source_rows": 0,
+          "total": 0.0
+        },
+        "unit": "seconds"
+      },
+      "metrics": {
+        "RecallAll@10": {
+          "ci95": {
+            "lower": 0.40384615384615385,
+            "upper": 0.5128205128205128
+          },
+          "denominator": 312,
+          "mean": 0.4583333333333333
+        },
+        "RecallAll@50": {
+          "ci95": {
+            "lower": 0.5737179487179487,
+            "upper": 0.6794871794871795
+          },
+          "denominator": 312,
+          "mean": 0.6282051282051282
+        },
+        "nDCG@10": {
+          "ci95": {
+            "lower": 0.3343600661761172,
+            "upper": 0.42291297112197757
+          },
+          "denominator": 312,
+          "mean": 0.3779971297666004
+        }
+      },
+      "source": {
+        "identity": {
+          "id": "bm25",
+          "kind": "bm25"
+        },
+        "method": "bm25",
+        "run": "semafuse-run"
+      }
+    },
+    "Mem0": {
+      "latency": {
+        "accounted_wall_s": {
+          "amortized_per_question": 0.7647114970705129,
+          "definition": "query wall total plus shared construction counted once per validated attempt",
+          "total": 238.589987086
+        },
+        "query_wall_s": {
+          "denominator": 312,
+          "mean": 0.23553737462500002,
+          "p50": 0.23063202,
+          "p95": 0.2757186156,
+          "total": 73.487660883
+        },
+        "shared_construction_s": {
+          "amortization_denominators": [
+            156,
+            156
+          ],
+          "amortized_per_question": 0.5291741224455128,
+          "group_identifiers_serialized": false,
+          "grouping": "exact_value_and_construction_amortization_n",
+          "shared_attempt_count": 2,
+          "source_rows": 312,
+          "total": 165.102326203
+        },
+        "unit": "seconds"
+      },
+      "metrics": {
+        "RecallAll@10": {
+          "ci95": {
+            "lower": 0.5512820512820513,
+            "upper": 0.6602564102564102
+          },
+          "denominator": 312,
+          "mean": 0.6057692307692307
+        },
+        "RecallAll@50": {
+          "ci95": {
+            "lower": 0.7115384615384616,
+            "upper": 0.8076923076923077
+          },
+          "denominator": 312,
+          "mean": 0.7596153846153846
+        },
+        "nDCG@10": {
+          "ci95": {
+            "lower": 0.4997942528871434,
+            "upper": 0.5862396629695248
+          },
+          "denominator": 312,
+          "mean": 0.5425359832396933
+        }
+      },
+      "source": {
+        "identity": {
+          "adapter_kind": "mem0_oss",
+          "command_sha256": "336ef6f3811c5599f1ada28a04241fa5edeaee19a1fafc775a7ebbc5f875a5eb",
+          "id": "mem0_oss_raw",
+          "kind": "external_jsonl",
+          "model_revisions_sha256": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
+          "protected_identity_complete": false,
+          "track": "development",
+          "upstream_revision": null,
+          "worker_config_sha256": "f8af3d60a48a3a32f24f7975d28633c1f1e246291d288181ed80e5ae0c5c265a"
+        },
+        "method": "mem0_oss_raw",
+        "run": "mem0-run"
+      }
+    },
+    "Semafuse": {
+      "latency": {
+        "accounted_wall_s": {
+          "amortized_per_question": 0.46439968986858976,
+          "definition": "query wall total plus shared construction counted once per validated attempt",
+          "total": 144.892703239
+        },
+        "query_wall_s": {
+          "denominator": 312,
+          "mean": 0.45650290297115387,
+          "p50": 0.448682869,
+          "p95": 0.4953688544999999,
+          "total": 142.428905727
+        },
+        "shared_construction_s": {
+          "amortization_denominators": [
+            156,
+            156
+          ],
+          "amortized_per_question": 0.007896786897435898,
+          "group_identifiers_serialized": false,
+          "grouping": "history_identity_sha256",
+          "shared_attempt_count": 2,
+          "source_rows": 312,
+          "total": 2.463797512
+        },
+        "unit": "seconds"
+      },
+      "metrics": {
+        "RecallAll@10": {
+          "ci95": {
+            "lower": 0.6987179487179487,
+            "upper": 0.7948717948717948
+          },
+          "denominator": 312,
+          "mean": 0.7467948717948718
+        },
+        "RecallAll@50": {
+          "ci95": {
+            "lower": 0.75,
+            "upper": 0.8397435897435898
+          },
+          "denominator": 312,
+          "mean": 0.7948717948717948
+        },
+        "nDCG@10": {
+          "ci95": {
+            "lower": 0.7024426864971405,
+            "upper": 0.7766319312324151
+          },
+          "denominator": 312,
+          "mean": 0.7393910083324345
+        }
+      },
+      "source": {
+        "identity": {
+          "config_sha256": "64eff5719b2fc8973de0eb6fb9c1a0a6536a32a93a2df911620cead1b20faa32",
+          "embedding_model": "perplexity/pplx-embed-v1-0.6b",
+          "id": "semafuse",
+          "kind": "semafuse_production_retrieval",
+          "model_revisions_verified": false,
+          "reranker_model": "voyageai/rerank-2.5",
+          "resolved_config_sha256": "386e14b456eea46291b7535beac32c473799af1fa99edbe05d809ef3dafc6cee"
+        },
+        "method": "semafuse::retrieved",
+        "run": "semafuse-run"
+      }
+    }
+  },
+  "metric_notice": "Source-message retrieval diagnostics in fraction units; these are not LoCoMo answer F1 or a published paper score.",
+  "paired_deltas": {
+    "between_nonbaseline_methods": [
+      {
+        "candidate": "Mem0",
+        "metrics": {
+          "RecallAll@10": {
+            "ci95": {
+              "lower": -0.1826923076923077,
+              "upper": -0.09935897435897445
+            },
+            "denominator": 312,
+            "losses": 47,
+            "mean_delta": -0.14102564102564102,
+            "ties": 262,
+            "wins": 3
+          },
+          "RecallAll@50": {
+            "ci95": {
+              "lower": -0.06730769230769229,
+              "upper": -0.0064102564102563875
+            },
+            "denominator": 312,
+            "losses": 18,
+            "mean_delta": -0.035256410256410256,
+            "ties": 287,
+            "wins": 7
+          },
+          "nDCG@10": {
+            "ci95": {
+              "lower": -0.23245453184419565,
+              "upper": -0.16220747223612986
+            },
+            "denominator": 312,
+            "losses": 150,
+            "mean_delta": -0.1968550250927412,
+            "ties": 134,
+            "wins": 28
+          }
+        },
+        "reference": "Semafuse"
+      },
+      {
+        "candidate": "A-MEM",
+        "metrics": {
+          "RecallAll@10": {
+            "ci95": {
+              "lower": -0.4743589743589744,
+              "upper": -0.36538461538461536
+            },
+            "denominator": 312,
+            "losses": 131,
+            "mean_delta": -0.4198717948717949,
+            "ties": 181,
+            "wins": 0
+          },
+          "RecallAll@50": {
+            "ci95": {
+              "lower": -0.33974358974358976,
+              "upper": -0.23717948717948723
+            },
+            "denominator": 312,
+            "losses": 92,
+            "mean_delta": -0.28846153846153844,
+            "ties": 218,
+            "wins": 2
+          },
+          "nDCG@10": {
+            "ci95": {
+              "lower": -0.5424962214289443,
+              "upper": -0.458355265842584
+            },
+            "denominator": 312,
+            "losses": 246,
+            "mean_delta": -0.500756297474096,
+            "ties": 60,
+            "wins": 6
+          }
+        },
+        "reference": "Semafuse"
+      },
+      {
+        "candidate": "A-MEM",
+        "metrics": {
+          "RecallAll@10": {
+            "ci95": {
+              "lower": -0.3333333333333333,
+              "upper": -0.22435897435897434
+            },
+            "denominator": 312,
+            "losses": 92,
+            "mean_delta": -0.27884615384615385,
+            "ties": 215,
+            "wins": 5
+          },
+          "RecallAll@50": {
+            "ci95": {
+              "lower": -0.3044871794871795,
+              "upper": -0.20192307692307698
+            },
+            "denominator": 312,
+            "losses": 84,
+            "mean_delta": -0.2532051282051282,
+            "ties": 223,
+            "wins": 5
+          },
+          "nDCG@10": {
+            "ci95": {
+              "lower": -0.3412653832618004,
+              "upper": -0.2673044147039684
+            },
+            "denominator": 312,
+            "losses": 194,
+            "mean_delta": -0.30390127238135484,
+            "ties": 105,
+            "wins": 13
+          }
+        },
+        "reference": "Mem0"
+      }
+    ],
+    "relative_to_bm25": {
+      "A-MEM": {
+        "candidate": "A-MEM",
+        "metrics": {
+          "RecallAll@10": {
+            "ci95": {
+              "lower": -0.1858974358974359,
+              "upper": -0.07371794871794873
+            },
+            "denominator": 312,
+            "losses": 64,
+            "mean_delta": -0.13141025641025642,
+            "ties": 225,
+            "wins": 23
+          },
+          "RecallAll@50": {
+            "ci95": {
+              "lower": -0.17948717948717952,
+              "upper": -0.0641025641025641
+            },
+            "denominator": 312,
+            "losses": 65,
+            "mean_delta": -0.12179487179487179,
+            "ties": 220,
+            "wins": 27
+          },
+          "nDCG@10": {
+            "ci95": {
+              "lower": -0.18253739772189206,
+              "upper": -0.09629365720842155
+            },
+            "denominator": 312,
+            "losses": 117,
+            "mean_delta": -0.1393624189082619,
+            "ties": 135,
+            "wins": 60
+          }
+        },
+        "reference": "BM25"
+      },
+      "Mem0": {
+        "candidate": "Mem0",
+        "metrics": {
+          "RecallAll@10": {
+            "ci95": {
+              "lower": 0.09294871794871795,
+              "upper": 0.20192307692307693
+            },
+            "denominator": 312,
+            "losses": 18,
+            "mean_delta": 0.14743589743589744,
+            "ties": 230,
+            "wins": 64
+          },
+          "RecallAll@50": {
+            "ci95": {
+              "lower": 0.08333333333333337,
+              "upper": 0.17948717948717952
+            },
+            "denominator": 312,
+            "losses": 12,
+            "mean_delta": 0.13141025641025642,
+            "ties": 247,
+            "wins": 53
+          },
+          "nDCG@10": {
+            "ci95": {
+              "lower": 0.12201846550631021,
+              "upper": 0.2059412638303667
+            },
+            "denominator": 312,
+            "losses": 44,
+            "mean_delta": 0.16453885347309294,
+            "ties": 110,
+            "wins": 158
+          }
+        },
+        "reference": "BM25"
+      },
+      "Semafuse": {
+        "candidate": "Semafuse",
+        "metrics": {
+          "RecallAll@10": {
+            "ci95": {
+              "lower": 0.23717948717948717,
+              "upper": 0.33974358974358976
+            },
+            "denominator": 312,
+            "losses": 2,
+            "mean_delta": 0.28846153846153844,
+            "ties": 218,
+            "wins": 92
+          },
+          "RecallAll@50": {
+            "ci95": {
+              "lower": 0.125,
+              "upper": 0.20833333333333337
+            },
+            "denominator": 312,
+            "losses": 0,
+            "mean_delta": 0.16666666666666666,
+            "ties": 260,
+            "wins": 52
+          },
+          "nDCG@10": {
+            "ci95": {
+              "lower": 0.32031377037079956,
+              "upper": 0.40274250687006136
+            },
+            "denominator": 312,
+            "losses": 16,
+            "mean_delta": 0.3613938785658341,
+            "ties": 94,
+            "wins": 202
+          }
+        },
+        "reference": "BM25"
+      }
+    },
+    "unit": "candidate_minus_reference"
+  },
+  "population": {
+    "alignment_key": "opaque_question_id",
+    "bm25_metric_vectors_equal_across_runs": true,
+    "evaluator_metadata_equal_across_runs": true,
+    "question_count": 312,
+    "question_ids_serialized": false,
+    "question_set_sha256": "0a104fae539a6465ea6a069bb4ecaad8c2a0460889063615b69b7ba8aecf9035"
+  },
+  "provenance": {
+    "common_manifest_fingerprint_sha256": "9172e05521d8e9a7bcdbd0b2dfda8742205159013d0a4d000b92ce373c508ebe",
+    "dataset_sha256": "79fa87e90f04081343b8c8debecb80a9a6842b76a7aa537dc9fdf651ea698ff4",
+    "external_harness": {
+      "algorithm": "domain-separated SHA-256 over sorted relative .py path+bytes",
+      "amem_adapter_sha256": "f974e6793cb756ffa0ee354f6931bdc4d037dc785acd6e86d6bb2af697c8e393",
+      "amem_fail_closed_adapter_included": true,
+      "audit_state": "final_tree_at_receipt_build",
+      "file_count": 12,
+      "run_key_binding_note": "The LoCoMo run manifest did not hash python_path source files. This receipt verifies the final audited external harness tree, including the A-MEM fail-closed adapter patch, but does not retroactively claim that earlier run keys committed to these bytes.",
+      "run_key_bound": false,
+      "scope": "benchmarks/external_memory/src/semafuse_external_memory/**/*.py",
+      "total_bytes": 67121,
+      "tree_sha256": "9774729a03268cdfad8b18d9362dbe47b0e188931caf25b738e477a2826aedb1"
+    },
+    "runs": {
+      "amem-run": {
+        "artifacts": {
+          "embedded_manifest": {
+            "canonicalization": "RFC-8259 JSON sorted keys, UTF-8, no whitespace",
+            "sha256": "ad5f3041ae45ba9cb5fefa97d29e3e96abee0c8ce9dfd664bc884acd2c396c63"
+          },
+          "manifest_file": null,
+          "per_question": {
+            "bytes": 2968838,
+            "sha256": "dd48a150a43e39fc2dadca214bec3d2a0ffeade2ea8e6b11e4cb3ca6a0bd4ec7"
+          },
+          "summary": {
+            "bytes": 95814,
+            "sha256": "07f0482e464ff7282f7a2b1d821154334888e1d89fa620488ebbe3e2d11bed9e"
+          }
+        },
+        "run_key": "ce3895730288d395289726cf0c0b782d2e8269293977968a1da3b12cb3765be5"
+      },
+      "mem0-run": {
+        "artifacts": {
+          "embedded_manifest": {
+            "canonicalization": "RFC-8259 JSON sorted keys, UTF-8, no whitespace",
+            "sha256": "93edf5ec9be29dadea1afb3ee4b3fda3fc5689d81b48d44f930847c65945f61f"
+          },
+          "manifest_file": null,
+          "per_question": {
+            "bytes": 2967838,
+            "sha256": "359248cf03febbb8936bba5b322bae8bbcd2939c8ff78899ea1d2c5210b604b0"
+          },
+          "summary": {
+            "bytes": 95778,
+            "sha256": "fe08c7f39ac9a7d43ee9be54b65ccb83dc9ca5cbb9a10b5668d70c641fb269e6"
+          }
+        },
+        "run_key": "ec9f83b9b3a342d1868665526668b2ab81a8a1bee91390e336e1935dac451114"
+      },
+      "semafuse-run": {
+        "artifacts": {
+          "embedded_manifest": {
+            "canonicalization": "RFC-8259 JSON sorted keys, UTF-8, no whitespace",
+            "sha256": "36994771fbca2fd69fcb00989a21e9201f56012d9272d2e557c13598347e2365"
+          },
+          "manifest_file": null,
+          "per_question": {
+            "bytes": 9172674,
+            "sha256": "6d80f98cc01869692987d0a6613235591ee9513906d8f57030072258dff3c4fb"
+          },
+          "summary": {
+            "bytes": 271392,
+            "sha256": "98c5023306ba55e4ab23b17becfd34536f45dc61125cece6ed163a3db0b8d6dc"
+          }
+        },
+        "run_key": "1fff7ec687e4aa5054c59eec301690e2ec32bb0abec2b0da3e7715d5e8d5c36c"
+      }
+    },
+    "tool": {
+      "path": "benchmarks/locomo/compact_receipt.py",
+      "sha256": "a7a61c951a33c0198ace16d4049fc7d1d2c59cbef6d6ae859dd5dd8334ed240a"
+    },
+    "upstream_commit": "3eb6f2c585f5e1699204e3c3bdf7adc5c28cb376"
+  },
+  "schema_version": 1,
+  "track": "paper-v2-selection/retrieval-only-common-evaluator",
+  "validation": {
+    "absolute_paths_serialized": false,
+    "credentials_serialized": false,
+    "expected_hashes_match": true,
+    "latency_recomputed_from_per_question": true,
+    "question_sets_identical": true,
+    "raw_query_or_message_serialized": false,
+    "recursive_safety_scan_passed": true,
+    "run_key_consistent_within_each_run": true,
+    "run_key_preimage_note": "The runner does not serialize suite bytes, so this tool verifies run_key equality across envelope, manifest, report, and every journal record but does not independently reconstruct its preimage.",
+    "run_key_preimage_recomputed": false,
+    "shared_construction_accounting_validated": true,
+    "summary_recomputed_from_per_question": true
+  }
+}

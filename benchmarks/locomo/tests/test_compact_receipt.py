@@ -159,6 +159,32 @@ class SyntheticComparison:
         question_id = opaque_id("q", f"question-{index}")
         category = list(receipt._CATEGORY_NUMBERS)[index % 4]
         ranked = [opaque_id("m", f"message-{index}-{rank}") for rank in range(50)]
+        metadata: dict[str, object] = {"fixture": True}
+        shared_construction_s = None
+        query_wall_s = 0.01
+        if method != "bm25":
+            conversation_n = receipt.OFFICIAL_RETRIEVAL_N // len(
+                receipt.OFFICIAL_CONVERSATIONS
+            )
+            conversation_index = index // conversation_n
+            construction_values = {
+                "semafuse::retrieved": (2.0, 4.0),
+                "mem0_oss_raw": (6.0, 8.0),
+                "amem_openrouter": (10.0, 12.0),
+            }
+            shared_construction_s = construction_values[method][conversation_index]
+            query_wall_s = 0.1 * ((index % 4) + 1)
+            metadata.update(
+                {
+                    "construction_scope": "source_conversation",
+                    "construction_amortization_n": conversation_n,
+                    "construction_value_repeated_per_query": True,
+                }
+            )
+            if method == "semafuse::retrieved":
+                metadata["history_identity_sha256"] = hashlib.sha256(
+                    f"history-{conversation_index}".encode()
+                ).hexdigest()
         payload = {
             "schema_version": 1,
             "run_key": run_key,
@@ -170,11 +196,11 @@ class SyntheticComparison:
             "ranked_message_ids": ranked,
             "evidence": self.evidence(recall10, recall50),
             "efficiency": {
-                "query_wall_s": 0.01,
+                "query_wall_s": query_wall_s,
                 "retrieval_s": None,
-                "shared_construction_s": None,
+                "shared_construction_s": shared_construction_s,
             },
-            "metadata": {"fixture": True},
+            "metadata": metadata,
         }
         return {
             "run_key": run_key,
@@ -268,6 +294,15 @@ class SyntheticComparison:
             (self.root / run_id / filename).read_bytes()
         ).hexdigest()
 
+    def refresh_summary_and_manifest_hashes(self, run_id: str) -> None:
+        path = self.root / run_id / "summary.json"
+        value = json.loads(path.read_text(encoding="utf-8"))
+        run = next(entry for entry in self.spec["runs"] if entry["id"] == run_id)
+        run["summary_sha256"] = hashlib.sha256(path.read_bytes()).hexdigest()
+        run["manifest_sha256"] = hashlib.sha256(
+            receipt._canonical_json(value["summary"]["manifest"])
+        ).hexdigest()
+
     def write_spec(self) -> None:
         self.spec_path.write_text(
             json.dumps(self.spec, indent=2, sort_keys=True) + "\n", encoding="utf-8"
@@ -294,13 +329,214 @@ class CompactReceiptTests(unittest.TestCase):
         self.assertEqual(
             result["methods"]["Semafuse"]["metrics"]["RecallAll@10"]["mean"], 0.75
         )
+        semafuse_latency = result["methods"]["Semafuse"]["latency"]
+        self.assertAlmostEqual(semafuse_latency["query_wall_s"]["total"], 78.0)
+        self.assertAlmostEqual(semafuse_latency["query_wall_s"]["mean"], 0.25)
+        self.assertAlmostEqual(semafuse_latency["query_wall_s"]["p50"], 0.25)
+        self.assertAlmostEqual(semafuse_latency["query_wall_s"]["p95"], 0.4)
+        self.assertEqual(
+            semafuse_latency["shared_construction_s"]["grouping"],
+            "history_identity_sha256",
+        )
+        self.assertEqual(
+            semafuse_latency["shared_construction_s"]["shared_attempt_count"], 2
+        )
+        self.assertEqual(
+            semafuse_latency["shared_construction_s"]["amortization_denominators"],
+            [156, 156],
+        )
+        self.assertEqual(semafuse_latency["shared_construction_s"]["total"], 6.0)
+        self.assertAlmostEqual(
+            semafuse_latency["shared_construction_s"]["amortized_per_question"],
+            6.0 / receipt.OFFICIAL_RETRIEVAL_N,
+        )
+        self.assertEqual(semafuse_latency["accounted_wall_s"]["total"], 84.0)
+        mem0_construction = result["methods"]["Mem0"]["latency"][
+            "shared_construction_s"
+        ]
+        self.assertEqual(
+            mem0_construction["grouping"],
+            "exact_value_and_construction_amortization_n",
+        )
+        self.assertEqual(mem0_construction["shared_attempt_count"], 2)
+        self.assertEqual(mem0_construction["total"], 14.0)
+        bm25_latency = result["methods"]["BM25"]["latency"]
+        self.assertEqual(bm25_latency["shared_construction_s"]["total"], 0.0)
+        self.assertEqual(
+            bm25_latency["accounted_wall_s"]["total"],
+            bm25_latency["query_wall_s"]["total"],
+        )
         semafuse_delta = result["paired_deltas"]["relative_to_bm25"]["Semafuse"]
         self.assertEqual(semafuse_delta["metrics"]["RecallAll@10"]["mean_delta"], 0.25)
         self.assertEqual(len(result["paired_deltas"]["between_nonbaseline_methods"]), 3)
         serialized = json.dumps(result, sort_keys=True)
         self.assertNotIn(self.temporary.name, serialized)
         self.assertNotIn(opaque_id("q", "question-0"), serialized)
+        self.assertNotIn(hashlib.sha256(b"history-0").hexdigest(), serialized)
+        self.assertTrue(result["validation"]["recursive_safety_scan_passed"])
+        self.assertFalse(result["validation"]["absolute_paths_serialized"])
+        self.assertFalse(result["validation"]["credentials_serialized"])
         self.assertEqual(result, self.fixture.build())
+
+    def test_inconsistent_identified_construction_group_fails_closed(self) -> None:
+        path = Path(self.temporary.name) / "semafuse-run" / "per-question.jsonl"
+        lines = path.read_text(encoding="utf-8").splitlines()
+        for index, line in enumerate(lines):
+            value = json.loads(line)
+            if value["method"] == "semafuse::retrieved":
+                value["payload"]["efficiency"]["shared_construction_s"] = 3.0
+                lines[index] = json.dumps(value, sort_keys=True, separators=(",", ":"))
+                break
+        path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        self.fixture.refresh_hash("semafuse-run", "per_question")
+        self.fixture.write_spec()
+        with self.assertRaisesRegex(receipt.VerificationError, "inconsistent timing"):
+            self.fixture.build()
+
+    def test_partial_unidentified_construction_group_fails_closed(self) -> None:
+        path = Path(self.temporary.name) / "mem0-run" / "per-question.jsonl"
+        lines = path.read_text(encoding="utf-8").splitlines()
+        for index, line in enumerate(lines):
+            value = json.loads(line)
+            if value["method"] == "mem0_oss_raw":
+                value["payload"]["metadata"]["construction_amortization_n"] = 155
+                lines[index] = json.dumps(value, sort_keys=True, separators=(",", ":"))
+                break
+        path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        self.fixture.refresh_hash("mem0-run", "per_question")
+        self.fixture.write_spec()
+        with self.assertRaisesRegex(receipt.VerificationError, "amortization denominator"):
+            self.fixture.build()
+
+    def test_identified_construction_rejects_100_and_212_row_conversations(self) -> None:
+        path = Path(self.temporary.name) / "semafuse-run" / "per-question.jsonl"
+        lines = path.read_text(encoding="utf-8").splitlines()
+        candidate_index = 0
+        for index, line in enumerate(lines):
+            value = json.loads(line)
+            if value["method"] != "semafuse::retrieved":
+                continue
+            first_group = candidate_index < 100
+            value["payload"]["metadata"]["construction_amortization_n"] = (
+                100 if first_group else 212
+            )
+            value["payload"]["metadata"]["history_identity_sha256"] = hashlib.sha256(
+                ("history-100" if first_group else "history-212").encode()
+            ).hexdigest()
+            value["payload"]["efficiency"]["shared_construction_s"] = (
+                2.0 if first_group else 4.0
+            )
+            lines[index] = json.dumps(value, sort_keys=True, separators=(",", ":"))
+            candidate_index += 1
+        path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        self.fixture.refresh_hash("semafuse-run", "per_question")
+        self.fixture.write_spec()
+        with self.assertRaisesRegex(receipt.VerificationError, "two 156-row"):
+            self.fixture.build()
+
+    def test_fallback_construction_rejects_100_and_212_row_conversations(self) -> None:
+        path = Path(self.temporary.name) / "mem0-run" / "per-question.jsonl"
+        lines = path.read_text(encoding="utf-8").splitlines()
+        candidate_index = 0
+        for index, line in enumerate(lines):
+            value = json.loads(line)
+            if value["method"] != "mem0_oss_raw":
+                continue
+            first_group = candidate_index < 100
+            value["payload"]["metadata"]["construction_amortization_n"] = (
+                100 if first_group else 212
+            )
+            value["payload"]["efficiency"]["shared_construction_s"] = (
+                6.0 if first_group else 8.0
+            )
+            lines[index] = json.dumps(value, sort_keys=True, separators=(",", ":"))
+            candidate_index += 1
+        path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        self.fixture.refresh_hash("mem0-run", "per_question")
+        self.fixture.write_spec()
+        with self.assertRaisesRegex(receipt.VerificationError, "two 156-row"):
+            self.fixture.build()
+
+    def test_mixed_shared_construction_presence_fails_closed(self) -> None:
+        path = Path(self.temporary.name) / "amem-run" / "per-question.jsonl"
+        lines = path.read_text(encoding="utf-8").splitlines()
+        for index, line in enumerate(lines):
+            value = json.loads(line)
+            if value["method"] == "amem_openrouter":
+                value["payload"]["efficiency"]["shared_construction_s"] = None
+                lines[index] = json.dumps(value, sort_keys=True, separators=(",", ":"))
+                break
+        path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        self.fixture.refresh_hash("amem-run", "per_question")
+        self.fixture.write_spec()
+        with self.assertRaisesRegex(receipt.VerificationError, "mixes present and absent"):
+            self.fixture.build()
+
+    def test_unknown_method_kind_fails_closed(self) -> None:
+        path = Path(self.temporary.name) / "amem-run" / "summary.json"
+        value = json.loads(path.read_text(encoding="utf-8"))
+        value["summary"]["manifest"]["methods"][1]["kind"] = "custom_backend"
+        path.write_text(json.dumps(value, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        self.fixture.refresh_summary_and_manifest_hashes("amem-run")
+        self.fixture.write_spec()
+        with self.assertRaisesRegex(receipt.VerificationError, "supported method kind"):
+            self.fixture.build()
+
+    def test_absolute_model_path_fails_closed(self) -> None:
+        path = Path(self.temporary.name) / "semafuse-run" / "summary.json"
+        value = json.loads(path.read_text(encoding="utf-8"))
+        value["summary"]["manifest"]["methods"][1]["embedding_model"] = (
+            "/tmp/private/model"
+        )
+        path.write_text(json.dumps(value, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        self.fixture.refresh_summary_and_manifest_hashes("semafuse-run")
+        self.fixture.write_spec()
+        with self.assertRaisesRegex(receipt.VerificationError, "safe model identifier"):
+            self.fixture.build()
+
+    def test_credential_shaped_model_id_fails_recursive_scan(self) -> None:
+        path = Path(self.temporary.name) / "semafuse-run" / "summary.json"
+        value = json.loads(path.read_text(encoding="utf-8"))
+        value["summary"]["manifest"]["methods"][1]["embedding_model"] = (
+            "sk-or-v1-" + "a" * 64
+        )
+        path.write_text(json.dumps(value, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        self.fixture.refresh_summary_and_manifest_hashes("semafuse-run")
+        self.fixture.write_spec()
+        with self.assertRaisesRegex(receipt.VerificationError, "credential-like value"):
+            self.fixture.build()
+
+    def test_recursive_safety_scan_rejects_nested_paths_keys_and_values(self) -> None:
+        unsafe = (
+            ({"nested": [{"value": "/tmp/private"}]}, "absolute path"),
+            ({"nested": {"api_key": "opaque"}}, "credential-like key"),
+            ({"nested": ["Bearer abcdefghijklmnop"]}, "credential-like value"),
+        )
+        for value, message in unsafe:
+            with self.subTest(message=message):
+                with self.assertRaisesRegex(receipt.VerificationError, message):
+                    receipt._assert_receipt_safe(value)
+
+    def test_duplicate_run_source_selection_fails_closed(self) -> None:
+        self.fixture.spec["methods"].append(
+            {
+                "name": "SemafuseAlias",
+                "run": "semafuse-run",
+                "source_method": "semafuse::retrieved",
+            }
+        )
+        self.fixture.write_spec()
+        with self.assertRaisesRegex(receipt.VerificationError, "duplicate selected run"):
+            receipt.load_comparison_spec(self.fixture.spec_path)
+
+    def test_bm25_cannot_be_selected_under_a_candidate_alias(self) -> None:
+        mem0 = next(
+            method for method in self.fixture.spec["methods"] if method["name"] == "Mem0"
+        )
+        mem0["source_method"] = "bm25"
+        self.fixture.write_spec()
+        with self.assertRaisesRegex(receipt.VerificationError, "baseline display name"):
+            receipt.load_comparison_spec(self.fixture.spec_path)
 
     def test_artifact_hash_tampering_fails_closed(self) -> None:
         path = Path(self.temporary.name) / "mem0-run" / "per-question.jsonl"

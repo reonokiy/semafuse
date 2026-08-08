@@ -32,6 +32,7 @@ OFFICIAL_UPSTREAM_COMMIT = "3eb6f2c585f5e1699204e3c3bdf7adc5c28cb376"
 OFFICIAL_QA_N = 314
 OFFICIAL_RETRIEVAL_N = 312
 OFFICIAL_CONVERSATIONS = ["conv-49", "conv-50"]
+OFFICIAL_CONSTRUCTION_DENOMINATORS = [156, 156]
 OFFICIAL_CATEGORIES = [1, 2, 3, 4]
 EVIDENCE_CUTOFFS = [1, 5, 10, 50]
 COMMON_TRACK = "paper-v2-selection/retrieval-only-common-evaluator"
@@ -44,6 +45,32 @@ _OPAQUE_QUESTION_ID = re.compile(r"^q_[0-9a-f]{64}$")
 _OPAQUE_MESSAGE_ID = re.compile(r"^m_[0-9a-f]{64}$")
 _SAFE_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$")
 _SAFE_METHOD = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$")
+_SAFE_MODEL_ID = re.compile(
+    r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}(?:/[A-Za-z0-9][A-Za-z0-9_.-]{0,127})?$"
+)
+_WINDOWS_ABSOLUTE_PATH = re.compile(r"^[A-Za-z]:[\\/]")
+_CREDENTIAL_KEY = re.compile(
+    r"(?:api[_-]?key|authorization|bearer|credential|password|passwd|private[_-]?key|"
+    r"refresh[_-]?token|secret|access[_-]?token)",
+    re.IGNORECASE,
+)
+_CREDENTIAL_VALUE = re.compile(
+    r"(?:\bBearer\s+[A-Za-z0-9._~+/=-]{8,}|\bsk-(?:or-v1-)?[A-Za-z0-9_-]{16,}|"
+    r"\bhf_[A-Za-z0-9]{20,}|\bgh[pousr]_[A-Za-z0-9]{20,}|"
+    r"\bgithub_pat_[A-Za-z0-9_]{20,}|\bxox[baprs]-[A-Za-z0-9-]{16,}|"
+    r"\bAIza[0-9A-Za-z_-]{20,}|\b[rs]k_(?:live|test)_[A-Za-z0-9]{16,}|"
+    r"\bAKIA[0-9A-Z]{16}\b|-----BEGIN (?:[A-Z]+ )?PRIVATE KEY-----)",
+    re.IGNORECASE,
+)
+_URI_WITH_CREDENTIALS = re.compile(
+    r"^[A-Za-z][A-Za-z0-9+.-]*://[^/@\s:]+:[^/@\s]+@"
+)
+_METHOD_KINDS = {
+    "bm25",
+    "recent",
+    "semafuse_production_retrieval",
+    "external_jsonl",
+}
 _CATEGORY_NUMBERS = {
     "multi-hop": 1,
     "temporal": 2,
@@ -354,6 +381,7 @@ def load_comparison_spec(path: Path) -> ComparisonSpec:
 
     selections: list[MethodSelection] = []
     seen_names: set[str] = set()
+    seen_sources: set[tuple[str, str]] = set()
     used_runs: set[str] = set()
     for index, raw_method in enumerate(_require_list(root["methods"], "methods")):
         method_entry = _require_object(raw_method, f"methods[{index}]")
@@ -372,7 +400,17 @@ def load_comparison_spec(path: Path) -> ComparisonSpec:
             raise VerificationError(f"duplicate method display name {name!r}")
         if run_id not in seen_runs:
             raise VerificationError(f"method {name!r} references unknown run {run_id!r}")
+        source = (run_id, source_method)
+        if source in seen_sources:
+            raise VerificationError(
+                f"duplicate selected run/source_method pair for run {run_id!r}"
+            )
+        if source_method == "bm25" and name != baseline:
+            raise VerificationError(
+                "the BM25 baseline source_method may only use the baseline display name"
+            )
         seen_names.add(name)
+        seen_sources.add(source)
         used_runs.add(run_id)
         selections.append(MethodSelection(name, run_id, source_method))
     if len(selections) < 2:
@@ -453,6 +491,11 @@ def _validate_manifest_and_report(
     for index, raw_entry in enumerate(method_entries):
         entry = _require_object(raw_entry, f"{label}.methods[{index}]")
         method_id = _require_name(entry.get("id"), f"{label}.methods[{index}].id", method=True)
+        kind = entry.get("kind")
+        if kind not in _METHOD_KINDS:
+            raise VerificationError(
+                f"{label}.methods[{index}].kind is not a supported method kind"
+            )
         outputs = entry.get("outputs")
         if outputs is None:
             output_ids = [method_id]
@@ -617,11 +660,18 @@ def _parse_journal(
             set(),
             f"{label}.efficiency",
         )
-        _finite_number(efficiency["query_wall_s"], f"{label}.query_wall_s", minimum=0.0)
+        query_wall_s = _finite_number(
+            efficiency["query_wall_s"], f"{label}.query_wall_s", minimum=0.0
+        )
+        optional_efficiency: dict[str, float | None] = {}
         for key in ("retrieval_s", "shared_construction_s"):
-            if efficiency[key] is not None:
-                _finite_number(efficiency[key], f"{label}.{key}", minimum=0.0)
-        _require_object(payload.get("metadata"), f"{label}.metadata")
+            value = efficiency[key]
+            optional_efficiency[key] = (
+                None
+                if value is None
+                else _finite_number(value, f"{label}.{key}", minimum=0.0)
+            )
+        metadata = _require_object(payload.get("metadata"), f"{label}.metadata")
 
         method_records = records.setdefault(method, {})
         if question_id in method_records:
@@ -631,6 +681,11 @@ def _parse_journal(
             "category_number": category_number,
             "gold_count": payload["gold_count"],
             "metrics": metrics,
+            "efficiency": {
+                "query_wall_s": query_wall_s,
+                **optional_efficiency,
+            },
+            "metadata": metadata,
         }
     if not records:
         raise VerificationError(f"{label} journal is empty")
@@ -853,6 +908,163 @@ def _ci95(values: Sequence[float]) -> dict[str, float]:
     }
 
 
+def _latency_receipt(
+    records: Mapping[str, Mapping[str, Any]],
+    question_ids: Sequence[str],
+    method_manifest: Mapping[str, Any],
+    label: str,
+) -> dict[str, Any]:
+    ordered = [records[question_id] for question_id in question_ids]
+    denominator = len(ordered)
+    if denominator != OFFICIAL_RETRIEVAL_N:
+        raise VerificationError(f"{label} latency population is not complete")
+
+    query_values = [record["efficiency"]["query_wall_s"] for record in ordered]
+    query_total = math.fsum(query_values)
+    shared_values = [
+        record["efficiency"]["shared_construction_s"] for record in ordered
+    ]
+    has_shared = [value is not None for value in shared_values]
+    kind = method_manifest.get("kind")
+    if kind not in _METHOD_KINDS:
+        raise VerificationError(f"{label} has an unsupported method kind")
+    stateful = kind in {"semafuse_production_retrieval", "external_jsonl"}
+    if any(has_shared) != all(has_shared):
+        raise VerificationError(f"{label} mixes present and absent shared construction timing")
+    if stateful and not all(has_shared):
+        raise VerificationError(f"{label} stateful method lacks shared construction timing")
+    if kind in {"bm25", "recent"} and any(has_shared):
+        raise VerificationError(f"{label} stateless method reports shared construction timing")
+
+    construction_total = 0.0
+    construction_attempts = 0
+    construction_denominators: list[int] = []
+    construction_rows = 0
+    grouping = "not_applicable"
+    if all(has_shared):
+        accounting_rows: list[tuple[float, int, str | None]] = []
+        for index, (record, raw_value) in enumerate(zip(ordered, shared_values, strict=True)):
+            if raw_value is None:  # Kept explicit for static type narrowing.
+                raise VerificationError(f"{label} has an absent shared construction value")
+            metadata = record["metadata"]
+            if (
+                metadata.get("construction_scope") != "source_conversation"
+                or metadata.get("construction_value_repeated_per_query") is not True
+            ):
+                raise VerificationError(
+                    f"{label} lacks repeated source-conversation construction accounting"
+                )
+            amortization_n = _require_int(
+                metadata.get("construction_amortization_n"),
+                f"{label}.records[{index}].construction_amortization_n",
+                minimum=1,
+            )
+            if amortization_n > denominator:
+                raise VerificationError(
+                    f"{label} construction amortization denominator exceeds population"
+                )
+            raw_identity = metadata.get("history_identity_sha256")
+            identity = (
+                None
+                if raw_identity is None
+                else _require_sha256(
+                    raw_identity, f"{label}.records[{index}].history_identity_sha256"
+                )
+            )
+            accounting_rows.append((raw_value, amortization_n, identity))
+
+        identities_present = [identity is not None for _, _, identity in accounting_rows]
+        if any(identities_present) != all(identities_present):
+            raise VerificationError(f"{label} mixes identified and unidentified construction rows")
+
+        totals: list[float] = []
+        if all(identities_present):
+            identity_groups: dict[str, list[tuple[float, int]]] = {}
+            for value, amortization_n, identity in accounting_rows:
+                if identity is None:
+                    raise VerificationError(f"{label} has an absent construction identity")
+                identity_groups.setdefault(identity, []).append((value, amortization_n))
+            for rows in identity_groups.values():
+                values = {value for value, _ in rows}
+                denominators = {amortization_n for _, amortization_n in rows}
+                if len(values) != 1 or len(denominators) != 1:
+                    raise VerificationError(
+                        f"{label} construction identity has inconsistent timing or denominator"
+                    )
+                amortization_n = next(iter(denominators))
+                if len(rows) != amortization_n:
+                    raise VerificationError(
+                        f"{label} construction identity does not cover its "
+                        "amortization denominator"
+                    )
+                totals.append(next(iter(values)))
+                construction_denominators.append(amortization_n)
+            construction_attempts = len(identity_groups)
+            grouping = "history_identity_sha256"
+        else:
+            repeated_groups: dict[tuple[float, int], int] = {}
+            for value, amortization_n, _ in accounting_rows:
+                key = (value, amortization_n)
+                repeated_groups[key] = repeated_groups.get(key, 0) + 1
+            for (value, amortization_n), count in repeated_groups.items():
+                attempts, remainder = divmod(count, amortization_n)
+                if remainder or attempts == 0:
+                    raise VerificationError(
+                        f"{label} repeated construction rows do not cover their "
+                        "amortization denominator"
+                    )
+                construction_attempts += attempts
+                totals.extend([value] * attempts)
+                construction_denominators.extend([amortization_n] * attempts)
+            grouping = "exact_value_and_construction_amortization_n"
+
+        if sorted(construction_denominators) != OFFICIAL_CONSTRUCTION_DENOMINATORS:
+            raise VerificationError(
+                f"{label} construction attempts must cover two 156-row source conversations"
+            )
+        construction_total = math.fsum(totals)
+        construction_rows = denominator
+    else:
+        accounting_keys = {
+            "construction_scope",
+            "construction_amortization_n",
+            "construction_value_repeated_per_query",
+            "history_identity_sha256",
+        }
+        if any(accounting_keys.intersection(record["metadata"]) for record in ordered):
+            raise VerificationError(
+                f"{label} has construction metadata without shared construction timing"
+            )
+
+    accounted_total = math.fsum((query_total, construction_total))
+    return {
+        "unit": "seconds",
+        "query_wall_s": {
+            "denominator": denominator,
+            "total": query_total,
+            "mean": query_total / denominator,
+            "p50": _percentile_linear(query_values, 0.50),
+            "p95": _percentile_linear(query_values, 0.95),
+        },
+        "shared_construction_s": {
+            "source_rows": construction_rows,
+            "shared_attempt_count": construction_attempts,
+            "amortization_denominators": sorted(construction_denominators),
+            "grouping": grouping,
+            "group_identifiers_serialized": False,
+            "total": construction_total,
+            "amortized_per_question": construction_total / denominator,
+        },
+        "accounted_wall_s": {
+            "definition": (
+                "query wall total plus shared construction counted once per validated attempt"
+            ),
+            "total": accounted_total,
+            "amortized_per_question": accounted_total / denominator,
+        },
+    }
+
+
 def _bootstrap_means(
     ordered_rows: Sequence[Sequence[float]], columns: int
 ) -> list[list[float]]:
@@ -872,31 +1084,84 @@ def _bootstrap_means(
     return distributions
 
 
+def _require_model_id(value: Any, label: str) -> str:
+    if not isinstance(value, str) or not _SAFE_MODEL_ID.fullmatch(value):
+        raise VerificationError(f"{label} is not a safe model identifier")
+    return value
+
+
 def _method_identity(parent: Mapping[str, Any]) -> dict[str, Any]:
-    identity: dict[str, Any] = {
-        "id": parent.get("id"),
-        "kind": parent.get("kind"),
-    }
+    method_id = _require_name(parent.get("id"), "method identity.id", method=True)
+    kind = parent.get("kind")
+    if kind not in _METHOD_KINDS:
+        raise VerificationError("method identity has an unsupported kind")
+    identity: dict[str, Any] = {"id": method_id, "kind": kind}
+
+    for key in ("track", "adapter_kind"):
+        if key in parent:
+            identity[key] = _require_name(parent[key], f"method identity.{key}")
+    if "upstream_revision" in parent:
+        revision = parent["upstream_revision"]
+        if revision is not None and (
+            not isinstance(revision, str) or not _GIT_SHA.fullmatch(revision)
+        ):
+            raise VerificationError(
+                "method identity.upstream_revision must be null or an immutable Git SHA"
+            )
+        identity["upstream_revision"] = revision
+    for key in ("protected_identity_complete", "model_revisions_verified"):
+        if key in parent:
+            if not isinstance(parent[key], bool):
+                raise VerificationError(f"method identity.{key} must be boolean")
+            identity[key] = parent[key]
     for key in (
-        "track",
-        "adapter_kind",
-        "upstream_revision",
-        "protected_identity_complete",
-        "model_revisions_verified",
         "config_sha256",
         "resolved_config_sha256",
         "worker_config_sha256",
         "command_sha256",
-        "embedding_model",
-        "reranker_model",
     ):
         if key in parent:
-            identity[key] = parent[key]
+            identity[key] = _require_sha256(parent[key], f"method identity.{key}")
+    for key in ("embedding_model", "reranker_model"):
+        if key in parent:
+            identity[key] = _require_model_id(parent[key], f"method identity.{key}")
     if "model_revisions" in parent:
-        identity["model_revisions_sha256"] = _sha256_bytes(
-            _canonical_json(parent["model_revisions"])
+        revisions = _require_object(
+            parent["model_revisions"], "method identity.model_revisions"
         )
+        identity["model_revisions_sha256"] = _sha256_bytes(_canonical_json(revisions))
     return identity
+
+
+def _looks_like_absolute_path(value: str) -> bool:
+    candidate = value.strip()
+    return (
+        candidate.startswith(("/", "\\", "~/", "~\\", "file://"))
+        or _WINDOWS_ABSOLUTE_PATH.match(candidate) is not None
+    )
+
+
+def _assert_receipt_safe(value: Any) -> None:
+    if isinstance(value, dict):
+        for key, child in value.items():
+            if not isinstance(key, str):
+                raise VerificationError("receipt contains a non-string object key")
+            if _looks_like_absolute_path(key):
+                raise VerificationError("receipt contains an absolute path")
+            if key == "credentials_serialized":
+                if child is not None and child is not False:
+                    raise VerificationError("receipt contains a credential-like key")
+            elif _CREDENTIAL_KEY.search(key):
+                raise VerificationError("receipt contains a credential-like key")
+            _assert_receipt_safe(child)
+    elif isinstance(value, list):
+        for child in value:
+            _assert_receipt_safe(child)
+    elif isinstance(value, str):
+        if _looks_like_absolute_path(value):
+            raise VerificationError("receipt contains an absolute path")
+        if _CREDENTIAL_VALUE.search(value) or _URI_WITH_CREDENTIALS.search(value):
+            raise VerificationError("receipt contains a credential-like value")
 
 
 def _paper_reproduction_blockers(
@@ -1012,8 +1277,16 @@ def build_receipt(spec: ComparisonSpec) -> dict[str, Any]:
         )
 
     method_metric_values: dict[str, dict[str, tuple[float, ...]]] = {}
+    method_latency: dict[str, dict[str, Any]] = {}
+    method_identities: dict[str, dict[str, Any]] = {}
     for selection in spec.methods:
-        records = runs[selection.run_id].records[selection.source_method]
+        run = runs[selection.run_id]
+        records = run.records[selection.source_method]
+        method_identity = _method_identity(
+            run.method_manifests[selection.source_method]
+        )
+        _assert_receipt_safe(method_identity)
+        method_identities[selection.name] = method_identity
         method_metric_values[selection.name] = {
             metric.receipt_name: tuple(
                 records[question_id]["metrics"][metric.receipt_name]
@@ -1021,6 +1294,12 @@ def build_receipt(spec: ComparisonSpec) -> dict[str, Any]:
             )
             for metric in METRICS
         }
+        method_latency[selection.name] = _latency_receipt(
+            records,
+            first_run.question_ids,
+            run.method_manifests[selection.source_method],
+            f"{selection.run_id}.{selection.source_method}",
+        )
 
     columns: list[tuple[str, str]] = [
         (selection.name, metric.receipt_name)
@@ -1055,11 +1334,10 @@ def build_receipt(spec: ComparisonSpec) -> dict[str, Any]:
             "source": {
                 "run": selection.run_id,
                 "method": selection.source_method,
-                "identity": _method_identity(
-                    runs[selection.run_id].method_manifests[selection.source_method]
-                ),
+                "identity": method_identities[selection.name],
             },
             "metrics": metric_receipts,
+            "latency": method_latency[selection.name],
         }
 
     def paired_delta(candidate: str, reference: str) -> dict[str, Any]:
@@ -1106,7 +1384,7 @@ def build_receipt(spec: ComparisonSpec) -> dict[str, Any]:
     ]
 
     script_sha = _sha256_file(Path(__file__), "compact receipt tool")[1]
-    return {
+    receipt = {
         "schema_version": SCHEMA_VERSION,
         "benchmark": "LoCoMo",
         "track": COMMON_TRACK,
@@ -1170,10 +1448,13 @@ def build_receipt(spec: ComparisonSpec) -> dict[str, Any]:
             "expected_hashes_match": True,
             "run_key_consistent_within_each_run": True,
             "summary_recomputed_from_per_question": True,
+            "latency_recomputed_from_per_question": True,
+            "shared_construction_accounting_validated": True,
             "question_sets_identical": True,
             "raw_query_or_message_serialized": False,
-            "absolute_paths_serialized": False,
-            "credentials_serialized": False,
+            "absolute_paths_serialized": None,
+            "credentials_serialized": None,
+            "recursive_safety_scan_passed": False,
             "run_key_preimage_recomputed": False,
             "run_key_preimage_note": (
                 "The runner does not serialize suite bytes, so this tool verifies run_key "
@@ -1189,6 +1470,12 @@ def build_receipt(spec: ComparisonSpec) -> dict[str, Any]:
             "between_nonbaseline_methods": between_methods,
         },
     }
+    _assert_receipt_safe(receipt)
+    validation = receipt["validation"]
+    validation["absolute_paths_serialized"] = False
+    validation["credentials_serialized"] = False
+    validation["recursive_safety_scan_passed"] = True
+    return receipt
 
 
 def inspect_run(directory: Path) -> dict[str, Any]:

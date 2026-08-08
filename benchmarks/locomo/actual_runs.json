@@ -1,0 +1,54 @@
+{
+  "schema_version": "locomo-openrouter-usage-window-v1",
+  "classification": "development-account-usage-observation",
+  "currency": "USD",
+  "measurement": {
+    "source": "OpenRouter GET /api/v1/credits data.total_usage",
+    "workflow_exclusive": true,
+    "workflow_exclusive_definition": "No intentional paid OpenRouter calls outside these three sequential benchmark runs occurred between the first and settled final readings.",
+    "start_total_usage": "180.013072506",
+    "settled_end_total_usage": "180.410504500",
+    "combined_delta_usd": "0.397431994",
+    "settlement_check": {
+      "consecutive_final_reading_1": "180.410504500",
+      "consecutive_final_reading_2": "180.410504500",
+      "stable": true
+    },
+    "attribution_limit": "The combined delta is stronger evidence than individual method deltas. OpenRouter may settle usage asynchronously, so adjacent per-method account windows can include a small tail from the preceding run; no request-level invoice export was available."
+  },
+  "runs": [
+    {
+      "method": "A-MEM",
+      "track": "development retrieval-only common evaluator",
+      "run_key": "ce3895730288d395289726cf0c0b782d2e8269293977968a1da3b12cb3765be5",
+      "summary_sha256": "07f0482e464ff7282f7a2b1d821154334888e1d89fa620488ebbe3e2d11bed9e",
+      "per_question_sha256": "dd48a150a43e39fc2dadca214bec3d2a0ffeade2ea8e6b11e4cb3ca6a0bd4ec7",
+      "start_total_usage": "180.013072506",
+      "end_total_usage": "180.336074256",
+      "observed_window_delta_usd": "0.323001750",
+      "attribution_strength": "sequential account window, not request-level billing"
+    },
+    {
+      "method": "Semafuse",
+      "track": "development retrieval-only common evaluator",
+      "run_key": "1fff7ec687e4aa5054c59eec301690e2ec32bb0abec2b0da3e7715d5e8d5c36c",
+      "summary_sha256": "98c5023306ba55e4ab23b17becfd34536f45dc61125cece6ed163a3db0b8d6dc",
+      "per_question_sha256": "6d80f98cc01869692987d0a6613235591ee9513906d8f57030072258dff3c4fb",
+      "start_total_usage": "180.336074256",
+      "end_total_usage": "180.393998046",
+      "observed_window_delta_usd": "0.057923790",
+      "attribution_strength": "sequential account window, not request-level billing"
+    },
+    {
+      "method": "Mem0 OSS raw",
+      "track": "development retrieval-only common evaluator",
+      "run_key": "ec9f83b9b3a342d1868665526668b2ab81a8a1bee91390e336e1935dac451114",
+      "summary_sha256": "fe08c7f39ac9a7d43ee9be54b65ccb83dc9ca5cbb9a10b5668d70c641fb269e6",
+      "per_question_sha256": "359248cf03febbb8936bba5b322bae8bbcd2939c8ff78899ea1d2c5210b604b0",
+      "start_total_usage": "180.393998046",
+      "settled_end_total_usage": "180.410504500",
+      "observed_window_delta_usd": "0.016506454",
+      "attribution_strength": "sequential account window, not request-level billing"
+    }
+  ]
+}
