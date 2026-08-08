@@ -161,6 +161,13 @@ It records data and generated split hashes but deliberately contains no model
 score because no configured inference endpoints were available during
 validation.
 
+## Native memory benchmark
+
+The maintained Semafuse and baseline comparison runner is now the native Rust
+[memory benchmark](../memory/README.md). Its latest complete LongMemEval
+retrieval scores and reproducibility hashes are recorded in
+[the results report](../memory/RESULTS.md).
+
 ## Inspect normalized inputs
 
 ```bash

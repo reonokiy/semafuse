@@ -1,0 +1,31 @@
+schema_version = 1
+name = "longmemeval-all-role-message-v1"
+retrieval_profile = "all_role_message"
+baseline_method = "bm25-lazymem"
+
+[[methods]]
+kind = "bm25"
+id = "bm25-lazymem"
+limit = 50
+
+[[methods]]
+kind = "bm25_positive"
+id = "bm25-positive-control"
+limit = 50
+
+[[methods]]
+kind = "recent"
+id = "recent-50"
+limit = 50
+
+[[methods]]
+kind = "full_history"
+id = "full-history"
+
+[[methods]]
+kind = "oracle_turn"
+id = "oracle-turn"
+
+[[methods]]
+kind = "oracle_session"
+id = "oracle-session"

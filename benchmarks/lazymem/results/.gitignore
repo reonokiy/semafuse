@@ -1,0 +1,4 @@
+# Paid, machine-generated engineering artifacts stay local. The frozen split
+# manifest is intentionally not ignored so it can be moved into the Rust suite.
+openrouter_embedding_longmemeval_test100.json
+openrouter_embedding_longmemeval_test100.jsonl

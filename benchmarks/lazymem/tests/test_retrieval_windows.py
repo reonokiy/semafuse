@@ -40,6 +40,18 @@ class RetrievalTests(unittest.TestCase):
         self.assertEqual([item[0] for item in fused], ["a", "b", "c"])
         self.assertAlmostEqual(fused[0][1], 1 / 62 + 1 / 61)
 
+    def test_rrf_ties_use_corpus_order_not_label_bearing_ids(self) -> None:
+        fused = reciprocal_rank_fusion(
+            [["z"], ["answer_evidence"]],
+            tie_break_order={"z": 0, "answer_evidence": 1},
+        )
+        self.assertEqual([item[0] for item in fused], ["z", "answer_evidence"])
+
+        with self.assertRaises(ValueError):
+            reciprocal_rank_fusion(
+                [["z"], ["answer_evidence"]], tie_break_order={"z": 0}
+            )
+
     def test_dependency_free_bm25(self) -> None:
         history = list(messages(3))
         history[1] = Message("m1", 1, "assistant", "rare apple orchard")

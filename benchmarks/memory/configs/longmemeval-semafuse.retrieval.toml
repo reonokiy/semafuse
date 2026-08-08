@@ -1,0 +1,30 @@
+schema_version = 1
+name = "longmemeval-semafuse-all-role-v1"
+retrieval_profile = "all_role_message"
+baseline_method = "bm25-lazymem"
+
+[[methods]]
+kind = "bm25"
+id = "bm25-lazymem"
+limit = 50
+
+[[methods]]
+kind = "recent"
+id = "recent-50"
+limit = 50
+
+[[methods]]
+kind = "strategy"
+id = "semafuse"
+config = "../../lazymem/configs/semafuse_lazymem.product.toml"
+limit = 50
+expose_stages = ["dense", "bm25", "rrf", "retrieved"]
+stage_context_limit = 50
+
+[[methods]]
+kind = "oracle_turn"
+id = "oracle-turn"
+
+[[methods]]
+kind = "oracle_session"
+id = "oracle-session"

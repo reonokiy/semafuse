@@ -49,16 +49,40 @@ const NAMESPACE: &str = "lazymem";
 const BENCHMARK_TRACE_SCHEMA_VERSION: &str = "semafuse.lazymem-recall/v1";
 
 fn build(settings: Option<&Value>) -> Result<Box<dyn MemoryStrategy>> {
+    Ok(Box::new(LazyMemStrategy {
+        config: parse_config(settings)?,
+    }))
+}
+
+fn parse_config(settings: Option<&Value>) -> Result<LazyMemConfig> {
     let settings = settings
         .context("lazymem requires explicit embedding, reranker, and processor backend settings")?;
     let config: LazyMemConfig =
         serde_json::from_value(settings.clone()).context("deserialize lazymem settings")?;
     config.validate()?;
-    Ok(Box::new(LazyMemStrategy { config }))
+    Ok(config)
+}
+
+pub(super) async fn recall_retrieval_only(
+    settings: Option<&Value>,
+    context: &dyn StrategyContext,
+    request: &RecallRequest,
+) -> Result<RecallResult> {
+    LazyMemStrategy {
+        config: parse_config(settings)?,
+    }
+    .recall_internal(context, request, RecallExecution::RetrievalOnly)
+    .await
 }
 
 struct LazyMemStrategy {
     config: LazyMemConfig,
+}
+
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum RecallExecution {
+    Full,
+    RetrievalOnly,
 }
 
 #[async_trait]
@@ -105,6 +129,18 @@ impl MemoryStrategy for LazyMemStrategy {
         &self,
         context: &dyn StrategyContext,
         request: &RecallRequest,
+    ) -> Result<RecallResult> {
+        self.recall_internal(context, request, RecallExecution::Full)
+            .await
+    }
+}
+
+impl LazyMemStrategy {
+    async fn recall_internal(
+        &self,
+        context: &dyn StrategyContext,
+        request: &RecallRequest,
+        execution: RecallExecution,
     ) -> Result<RecallResult> {
         if request.query.limit == 0 {
             return Ok(RecallResult {
@@ -214,6 +250,82 @@ impl MemoryStrategy for LazyMemStrategy {
             self.config.window_config(),
         )?;
         let window_construction_elapsed = window_construction_started.elapsed();
+        if execution == RecallExecution::RetrievalOnly {
+            let timing = timing_metadata(
+                retrieval_elapsed,
+                window_construction_elapsed,
+                Duration::ZERO,
+                recall_started.elapsed(),
+            );
+            let metadata = Map::from_iter([
+                (
+                    "protocol".into(),
+                    serde_json::to_value(self.config.protocol)?,
+                ),
+                ("execution_mode".into(), json!("retrieval_only")),
+                ("query_time_ms".into(), json!(request.query_time_ms)),
+                ("effective_until_ms".into(), json!(effective_query.until_ms)),
+                (
+                    "embedding_backend".into(),
+                    json!(self.config.embedding.backend_name()),
+                ),
+                (
+                    "embedding_model".into(),
+                    json!(self.config.embedding.model_identity()),
+                ),
+                (
+                    "reranker_backend".into(),
+                    json!(self.config.reranker.backend_name()),
+                ),
+                (
+                    "reranker_model".into(),
+                    json!(self.config.reranker.model_identity()),
+                ),
+                (
+                    "processor".into(),
+                    serde_json::to_value(self.config.processor.identity())?,
+                ),
+                ("processor_invoked".into(), json!(false)),
+                ("prompt_version".into(), json!(PROCESSOR_PROMPT_VERSION)),
+                ("generation".into(), self.config.generation_metadata()),
+                (
+                    "retrieval_config".into(),
+                    serde_json::to_value(&self.config.retrieval)?,
+                ),
+                (
+                    "window_config".into(),
+                    serde_json::to_value(&self.config.window)?,
+                ),
+                (
+                    "index".into(),
+                    json!({
+                        "checkpoint": checkpoint.get(),
+                        "event_high_water": high_water.get(),
+                        "scoped_corpus_events": corpus.len(),
+                        "query_vector_dimensions": retrieval.query_vector_dimensions,
+                    }),
+                ),
+                ("rrf".into(), serde_json::to_value(&retrieval.rrf)?),
+                (
+                    "rerank".into(),
+                    serde_json::to_value(&retrieval.rerank_trace)?,
+                ),
+                ("windows".into(), serde_json::to_value(&history.trace)?),
+                (
+                    "processing".into(),
+                    json!({"status": "skipped_retrieval_only"}),
+                ),
+                ("timing".into(), timing.clone()),
+                (
+                    "strategy_benchmark_trace".into(),
+                    strategy_benchmark_trace(Some(&retrieval), Some(&history), &[], &timing),
+                ),
+            ]);
+            return Ok(RecallResult {
+                items: Vec::new(),
+                metadata,
+            });
+        }
         let processing_started = Instant::now();
         let responses = self.process_windows(request, &history.windows).await?;
         let processing = combine_window_responses(&ProcessingInput {
@@ -442,6 +554,7 @@ impl LazyMemStrategy {
         let rrf = reciprocal_rank_fusion(&RrfInput {
             dense_ranked_ids: dense_ids,
             sparse_ranked_ids: sparse_ids,
+            tie_break_ranked_ids: corpus.iter().map(|event| event.id.clone()).collect(),
         })?;
         let fused = rrf
             .candidates

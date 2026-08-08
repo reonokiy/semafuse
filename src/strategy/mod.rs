@@ -204,6 +204,35 @@ pub async fn recall_result_at(
         .await
 }
 
+/// Runs LazyMem retrieval, reranking, and evidence-window expansion without
+/// invoking its prompt processor or constructing a compressed memory.
+///
+/// This path exists for retrieval benchmarks that must isolate ranking and
+/// coverage quality from generation quality. It still requires the configured
+/// LazyMem embedding and reranker backends and the same fully indexed corpus as
+/// production recall.
+pub async fn recall_lazymem_retrieval_result_at(
+    store: &SqliteStore,
+    config: &Config,
+    query: SearchQuery,
+    query_time_ms: i64,
+) -> Result<RecallResult> {
+    validate(config)?;
+    ensure!(
+        config.strategies.recall == "lazymem",
+        "retrieval-only recall requires strategies.recall = \"lazymem\""
+    );
+    lazymem::recall_retrieval_only(
+        config.strategies.settings.get("lazymem"),
+        store,
+        &RecallRequest {
+            query,
+            query_time_ms,
+        },
+    )
+    .await
+}
+
 /// Rebuilds one enabled strategy from all canonical events.
 ///
 /// State is derived in a temporary database first. Only after every event is

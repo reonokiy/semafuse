@@ -11,6 +11,16 @@
 pub mod adapters;
 /// Isolated JSONL benchmark support that exercises the production strategies.
 pub mod benchmark;
+/// Deterministic model-free retrieval and oracle baselines.
+pub mod benchmark_baselines;
+/// Crash-safe, identity-checked JSONL benchmark journaling.
+pub mod benchmark_journal;
+/// Retrieval metrics with both standard and LongMemEval-compatible nDCG.
+pub mod benchmark_metrics;
+/// Fail-closed aggregation and paired bootstrap comparisons.
+pub mod benchmark_report;
+/// Native modular LongMemEval suite orchestration.
+pub mod benchmark_suite;
 /// Content-addressed attachment storage and extraction.
 pub mod blob;
 /// Configuration defaults, loading, and validation.
@@ -24,6 +34,10 @@ pub mod hooks;
 /// Agent history discovery and import.
 pub mod importer;
 mod inference;
+/// Label-isolated native loader for the official LongMemEval release.
+pub mod longmemeval;
+/// Frozen LongMemEval answer and official judge prompt helpers.
+pub mod longmemeval_eval;
 /// Model Context Protocol server over standard input and output.
 pub mod mcp;
 /// Canonical events, queries, memories, and shared value types.

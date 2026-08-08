@@ -1,7 +1,9 @@
 use anyhow::{Context, Result, bail, ensure};
 use reqwest::{Client, StatusCode};
 use serde_json::Value;
-use std::time::Duration;
+use std::{sync::OnceLock, time::Duration};
+
+static INFERENCE_HTTP_CLIENT: OnceLock<Client> = OnceLock::new();
 
 pub(super) fn default_timeout_secs() -> u64 {
     120
@@ -57,10 +59,7 @@ pub(super) async fn post_json(
     max_retries: usize,
     body: &Value,
 ) -> Result<Value> {
-    let client = Client::builder()
-        .timeout(Duration::from_secs(timeout_secs))
-        .build()
-        .context("build inference HTTP client")?;
+    let client = INFERENCE_HTTP_CLIENT.get_or_init(Client::new);
     let url = format!("{}/{}", base_url.trim_end_matches('/'), path);
     let token = api_key_env
         .map(|name| {
@@ -71,7 +70,10 @@ pub(super) async fn post_json(
         .transpose()?;
 
     for attempt in 0..=max_retries {
-        let mut request = client.post(&url).json(body);
+        let mut request = client
+            .post(&url)
+            .timeout(Duration::from_secs(timeout_secs))
+            .json(body);
         if let Some(token) = &token {
             request = request.bearer_auth(token);
         }

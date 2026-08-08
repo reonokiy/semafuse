@@ -1,0 +1,28 @@
+schema_version = 1
+name = "longmemeval-official-user-turn-v1"
+retrieval_profile = "official_user_turn"
+baseline_method = "bm25-official"
+
+# This method reproduces LongMemEval's user-only raw-content index and literal
+# split(" ") tokenizer with rank_bm25 0.2.2 semantics.
+[[methods]]
+kind = "official_bm25"
+id = "bm25-official"
+limit = 50
+
+[[methods]]
+kind = "recent"
+id = "recent-50"
+limit = 50
+
+[[methods]]
+kind = "full_history"
+id = "full-history"
+
+[[methods]]
+kind = "oracle_turn"
+id = "oracle-turn"
+
+[[methods]]
+kind = "oracle_session"
+id = "oracle-session"

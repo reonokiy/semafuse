@@ -9252,6 +9252,7 @@ dependencies = [
  "clap",
  "config",
  "dirs",
+ "dotenvy",
  "fs2",
  "hex",
  "indicatif",

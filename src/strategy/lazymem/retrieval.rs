@@ -138,6 +138,8 @@ fn bm25_tokens(text: &str) -> Vec<String> {
 pub(super) struct RrfInput {
     pub dense_ranked_ids: Vec<String>,
     pub sparse_ranked_ids: Vec<String>,
+    /// Stable, label-agnostic corpus order used only after score and rank ties.
+    pub tie_break_ranked_ids: Vec<String>,
 }
 
 /// One candidate in the deterministic RRF order.
@@ -232,6 +234,18 @@ struct PartialCandidate {
 /// rank. Empty identifiers are rejected because they cannot be traced back to
 /// stored messages.
 pub(super) fn reciprocal_rank_fusion(input: &RrfInput) -> Result<RrfOutput> {
+    let mut corpus_order = HashMap::with_capacity(input.tie_break_ranked_ids.len());
+    for (index, message_id) in input.tie_break_ranked_ids.iter().enumerate() {
+        ensure!(
+            !message_id.trim().is_empty(),
+            "RRF tie-break order contains an empty message id at position {}",
+            index + 1
+        );
+        ensure!(
+            corpus_order.insert(message_id.as_str(), index).is_none(),
+            "RRF tie-break order contains duplicate message id: {message_id}"
+        );
+    }
     let mut candidates = HashMap::<String, PartialCandidate>::new();
     let dense_duplicates_ignored = add_channel(
         &mut candidates,
@@ -250,6 +264,12 @@ pub(super) fn reciprocal_rank_fusion(input: &RrfInput) -> Result<RrfOutput> {
         },
     )?;
 
+    for message_id in candidates.keys() {
+        ensure!(
+            corpus_order.contains_key(message_id.as_str()),
+            "RRF candidate {message_id} is missing from the tie-break corpus order"
+        );
+    }
     let mut fused = candidates
         .into_iter()
         .map(|(message_id, candidate)| RrfCandidate {
@@ -264,7 +284,9 @@ pub(super) fn reciprocal_rank_fusion(input: &RrfInput) -> Result<RrfOutput> {
             .rrf_score
             .total_cmp(&left.rrf_score)
             .then_with(|| best_rank(left).cmp(&best_rank(right)))
-            .then_with(|| left.message_id.cmp(&right.message_id))
+            .then_with(|| {
+                corpus_order[left.message_id.as_str()].cmp(&corpus_order[right.message_id.as_str()])
+            })
     });
     let fused_order = fused
         .iter()
@@ -469,6 +491,7 @@ mod tests {
         let output = reciprocal_rank_fusion(&RrfInput {
             dense_ranked_ids: ids(&["both", "dense"]),
             sparse_ranked_ids: ids(&["both", "sparse"]),
+            tie_break_ranked_ids: ids(&["both", "dense", "sparse"]),
         })
         .unwrap();
 
@@ -485,6 +508,7 @@ mod tests {
         let output = reciprocal_rank_fusion(&RrfInput {
             dense_ranked_ids: ids(&["a", "b", "a"]),
             sparse_ranked_ids: ids(&["b"]),
+            tie_break_ranked_ids: ids(&["a", "b"]),
         })
         .unwrap();
 
@@ -503,11 +527,11 @@ mod tests {
         let output = reciprocal_rank_fusion(&RrfInput {
             dense_ranked_ids: ids(&["z"]),
             sparse_ranked_ids: ids(&["a"]),
+            tie_break_ranked_ids: ids(&["z", "a"]),
         })
         .unwrap();
 
-        // The public artifact breaks equal scores by best channel rank, then ID.
-        assert_eq!(output.trace.fused_order, ids(&["a", "z"]));
+        assert_eq!(output.trace.fused_order, ids(&["z", "a"]));
     }
 
     #[test]
@@ -515,6 +539,7 @@ mod tests {
         let error = reciprocal_rank_fusion(&RrfInput {
             dense_ranked_ids: ids(&["valid", "  "]),
             sparse_ranked_ids: Vec::new(),
+            tie_break_ranked_ids: ids(&["valid"]),
         })
         .unwrap_err();
         assert!(error.to_string().contains("empty message id at rank 2"));
@@ -525,6 +550,7 @@ mod tests {
         let fused = reciprocal_rank_fusion(&RrfInput {
             dense_ranked_ids: ids(&["a", "b", "c"]),
             sparse_ranked_ids: ids(&["b", "a", "c"]),
+            tie_break_ranked_ids: ids(&["a", "b", "c"]),
         })
         .unwrap();
         let output = apply_reranker(&RerankInput {
@@ -556,6 +582,7 @@ mod tests {
         let fused = reciprocal_rank_fusion(&RrfInput {
             dense_ranked_ids: ids(&["a", "b"]),
             sparse_ranked_ids: ids(&["a", "b"]),
+            tie_break_ranked_ids: ids(&["a", "b"]),
         })
         .unwrap();
         let left = apply_reranker(&RerankInput {

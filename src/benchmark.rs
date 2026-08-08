@@ -1,4 +1,4 @@
-//! Isolated benchmark execution through Semafuse's production LazyMem path.
+//! Isolated benchmark execution through Semafuse's production strategy paths.
 //!
 //! The types in this module deliberately mirror the normalized JSONL records
 //! emitted by `benchmarks/lazymem`. A benchmark question is never mixed with a
@@ -17,11 +17,11 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 use sha2::{Digest, Sha256};
 use std::{
-    collections::{HashMap, HashSet},
+    collections::{BTreeMap, HashMap, HashSet},
     time::Instant,
 };
 
-const BENCHMARK_TRACE_VERSION: &str = "semafuse-lazymem-benchmark/v1";
+const BENCHMARK_TRACE_VERSION: &str = "semafuse-memory-benchmark/v2";
 const BENCHMARK_REPOSITORY_ROOT: &str = "/__semafuse_benchmark__";
 
 /// One normalized LazyMem benchmark question accepted as a JSONL record.
@@ -29,43 +29,68 @@ const BENCHMARK_REPOSITORY_ROOT: &str = "/__semafuse_benchmark__";
 /// The shape accepts `Question.to_dict()` from the Python harness. The
 /// question's answer and gold annotations are intentionally not retained by
 /// this runner; only the question text is used for query-time recall.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct BenchmarkQuestion {
-    id: String,
-    dataset: String,
+    /// Evaluator-side question identifier.
+    pub id: String,
+    /// Dataset name used for isolation and reporting.
+    pub dataset: String,
+    /// Dataset-defined category; never passed to the strategy.
     #[serde(default)]
-    question_type: String,
+    pub question_type: String,
+    /// Query presented to retrieval and memory construction.
     #[serde(alias = "question")]
-    query: String,
+    pub query: String,
+    /// Historical query timestamp retained for deterministic replay.
     #[serde(default)]
-    query_time: String,
-    messages: Vec<BenchmarkMessage>,
+    pub query_time: String,
+    /// Chronological history visible to the system under test.
+    pub messages: Vec<BenchmarkMessage>,
 }
 
 /// One chronological message from a normalized benchmark history.
-#[derive(Debug, Deserialize)]
-struct BenchmarkMessage {
-    id: String,
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct BenchmarkMessage {
+    /// Evaluator-side message identifier, remapped before storage.
+    pub id: String,
+    /// Optional asserted chronological position.
     #[serde(default)]
-    index: Option<usize>,
-    role: String,
-    content: String,
+    pub index: Option<usize>,
+    /// Conversation role.
+    pub role: String,
+    /// Message text.
+    pub content: String,
+    /// Native dataset timestamp.
     #[serde(default)]
-    timestamp: String,
+    pub timestamp: String,
+    /// Evaluator-side session identifier, remapped before storage.
     #[serde(default)]
-    session_id: String,
+    pub session_id: String,
 }
 
 /// One JSONL response consumed by the LazyMem benchmark harness.
 #[derive(Debug, Serialize)]
 pub struct BenchmarkResponse {
-    question_id: String,
-    context: String,
-    retrieved_message_ids: Vec<String>,
-    covered_message_ids: Vec<String>,
-    retrieval_latency_s: f64,
-    processing_latency_s: f64,
-    metadata: Map<String, Value>,
+    /// Question identifier copied to the evaluator-side output.
+    pub question_id: String,
+    /// Production strategy that produced the result.
+    pub strategy: String,
+    /// Context produced for a downstream answer model.
+    pub context: String,
+    /// Final ranked retrieval anchors.
+    pub retrieved_message_ids: Vec<String>,
+    /// Unordered evidence coverage after neighbor expansion.
+    pub covered_message_ids: Vec<String>,
+    /// Messages retained by memory construction.
+    pub retained_message_ids: Vec<String>,
+    /// Ranked outputs of available retrieval pipeline stages.
+    pub stage_rankings: BTreeMap<String, Vec<String>>,
+    /// Query retrieval latency in seconds.
+    pub retrieval_latency_s: f64,
+    /// Window construction and processing latency in seconds.
+    pub processing_latency_s: f64,
+    /// Auditable strategy and runner trace.
+    pub metadata: Map<String, Value>,
 }
 
 struct PreparedQuestion {
@@ -86,6 +111,21 @@ struct ParsedTimestamp {
     start_ms: i64,
     cutoff_ms: i64,
     date_only: bool,
+}
+
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum BenchmarkExecution {
+    Full,
+    RetrievalOnly,
+}
+
+impl BenchmarkExecution {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Full => "full",
+            Self::RetrievalOnly => "retrieval_only",
+        }
+    }
 }
 
 /// Runs one benchmark question through real Semafuse ingestion, LazyMem
@@ -110,6 +150,62 @@ pub async fn run_lazymem_question(
             .iter()
             .any(|strategy| strategy == "lazymem"),
         "the LazyMem benchmark runner requires lazymem in strategies.enabled"
+    );
+    run_strategy_question(config, question, 50).await
+}
+
+/// Runs one normalized question through the configured production strategy.
+///
+/// Every invocation uses a fresh SQLite database. The benchmark labels are not
+/// represented by [`BenchmarkQuestion`] and therefore cannot enter storage or
+/// any model request. External message and session identifiers are replaced by
+/// opaque per-question identifiers before ingestion and are only mapped back in
+/// the returned evaluator-side trace.
+pub async fn run_strategy_question(
+    config: &Config,
+    question: BenchmarkQuestion,
+    limit: usize,
+) -> Result<BenchmarkResponse> {
+    run_strategy_question_with_execution(config, question, limit, BenchmarkExecution::Full).await
+}
+
+/// Runs one question through LazyMem's production ingestion, indexing, dense
+/// and sparse retrieval, RRF, reranker, and evidence-window expansion stages.
+///
+/// The prompt processor is deliberately skipped so retrieval metrics do not
+/// require or measure memory generation. Consequently `retained_message_ids`
+/// is empty and `context` contains explicitly marked, uncompressed expanded
+/// evidence rather than a constructed memory. All supplied history is visible,
+/// matching retrieval benchmarks whose fixture timestamps may extend beyond a
+/// separate question-date annotation.
+pub async fn run_strategy_retrieval_question(
+    config: &Config,
+    question: BenchmarkQuestion,
+    limit: usize,
+) -> Result<BenchmarkResponse> {
+    run_strategy_question_with_execution(config, question, limit, BenchmarkExecution::RetrievalOnly)
+        .await
+}
+
+async fn run_strategy_question_with_execution(
+    config: &Config,
+    question: BenchmarkQuestion,
+    limit: usize,
+    execution: BenchmarkExecution,
+) -> Result<BenchmarkResponse> {
+    ensure!(limit > 0, "benchmark retrieval limit must be positive");
+    let strategy_name = config.strategies.recall.as_str();
+    ensure!(
+        config
+            .strategies
+            .enabled
+            .iter()
+            .any(|strategy| strategy == strategy_name),
+        "benchmark recall strategy {strategy_name} is not enabled"
+    );
+    ensure!(
+        execution != BenchmarkExecution::RetrievalOnly || strategy_name == "lazymem",
+        "retrieval-only benchmark execution requires strategies.recall = \"lazymem\""
     );
     ensure!(
         !question.id.trim().is_empty(),
@@ -144,53 +240,110 @@ pub async fn run_lazymem_question(
     let ingest_elapsed = ingest_started.elapsed();
 
     let indexing_started = Instant::now();
-    let indexed_event_batches = strategy::dispatch_pending(&store, config, Some("lazymem"))
+    let indexed_event_batches = strategy::dispatch_pending(&store, config, Some(strategy_name))
         .await
-        .with_context(|| format!("index benchmark question {} with LazyMem", question.id))?;
+        .with_context(|| {
+            format!(
+                "index benchmark question {} with {strategy_name}",
+                question.id
+            )
+        })?;
     let indexing_elapsed = indexing_started.elapsed();
 
+    // LongMemEval retrieval evaluates the complete supplied haystack. Some
+    // temporal-reasoning fixtures deliberately contain evidence timestamps
+    // later than `question_date`, so retrieval-only execution must not treat
+    // that field as a corpus cutoff. Full memory execution keeps the ordinary
+    // point-in-time product semantics.
+    let strategy_reference_time_ms = match execution {
+        BenchmarkExecution::Full => prepared.query_time_ms,
+        BenchmarkExecution::RetrievalOnly => prepared
+            .events
+            .iter()
+            .map(CanonicalEvent::ordering_timestamp_ms)
+            .max()
+            .map_or(prepared.query_time_ms, |history_max| {
+                prepared.query_time_ms.max(history_max.saturating_add(1))
+            }),
+    };
     let recall_started = Instant::now();
-    let recall_result = strategy::recall_result_at(
-        &store,
-        config,
-        SearchQuery {
-            text: question.query.clone(),
-            repository: Some(prepared.repository.clone()),
-            agent: Some(AgentKind::Codex),
-            since_ms: None,
-            until_ms: Some(prepared.query_time_ms),
-            limit: 50,
-        },
-        prepared.query_time_ms,
-    )
-    .await
-    .with_context(|| format!("recall benchmark question {} with LazyMem", question.id))?;
+    let query = SearchQuery {
+        text: question.query.clone(),
+        repository: Some(prepared.repository.clone()),
+        agent: Some(AgentKind::Codex),
+        since_ms: None,
+        until_ms: Some(strategy_reference_time_ms),
+        limit,
+    };
+    let recall_result = match execution {
+        BenchmarkExecution::Full => {
+            strategy::recall_result_at(&store, config, query, strategy_reference_time_ms).await
+        }
+        BenchmarkExecution::RetrievalOnly => {
+            strategy::recall_lazymem_retrieval_result_at(
+                &store,
+                config,
+                query,
+                strategy_reference_time_ms,
+            )
+            .await
+        }
+    }
+    .with_context(|| {
+        format!(
+            "recall benchmark question {} with {strategy_name}",
+            question.id
+        )
+    })?;
     let recall_elapsed = recall_started.elapsed();
 
-    let (context, item_metadata, source_event_ids) = extract_lazymem_memory(recall_result.items)?;
+    let (mut context, item_metadata, source_event_ids) =
+        extract_strategy_items(strategy_name, recall_result.items)?;
     let strategy_metadata = if recall_result.metadata.is_empty() {
         item_metadata
     } else {
         recall_result.metadata
     };
-    let (retrieved_event_ids, retrieved_source) =
-        retrieval_event_ids(&strategy_metadata, &source_event_ids);
-    let (covered_event_ids, covered_source) =
-        covered_event_ids(&strategy_metadata, &source_event_ids);
-    let (retained_event_ids, retained_source) =
+    let (retrieved_event_ids, retrieved_source) = if strategy_name == "lazymem" {
+        retrieval_event_ids(&strategy_metadata, &source_event_ids)
+    } else {
+        (source_event_ids.clone(), "event_items")
+    };
+    let (covered_event_ids, covered_source) = if strategy_name == "lazymem" {
+        covered_event_ids(&strategy_metadata, &source_event_ids)
+    } else {
+        (source_event_ids.clone(), "event_items")
+    };
+    let (retained_event_ids, retained_source) = if execution == BenchmarkExecution::RetrievalOnly {
+        (Vec::new(), "retrieval_only_no_memory_construction")
+    } else if strategy_name == "lazymem" {
         strategy_benchmark_trace_ids(&strategy_metadata, "source_event_ids")
             .map(|ids| (ids, "strategy_benchmark_trace.source_event_ids"))
-            .unwrap_or_else(|| (source_event_ids.clone(), "memory_source_event_ids_fallback"));
+            .unwrap_or_else(|| (source_event_ids.clone(), "memory_source_event_ids_fallback"))
+    } else {
+        (source_event_ids.clone(), "event_items")
+    };
     let retrieved_message_ids = map_event_ids(&retrieved_event_ids, &prepared.message_ids_by_event)
         .context("map LazyMem retrieval IDs back to benchmark messages")?;
     let covered_message_ids = map_event_ids(&covered_event_ids, &prepared.message_ids_by_event)
         .context("map LazyMem coverage IDs back to benchmark messages")?;
-    let retained_message_ids =
-        map_event_ids(&retained_event_ids, &prepared.message_ids_by_event)
-            .context("map LazyMem retained source IDs back to benchmark messages")?;
+    let retained_message_ids = map_event_ids(&retained_event_ids, &prepared.message_ids_by_event)
+        .context("map retained source IDs back to benchmark messages")?;
+    let context_source = if execution == BenchmarkExecution::RetrievalOnly {
+        context = render_retrieval_only_context(&covered_event_ids, &prepared.events)?;
+        "expanded_messages_unprocessed"
+    } else {
+        "strategy_recall_items"
+    };
+    let stage_rankings = stage_rankings(
+        strategy_name,
+        &strategy_metadata,
+        &retrieved_event_ids,
+        &prepared.message_ids_by_event,
+    )?;
 
     let (retrieval_latency_s, processing_latency_s, strategy_total_latency_s, timing_source) =
-        if strategy_metadata.get("timing").is_some() {
+        if strategy_name == "lazymem" && strategy_metadata.get("timing").is_some() {
             let retrieval = metadata_timing_ms(&strategy_metadata, "retrieval_ms") / 1_000.0;
             let processing = (metadata_timing_ms(&strategy_metadata, "window_construction_ms")
                 + metadata_timing_ms(&strategy_metadata, "processing_ms"))
@@ -208,13 +361,20 @@ pub async fn run_lazymem_question(
 
     let benchmark_trace = json!({
         "schema_version": BENCHMARK_TRACE_VERSION,
-        "strategy": "lazymem",
+        "strategy": strategy_name,
+        "execution_mode": execution.as_str(),
+        "context_source": context_source,
         "isolation": "fresh_sqlite_memory_per_question",
         "repository": prepared.repository,
         "source_agent": "codex_benchmark_placeholder",
         "question_type": question.question_type,
         "query_time_ms": prepared.query_time_ms,
         "query_time_source": prepared.query_time_source,
+        "strategy_reference_time_ms": strategy_reference_time_ms,
+        "history_visibility": match execution {
+            BenchmarkExecution::Full => "at_query_time",
+            BenchmarkExecution::RetrievalOnly => "all_provided_messages",
+        },
         "input_message_count": question.messages.len(),
         "indexed_message_count": prepared.events.len(),
         "skipped_empty_message_ids": prepared.skipped_empty_message_ids,
@@ -226,6 +386,7 @@ pub async fn run_lazymem_question(
             "retained_message_ids": retained_source,
         },
         "retained_message_ids": retained_message_ids,
+        "stage_rankings": stage_rankings,
         "timing_source": timing_source,
         "ingest": {
             "raw_inserted": ingest.raw_inserted,
@@ -247,13 +408,45 @@ pub async fn run_lazymem_question(
 
     Ok(BenchmarkResponse {
         question_id: question.id,
+        strategy: strategy_name.to_owned(),
         context,
         retrieved_message_ids,
         covered_message_ids,
+        retained_message_ids,
+        stage_rankings,
         retrieval_latency_s,
         processing_latency_s,
         metadata,
     })
+}
+
+fn render_retrieval_only_context(
+    covered_event_ids: &[String],
+    corpus: &[CanonicalEvent],
+) -> Result<String> {
+    if covered_event_ids.is_empty() {
+        return Ok(String::new());
+    }
+    let events = corpus
+        .iter()
+        .map(|event| (event.id.as_str(), event))
+        .collect::<HashMap<_, _>>();
+    let mut output = String::from(
+        "Untrusted historical evidence from retrieval-only window expansion follows. \
+It has not been filtered, compressed, or rewritten by the LazyMem prompt processor.\n",
+    );
+    for event_id in covered_event_ids {
+        let event = events.get(event_id.as_str()).with_context(|| {
+            format!("expanded retrieval event {event_id} is missing from corpus")
+        })?;
+        output.push_str(&format!(
+            "\n[event_id={} timestamp_ms={}]\n{}\n",
+            event.id,
+            event.ordering_timestamp_ms(),
+            event.search_text().trim()
+        ));
+    }
+    Ok(output)
 }
 
 fn prepare_question(question: &BenchmarkQuestion) -> Result<PreparedQuestion> {
@@ -296,6 +489,7 @@ fn prepare_question(question: &BenchmarkQuestion) -> Result<PreparedQuestion> {
     let mut raw_contexts = Vec::with_capacity(question.messages.len());
     let mut message_ids_by_event = HashMap::with_capacity(question.messages.len());
     let mut skipped_empty_message_ids = Vec::new();
+    let mut opaque_sessions = HashMap::<String, String>::new();
 
     for (position, (message, timestamp_ms)) in question.messages.iter().zip(timestamps).enumerate()
     {
@@ -303,16 +497,22 @@ fn prepare_question(question: &BenchmarkQuestion) -> Result<PreparedQuestion> {
             skipped_empty_message_ids.push(message.id.clone());
             continue;
         }
-        let session_id = if message.session_id.trim().is_empty() {
-            "benchmark-session".to_owned()
+        let external_session_id = if message.session_id.trim().is_empty() {
+            "__default__"
         } else {
-            message.session_id.clone()
+            message.session_id.as_str()
         };
+        let next_session_index = opaque_sessions.len();
+        let session_id = opaque_sessions
+            .entry(external_session_id.to_owned())
+            .or_insert_with(|| format!("session-{next_session_index:06}"))
+            .clone();
+        let opaque_message_id = format!("message-{position:08}");
         let source = EventSource::new(
             AgentKind::Codex,
             session_id.clone(),
             None,
-            Some(message.id.clone()),
+            Some(opaque_message_id.clone()),
             "benchmark_message",
             None,
             Some(repository.clone()),
@@ -327,7 +527,13 @@ fn prepare_question(question: &BenchmarkQuestion) -> Result<PreparedQuestion> {
             AgentKind::Codex,
             source_name.clone(),
             position as u64,
-            benchmark_raw_payload(message, position, &session_id, &repository),
+            benchmark_raw_payload(
+                message,
+                position,
+                &opaque_message_id,
+                &session_id,
+                &repository,
+            ),
         );
         event.attach_raw_record(raw.id.clone());
         message_ids_by_event.insert(event.id.clone(), message.id.clone());
@@ -358,13 +564,14 @@ fn prepare_question(question: &BenchmarkQuestion) -> Result<PreparedQuestion> {
 fn benchmark_raw_payload(
     message: &BenchmarkMessage,
     position: usize,
+    opaque_message_id: &str,
     session_id: &str,
     repository: &str,
 ) -> Value {
     json!({
         "type": "benchmark_message",
         "message": {
-            "id": message.id,
+            "id": opaque_message_id,
             "index": message.index.unwrap_or(position),
             "role": message.role,
             "content": message.content,
@@ -392,10 +599,9 @@ fn message_role(role: &str) -> MessageRole {
 
 fn benchmark_repository(dataset: &str, question_id: &str) -> String {
     format!(
-        "{}/{}/{}-{}",
+        "{}/{}/case-{}",
         BENCHMARK_REPOSITORY_ROOT,
         path_segment(dataset),
-        path_segment(question_id),
         stable_suffix(question_id)
     )
 }
@@ -481,6 +687,7 @@ fn parse_timestamp(value: &str) -> Option<ParsedTimestamp> {
         });
     }
     for format in [
+        "%Y/%m/%d (%a) %H:%M",
         "%Y-%m-%d %H:%M:%S%.f",
         "%Y/%m/%d %H:%M:%S%.f",
         "%d %B %Y %H:%M:%S",
@@ -510,9 +717,45 @@ fn parse_timestamp(value: &str) -> Option<ParsedTimestamp> {
     None
 }
 
-fn extract_lazymem_memory(
+fn extract_strategy_items(
+    strategy_name: &str,
     items: Vec<RecallItem>,
 ) -> Result<(String, Map<String, Value>, Vec<String>)> {
+    if strategy_name != "lazymem" {
+        let mut context = String::new();
+        let mut source_event_ids = Vec::with_capacity(items.len());
+        for item in items {
+            match item {
+                RecallItem::Event { event, .. } => {
+                    source_event_ids.push(event.id.clone());
+                    context.push_str(&format!(
+                        "[event_id={} timestamp_ms={}]\n{}\n\n",
+                        event.id,
+                        event.ordering_timestamp_ms(),
+                        event.search_text().trim()
+                    ));
+                }
+                RecallItem::Memory {
+                    namespace,
+                    content,
+                    metadata,
+                    source_event_ids,
+                    ..
+                } => {
+                    ensure!(
+                        namespace == strategy_name,
+                        "benchmark strategy {strategy_name} returned memory namespace {namespace}"
+                    );
+                    ensure!(
+                        context.is_empty(),
+                        "benchmark strategy {strategy_name} mixed event and memory items"
+                    );
+                    return Ok((content, metadata, source_event_ids));
+                }
+            }
+        }
+        return Ok((context.trim_end().to_owned(), Map::new(), source_event_ids));
+    }
     match items.as_slice() {
         [] => Ok((String::new(), Map::new(), Vec::new())),
         [
@@ -536,6 +779,59 @@ fn extract_lazymem_memory(
             items.len()
         ),
     }
+}
+
+fn stage_rankings(
+    strategy_name: &str,
+    metadata: &Map<String, Value>,
+    retrieved_event_ids: &[String],
+    message_ids_by_event: &HashMap<String, String>,
+) -> Result<BTreeMap<String, Vec<String>>> {
+    let mut rankings = BTreeMap::new();
+    if strategy_name == "lazymem" {
+        if let Some(candidates) = metadata
+            .get("rrf")
+            .and_then(|value| value.get("candidates"))
+            .and_then(Value::as_array)
+        {
+            for (stage, rank_field) in [("dense", "dense_rank"), ("bm25", "sparse_rank")] {
+                let mut ranked = candidates
+                    .iter()
+                    .filter_map(|candidate| {
+                        Some((
+                            candidate.get(rank_field)?.as_u64()? as usize,
+                            candidate.get("message_id")?.as_str()?.to_owned(),
+                        ))
+                    })
+                    .collect::<Vec<_>>();
+                ranked.sort_by_key(|(rank, _)| *rank);
+                let event_ids = ranked.into_iter().map(|(_, id)| id).collect::<Vec<_>>();
+                rankings.insert(
+                    stage.to_owned(),
+                    map_event_ids(&event_ids, message_ids_by_event)
+                        .with_context(|| format!("map {stage} stage IDs"))?,
+                );
+            }
+        }
+        if let Some(event_ids) = metadata
+            .get("rrf")
+            .and_then(|value| value.get("trace"))
+            .and_then(|value| value.get("fused_order"))
+            .and_then(Value::as_array)
+            .map(|values| string_values(values))
+        {
+            rankings.insert(
+                "rrf".into(),
+                map_event_ids(&event_ids, message_ids_by_event).context("map RRF stage IDs")?,
+            );
+        }
+    }
+    rankings.insert(
+        "retrieved".into(),
+        map_event_ids(retrieved_event_ids, message_ids_by_event)
+            .context("map final retrieval stage IDs")?,
+    );
+    Ok(rankings)
 }
 
 fn retrieval_event_ids(
@@ -616,7 +912,7 @@ fn map_event_ids(
     for id in ids {
         let message_id = message_ids_by_event
             .get(id)
-            .with_context(|| format!("LazyMem trace refers to unknown canonical event {id}"))?;
+            .with_context(|| format!("strategy trace refers to unknown canonical event {id}"))?;
         if seen.insert(message_id.clone()) {
             mapped.push(message_id.clone());
         }
@@ -636,6 +932,11 @@ fn metadata_timing_ms(metadata: &Map<String, Value>, name: &str) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::{BlobConfig, StrategyConfig};
+    use tokio::{
+        io::{AsyncReadExt, AsyncWriteExt},
+        net::TcpListener,
+    };
 
     fn message(id: &str, timestamp: &str, content: &str, session_id: &str) -> BenchmarkMessage {
         BenchmarkMessage {
@@ -660,6 +961,21 @@ mod tests {
         let (query_time, source) = resolve_query_time("2026-01-03", timestamps.last().copied());
         assert_eq!(source, "input_date_only_end_of_day");
         assert!(query_time > timestamps[1]);
+    }
+
+    #[test]
+    fn parses_longmemeval_weekday_timestamp() {
+        let parsed = parse_timestamp("2023/05/30 (Tue) 23:40").unwrap();
+        assert!(!parsed.date_only);
+        assert_eq!(
+            parsed.start_ms,
+            NaiveDate::from_ymd_opt(2023, 5, 30)
+                .unwrap()
+                .and_hms_opt(23, 40, 0)
+                .unwrap()
+                .and_utc()
+                .timestamp_millis()
+        );
     }
 
     #[test]
@@ -731,5 +1047,194 @@ mod tests {
         let (ids, source) = retrieval_event_ids(&metadata, &[]);
         assert_eq!(ids, vec!["evt_trace"]);
         assert_eq!(source, "strategy_benchmark_trace.retrieved_event_ids");
+    }
+
+    #[tokio::test]
+    async fn generic_runner_scores_history_without_a_lazymem_backend() {
+        let config = Config {
+            strategies: StrategyConfig {
+                enabled: vec!["history".into()],
+                recall: "history".into(),
+                settings: HashMap::from([("history".into(), json!({"retrieval": "lexical"}))]),
+            },
+            blob: BlobConfig::default(),
+        };
+        let question: BenchmarkQuestion = serde_json::from_value(json!({
+            "id": "answer_case_abs",
+            "dataset": "longmemeval",
+            "question_type": "single-session-user",
+            "query": "quartz",
+            "query_time": "2023/06/01 (Thu) 12:00",
+            "messages": [
+                {"id": "answer_session_01", "index": 0, "role": "user", "content": "quartz evidence", "timestamp": "2023/05/30 (Tue) 23:40", "session_id": "answer_session"},
+                {"id": "noise_01", "index": 1, "role": "assistant", "content": "unrelated", "timestamp": "2023/05/31 (Wed) 10:00", "session_id": "noise"}
+            ],
+            "answer": "must be ignored",
+            "gold_message_ids": ["answer_session_01"]
+        }))
+        .unwrap();
+
+        let response = run_strategy_question(&config, question, 50).await.unwrap();
+        assert_eq!(response.strategy, "history");
+        assert_eq!(response.retrieved_message_ids, vec!["answer_session_01"]);
+        assert_eq!(response.covered_message_ids, response.retrieved_message_ids);
+        assert_eq!(
+            response.retained_message_ids,
+            response.retrieved_message_ids
+        );
+        assert_eq!(
+            response.stage_rankings["retrieved"],
+            response.retrieved_message_ids
+        );
+        let trace = &response.metadata["benchmark_trace"];
+        assert_eq!(trace["synthetic_message_timestamp_count"], 0);
+        assert!(!response.context.contains("answer_session"));
+    }
+
+    #[tokio::test]
+    async fn retrieval_only_runner_skips_an_unreachable_processor() {
+        let listener = match TcpListener::bind("127.0.0.1:0").await {
+            Ok(listener) => listener,
+            Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied => return,
+            Err(error) => panic!("bind mock inference server: {error}"),
+        };
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            loop {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                tokio::spawn(async move {
+                    let mut request = Vec::new();
+                    let mut buffer = [0_u8; 4_096];
+                    let header_end = loop {
+                        let count = stream.read(&mut buffer).await.unwrap();
+                        if count == 0 {
+                            return;
+                        }
+                        request.extend_from_slice(&buffer[..count]);
+                        if let Some(position) =
+                            request.windows(4).position(|part| part == b"\r\n\r\n")
+                        {
+                            break position + 4;
+                        }
+                    };
+                    let headers = String::from_utf8_lossy(&request[..header_end]).into_owned();
+                    let content_length = headers
+                        .lines()
+                        .find_map(|line| {
+                            let (name, value) = line.split_once(':')?;
+                            name.eq_ignore_ascii_case("content-length")
+                                .then(|| value.trim().parse::<usize>().unwrap())
+                        })
+                        .unwrap_or(0);
+                    while request.len() < header_end + content_length {
+                        let count = stream.read(&mut buffer).await.unwrap();
+                        if count == 0 {
+                            return;
+                        }
+                        request.extend_from_slice(&buffer[..count]);
+                    }
+                    let request_line = headers.lines().next().unwrap();
+                    let body: Value =
+                        serde_json::from_slice(&request[header_end..header_end + content_length])
+                            .unwrap();
+                    let response = if request_line.contains("/embeddings") {
+                        json!({
+                            "data": body["input"].as_array().unwrap().iter().enumerate().map(
+                                |(index, _)| json!({"index": index, "embedding": [1.0, 0.0]})
+                            ).collect::<Vec<_>>()
+                        })
+                    } else if request_line.contains("/rerank") {
+                        Value::Array(
+                            body["texts"]
+                                .as_array()
+                                .unwrap()
+                                .iter()
+                                .enumerate()
+                                .map(|(index, _)| json!({"index": index, "score": 1.0 - index as f64 / 100.0}))
+                                .collect(),
+                        )
+                    } else {
+                        panic!("retrieval-only runner made an unexpected request: {request_line}");
+                    };
+                    let encoded = serde_json::to_vec(&response).unwrap();
+                    let header = format!(
+                        "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n",
+                        encoded.len()
+                    );
+                    stream.write_all(header.as_bytes()).await.unwrap();
+                    stream.write_all(&encoded).await.unwrap();
+                });
+            }
+        });
+
+        let endpoint = format!("http://{address}");
+        let config = Config {
+            strategies: StrategyConfig {
+                enabled: vec!["lazymem".into()],
+                recall: "lazymem".into(),
+                settings: HashMap::from([(
+                    "lazymem".into(),
+                    json!({
+                        "protocol": "custom",
+                        "embedding": {"backend": "openai_compatible", "endpoint": {"base_url": format!("{endpoint}/v1"), "model": "embed"}},
+                        "reranker": {"backend": "openai_compatible", "endpoint": {"base_url": endpoint, "model": "reranker"}},
+                        "processor": {"backend": "openai_compatible", "endpoint": {"base_url": "http://127.0.0.1:1/v1", "model": "unreachable-processor"}},
+                        "retrieval": {"dense_limit": 3, "sparse_limit": 3, "fused_limit": 3, "rerank_top_n": 2},
+                        "window": {"radius": 1, "merge_rule": "repository_contiguous", "max_messages": 3, "stride": 2}
+                    }),
+                )]),
+            },
+            blob: BlobConfig::default(),
+        };
+        let question: BenchmarkQuestion = serde_json::from_value(json!({
+            "id": "retrieval-only-case",
+            "dataset": "fixture",
+            "query": "migration",
+            "query_time": "2025-12-31",
+            "messages": [
+                {"id": "m1", "role": "user", "content": "migration planning", "timestamp": "2026-01-01 10:00:00", "session_id": "s1"},
+                {"id": "m2", "role": "assistant", "content": "migration completed", "timestamp": "2026-01-01 10:01:00", "session_id": "s1"},
+                {"id": "m3", "role": "user", "content": "unrelated note", "timestamp": "2026-01-01 10:02:00", "session_id": "s1"}
+            ]
+        }))
+        .unwrap();
+
+        let response = run_strategy_retrieval_question(&config, question, 2)
+            .await
+            .unwrap();
+        assert!(response.retained_message_ids.is_empty());
+        assert!(!response.retrieved_message_ids.is_empty());
+        assert!(!response.covered_message_ids.is_empty());
+        assert!(response.context.contains("retrieval-only window expansion"));
+        assert!(
+            response
+                .context
+                .contains("has not been filtered, compressed")
+        );
+        assert_eq!(response.metadata["strategy"]["processor_invoked"], false);
+        assert_eq!(
+            response.metadata["benchmark_trace"]["history_visibility"],
+            "all_provided_messages"
+        );
+        assert!(
+            response.metadata["benchmark_trace"]["strategy_reference_time_ms"]
+                .as_i64()
+                .unwrap()
+                > response.metadata["benchmark_trace"]["query_time_ms"]
+                    .as_i64()
+                    .unwrap()
+        );
+        assert_eq!(
+            response.metadata["strategy"]["processing"]["status"],
+            "skipped_retrieval_only"
+        );
+        assert_eq!(
+            response.metadata["benchmark_trace"]["id_sources"]["retained_message_ids"],
+            "retrieval_only_no_memory_construction"
+        );
+        for stage in ["dense", "bm25", "rrf", "retrieved"] {
+            assert!(response.stage_rankings.contains_key(stage));
+        }
+        server.abort();
     }
 }

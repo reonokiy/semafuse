@@ -9,7 +9,7 @@ use anyhow::{Context, Result};
 use serde::Deserialize;
 use std::{path::PathBuf, time::Duration};
 
-pub(crate) use openai::{EmbeddingBackend, GenerationOptions};
+pub(crate) use openai::{EmbeddingBackend, GenerationOptions, OpenAiEndpoint};
 pub(crate) use processor::PromptProcessorBackend;
 pub(crate) use reranker::RerankBackend;
 

@@ -1,0 +1,75 @@
+# Retrieval benchmark profile for the production LazyMem pipeline.
+#
+# The benchmark runner uses `execution = "retrieval_only"`, so the embedding,
+# BM25, RRF, OpenRouter reranker, and history-window expansion paths execute,
+# while the prompt processor below is deliberately not called.  Keeping a real
+# processor configuration makes this file usable by the ordinary full-memory
+# path as well.  No credential value belongs in this file.
+
+[strategies]
+enabled = ["lazymem"]
+recall = "lazymem"
+
+[strategies.settings.lazymem]
+protocol = "public-repro"
+embedding_batch_size = 256
+
+[strategies.settings.lazymem.embedding]
+backend = "openai_compatible"
+
+[strategies.settings.lazymem.embedding.endpoint]
+base_url = "https://openrouter.ai/api/v1"
+model = "perplexity/pplx-embed-v1-0.6b"
+api_key_env = "OPENROUTER_API_KEY"
+timeout_secs = 180
+max_retries = 3
+
+[strategies.settings.lazymem.embedding.endpoint.extra_body.provider]
+only = ["perplexity"]
+allow_fallbacks = false
+data_collection = "deny"
+
+[strategies.settings.lazymem.reranker]
+backend = "openai_compatible"
+
+[strategies.settings.lazymem.reranker.endpoint]
+base_url = "https://openrouter.ai/api/v1"
+model = "voyageai/rerank-2.5"
+api_key_env = "OPENROUTER_API_KEY"
+protocol = "openrouter"
+timeout_secs = 180
+max_retries = 3
+
+[strategies.settings.lazymem.reranker.endpoint.extra_body.provider]
+allow_fallbacks = false
+data_collection = "deny"
+
+[strategies.settings.lazymem.processor]
+backend = "openai_compatible"
+
+[strategies.settings.lazymem.processor.endpoint]
+base_url = "https://openrouter.ai/api/v1"
+model = "qwen/qwen3-32b"
+api_key_env = "OPENROUTER_API_KEY"
+timeout_secs = 180
+max_retries = 3
+
+[strategies.settings.lazymem.retrieval]
+dense_limit = 100
+sparse_limit = 100
+fused_limit = 100
+rerank_top_n = 50
+require_dense_index = true
+
+[strategies.settings.lazymem.window]
+radius = 2
+merge_rule = "repository_contiguous"
+max_messages = 8
+stride = 7
+
+[strategies.settings.lazymem.generation]
+temperature = 0.1
+top_p = 0.95
+max_tokens = 3072
+max_concurrency = 4
+enable_thinking = true

@@ -2,7 +2,7 @@ use super::SemafusedEndpointConfig;
 use super::http::{default_retries, default_timeout_secs, post_json, validate_transport};
 use anyhow::{Context, Result, ensure};
 use serde::Deserialize;
-use serde_json::{Value, json};
+use serde_json::{Map, Value, json};
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -15,6 +15,9 @@ pub(crate) struct OpenAiEndpoint {
     timeout_secs: u64,
     #[serde(default = "default_retries")]
     max_retries: usize,
+    /// Provider-specific request fields such as OpenRouter routing policy.
+    #[serde(default)]
+    extra_body: Map<String, Value>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -30,6 +33,14 @@ pub(crate) struct GenerationOptions {
     pub(crate) top_p: f64,
     pub(crate) max_tokens: usize,
     pub(crate) enable_thinking: bool,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct ChatCompletion {
+    pub(crate) content: String,
+    pub(crate) model: Option<String>,
+    pub(crate) prompt_tokens: Option<u64>,
+    pub(crate) completion_tokens: Option<u64>,
 }
 
 impl OpenAiEndpoint {
@@ -52,13 +63,20 @@ impl OpenAiEndpoint {
         if input.is_empty() {
             return Ok(Vec::new());
         }
+        let mut body = self.extra_body.clone();
+        ensure!(
+            !body.contains_key("model") && !body.contains_key("input"),
+            "embedding extra_body cannot override model or input"
+        );
+        body.insert("model".into(), json!(self.model));
+        body.insert("input".into(), json!(input));
         let value = post_json(
             &self.base_url,
             "embeddings",
             self.api_key_env.as_deref(),
             self.timeout_secs,
             self.max_retries,
-            &json!({"model": self.model, "input": input}),
+            &Value::Object(body),
         )
         .await
         .context("embedding request failed")?;
@@ -139,25 +157,80 @@ impl OpenAiEndpoint {
             "top_p must be in (0, 1]"
         );
         ensure!(options.max_tokens > 0, "max_tokens must be positive");
+        Ok(self.chat(system, user, options).await?.content)
+    }
+
+    pub(crate) async fn chat(
+        &self,
+        system: &str,
+        user: &str,
+        options: GenerationOptions,
+    ) -> Result<ChatCompletion> {
+        self.chat_messages(
+            json!([
+                {"role": "system", "content": system},
+                {"role": "user", "content": user}
+            ]),
+            options,
+        )
+        .await
+    }
+
+    pub(crate) async fn chat_user_only(
+        &self,
+        user: &str,
+        options: GenerationOptions,
+    ) -> Result<ChatCompletion> {
+        self.chat_messages(json!([{"role": "user", "content": user}]), options)
+            .await
+    }
+
+    async fn chat_messages(
+        &self,
+        messages: Value,
+        options: GenerationOptions,
+    ) -> Result<ChatCompletion> {
+        ensure!(
+            options.temperature.is_finite() && options.temperature >= 0.0,
+            "temperature must be finite and non-negative"
+        );
+        ensure!(
+            options.top_p.is_finite() && options.top_p > 0.0 && options.top_p <= 1.0,
+            "top_p must be in (0, 1]"
+        );
+        ensure!(options.max_tokens > 0, "max_tokens must be positive");
+        let mut body = self.extra_body.clone();
+        for field in [
+            "model",
+            "messages",
+            "temperature",
+            "top_p",
+            "max_tokens",
+            "chat_template_kwargs",
+        ] {
+            ensure!(
+                !body.contains_key(field),
+                "chat extra_body cannot override {field}"
+            );
+        }
+        body.extend(Map::from_iter([
+            ("model".into(), json!(self.model)),
+            ("messages".into(), messages),
+            ("temperature".into(), json!(options.temperature)),
+            ("top_p".into(), json!(options.top_p)),
+            ("max_tokens".into(), json!(options.max_tokens)),
+            (
+                "chat_template_kwargs".into(),
+                json!({"enable_thinking": options.enable_thinking}),
+            ),
+        ]));
         let value = post_json(
             &self.base_url,
             "chat/completions",
             self.api_key_env.as_deref(),
             self.timeout_secs,
             self.max_retries,
-            &json!({
-                "model": self.model,
-                "messages": [
-                    {"role": "system", "content": system},
-                    {"role": "user", "content": user}
-                ],
-                "temperature": options.temperature,
-                "top_p": options.top_p,
-                "max_tokens": options.max_tokens,
-                "chat_template_kwargs": {
-                    "enable_thinking": options.enable_thinking
-                }
-            }),
+            &Value::Object(body),
         )
         .await
         .context("chat completion request failed")?;
@@ -169,7 +242,19 @@ impl OpenAiEndpoint {
             !content.trim().is_empty(),
             "chat completion returned empty content"
         );
-        Ok(content.to_owned())
+        Ok(ChatCompletion {
+            content: content.to_owned(),
+            model: value
+                .get("model")
+                .and_then(Value::as_str)
+                .map(str::to_owned),
+            prompt_tokens: value
+                .pointer("/usage/prompt_tokens")
+                .and_then(Value::as_u64),
+            completion_tokens: value
+                .pointer("/usage/completion_tokens")
+                .and_then(Value::as_u64),
+        })
     }
 }
 
@@ -215,6 +300,7 @@ mod tests {
             api_key_env: Some("SEMAFUSE_TEST_KEY".into()),
             timeout_secs: 1,
             max_retries: 0,
+            extra_body: Map::new(),
         };
         endpoint.validate("embedding").unwrap();
     }
@@ -227,6 +313,7 @@ mod tests {
             api_key_env: Some("secret key".into()),
             timeout_secs: 1,
             max_retries: 0,
+            extra_body: Map::new(),
         };
         assert!(endpoint.validate("embedding").is_err());
     }
@@ -239,6 +326,7 @@ mod tests {
             api_key_env: Some("SEMAFUSE_TEST_KEY".into()),
             timeout_secs: 1,
             max_retries: 0,
+            extra_body: Map::new(),
         };
         assert!(endpoint.validate("embedding").is_err());
     }

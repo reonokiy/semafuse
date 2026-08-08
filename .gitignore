@@ -1,4 +1,5 @@
 target/
+.env
 web/.astro/
 web/dist/
 web/node_modules/

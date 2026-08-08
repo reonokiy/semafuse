@@ -8,7 +8,7 @@ import time
 from collections import Counter, defaultdict
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
-from typing import Protocol, Sequence
+from typing import Mapping, Protocol, Sequence
 
 from .types import Message
 
@@ -46,6 +46,7 @@ def reciprocal_rank_fusion(
     *,
     k: int = 60,
     weights: Sequence[float] | None = None,
+    tie_break_order: Mapping[str, int] | None = None,
 ) -> list[tuple[str, float]]:
     """Fuse ranked id lists with deterministic tie-breaking.
 
@@ -62,15 +63,24 @@ def reciprocal_rank_fusion(
 
     scores: defaultdict[str, float] = defaultdict(float)
     best_rank: dict[str, int] = {}
+    first_seen: dict[str, int] = {}
     for ranking, weight in zip(rankings, actual_weights, strict=True):
         seen: set[str] = set()
         for rank, item_id in enumerate(ranking, start=1):
             if item_id in seen:
                 continue
             seen.add(item_id)
+            first_seen.setdefault(item_id, len(first_seen))
             scores[item_id] += weight / (k + rank)
             best_rank[item_id] = min(rank, best_rank.get(item_id, rank))
-    return sorted(scores.items(), key=lambda item: (-item[1], best_rank[item[0]], item[0]))
+    stable_order = tie_break_order if tie_break_order is not None else first_seen
+    missing = set(scores).difference(stable_order)
+    if missing:
+        raise ValueError(f"RRF tie_break_order omits candidate ids: {sorted(missing)}")
+    return sorted(
+        scores.items(),
+        key=lambda item: (-item[1], best_rank[item[0]], stable_order[item[0]]),
+    )
 
 
 class BM25Ranker:
