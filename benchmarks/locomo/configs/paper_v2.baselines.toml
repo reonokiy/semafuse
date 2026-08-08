@@ -1,0 +1,13 @@
+schema_version = 1
+name = "LoCoMo paper-v2 retrieval controls"
+baseline_method = "bm25"
+
+[[methods]]
+kind = "bm25"
+id = "bm25"
+limit = 50
+
+[[methods]]
+kind = "recent"
+id = "recent"
+limit = 50

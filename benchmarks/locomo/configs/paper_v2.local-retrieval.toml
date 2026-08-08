@@ -1,0 +1,20 @@
+schema_version = 1
+name = "LoCoMo paper-v2 local Semafuse retrieval"
+baseline_method = "bm25"
+
+[[methods]]
+kind = "bm25"
+id = "bm25"
+limit = 50
+
+[[methods]]
+kind = "recent"
+id = "recent"
+limit = 50
+
+[[methods]]
+kind = "semafuse"
+id = "semafuse"
+config = "../../lazymem/configs/semafuse_lazymem.local-smoke.toml"
+limit = 50
+stages = ["dense", "bm25", "rrf", "retrieved"]

@@ -1,0 +1,20 @@
+# Transport-only fixture. `fake` is never a benchmark comparison method.
+schema_version = 1
+name = "LoCoMo external worker contract fixture"
+baseline_method = "bm25"
+
+[[methods]]
+kind = "bm25"
+id = "bm25"
+limit = 50
+
+[[methods]]
+kind = "external_jsonl"
+id = "fake_contract_only"
+worker_config = "../../external_memory/configs/fake.contract-test.json"
+command = ["python3", "-m", "semafuse_external_memory.worker"]
+working_directory = "../../external_memory"
+python_path = "../../external_memory/src"
+top_k = 50
+max_context_tokens = 16384
+timeout_seconds = 30

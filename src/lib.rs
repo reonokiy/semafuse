@@ -38,6 +38,8 @@ mod inference;
 pub mod locomo;
 /// Frozen official category-aware LoCoMo token-F1 evaluator.
 pub mod locomo_eval;
+/// Modular retrieval-only LoCoMo paper-v2 comparison suite.
+pub mod locomo_suite;
 /// Label-isolated native loader for the official LongMemEval release.
 pub mod longmemeval;
 /// Frozen LongMemEval answer and official judge prompt helpers.

@@ -1,0 +1,23 @@
+# Paid development/common-evaluator run. This is not a published paper score.
+# OPENROUTER_API_KEY is read only from the environment by the referenced
+# Semafuse config; never put a credential value in this file.
+schema_version = 1
+name = "LoCoMo paper-v2 OpenRouter Semafuse retrieval development"
+baseline_method = "bm25"
+
+[[methods]]
+kind = "bm25"
+id = "bm25"
+limit = 50
+
+[[methods]]
+kind = "recent"
+id = "recent"
+limit = 50
+
+[[methods]]
+kind = "semafuse"
+id = "semafuse"
+config = "../../lazymem/configs/semafuse_lazymem.openrouter-retrieval.toml"
+limit = 50
+stages = ["dense", "bm25", "rrf", "retrieved"]
