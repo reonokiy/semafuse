@@ -1,0 +1,417 @@
+{
+  "bootstrap": {
+    "ci": 0.95,
+    "method": "query-paired percentile bootstrap; independently resample queries within each task/subset, then equally weight task/subset means",
+    "prng": "SplitMix64 with unbiased rejection sampling",
+    "quantile": "linear interpolation at 2.5% and 97.5%",
+    "replicates": 10000,
+    "seed": 20260808
+  },
+  "caveats": [
+    "These legacy artifacts record retrieval and processing latency only; their latency excludes cold per-query ingest, embedding/index construction, and total pipeline wall time. Scores and hashes remain valid.",
+    "OpenRouter model IDs are recorded, but provider model revisions are not exposed or pinned by these runs.",
+    "Hybrid/reranked candidate-cold scores are diagnostics and must not be presented as LMEB paper-reproduction embedding scores."
+  ],
+  "models": {
+    "embedding": {
+      "allow_fallbacks": false,
+      "effective_batch_size": 32,
+      "effective_batch_size_provenance": "reported_runtime_override_not_in_fingerprint",
+      "gateway": "OpenRouter OpenAI-compatible API",
+      "model": "perplexity/pplx-embed-v1-0.6b",
+      "provider": "perplexity"
+    },
+    "processor": {
+      "invoked": false,
+      "reason": "retrieval-only benchmark mode"
+    },
+    "reranker": {
+      "allow_fallbacks": false,
+      "gateway": "OpenRouter rerank API",
+      "model": "voyageai/rerank-2.5",
+      "provider": "voyageai"
+    }
+  },
+  "protocol": {
+    "harness_protocol": "common-policy",
+    "instruction_setting": "without",
+    "label": "candidate-cold per query common-policy deviation",
+    "paper_reproduction": false
+  },
+  "runs": {
+    "covid_qa": {
+      "aggregation": "single-task query macro",
+      "cost": {
+        "measurement": "OpenRouter account usage difference",
+        "usd": "0.371915842"
+      },
+      "dataset": "Covid-QA",
+      "integrity": {
+        "dataset_inputs": {
+          "Covid-QA/Covid-QA": {
+            "candidates": {
+              "bytes": 1384593,
+              "sha256": "f75d394876fa39f4af3b078809fbfcd0d5a616d5f660ee2f120be9345bcd731a"
+            },
+            "corpus": {
+              "bytes": 2583780,
+              "sha256": "e0778580068fa87355db5e19d1c89fdbf91e7f656e699127d60c738b5d338118"
+            },
+            "qrels": {
+              "bytes": 47114,
+              "sha256": "f5f5d00ef36119d1ddcf7eb5d97f988447eb6e95f6949c44582c330f7bdb6526"
+            },
+            "queries": {
+              "bytes": 90711,
+              "sha256": "f92112839aaaad3168751a563c077eac7382684398ef0efdd6fd920fa9c93216"
+            }
+          }
+        },
+        "final_harness_sha256": "bbc44b44fbdf150b9b60a13870874d2bdacbacc54dea4c959133776b0fc26b68",
+        "fingerprint_harness_sha256": "bbc44b44fbdf150b9b60a13870874d2bdacbacc54dea4c959133776b0fc26b68",
+        "manifest_sha256": "72161dd14381434b4284bac9d7c7ab00a753efee576d46c41b4bcbdd4b10375e",
+        "prediction_sha256": {
+          "Covid-QA/Covid-QA": "84694ae2dd7e26f6981a8ab1bf30088979e56b8593a638f7d0b4203b0626de1b"
+        },
+        "result_sha256": "2ffb6ffc2878854577627c40ef688c2b900cf4e3ff29893da4164501470bd00d",
+        "run_fingerprint": "7d9273d85e335d1850f69bc614e23a9aa6d945c6bbe581e8188cf71528e8a4ea",
+        "run_id": "7d9273d85e335d18",
+        "runner_artifacts": {
+          "semafuse-lazymem-benchmark": {
+            "bytes": 18817640,
+            "sha256": "f26fc0330ac0663d3b546c9ffb3a3b47c5fa6f1c6eaab64b8222080a2143898a"
+          },
+          "semafuse_lazymem.openrouter-retrieval.toml": {
+            "bytes": 2043,
+            "sha256": "64eff5719b2fc8973de0eb6fb9c1a0a6536a32a93a2df911620cead1b20faa32"
+          }
+        }
+      },
+      "metrics": {
+        "bm25": {
+          "R_cap_at_10": {
+            "ci95": [
+              0.92889289,
+              0.95589559
+            ],
+            "estimate": 0.94239
+          },
+          "ndcg_at_10": {
+            "ci95": [
+              0.78583633,
+              0.8217137
+            ],
+            "estimate": 0.80377
+          }
+        },
+        "dense": {
+          "R_cap_at_10": {
+            "ci95": [
+              0.92619262,
+              0.95409541
+            ],
+            "estimate": 0.94059
+          },
+          "ndcg_at_10": {
+            "ci95": [
+              0.77855394,
+              0.81437897
+            ],
+            "estimate": 0.79665
+          }
+        },
+        "retrieved": {
+          "R_cap_at_10": {
+            "ci95": [
+              0.98019802,
+              0.99369937
+            ],
+            "estimate": 0.9874
+          },
+          "ndcg_at_10": {
+            "ci95": [
+              0.91737507,
+              0.94005732
+            ],
+            "estimate": 0.929
+          }
+        },
+        "rrf": {
+          "R_cap_at_10": {
+            "ci95": [
+              0.94869487,
+              0.97119712
+            ],
+            "estimate": 0.9604
+          },
+          "ndcg_at_10": {
+            "ci95": [
+              0.81540771,
+              0.84781154
+            ],
+            "estimate": 0.83186
+          }
+        }
+      },
+      "paired_deltas": {
+        "retrieved_minus_bm25": {
+          "R_cap_at_10": {
+            "ci95": [
+              0.03240324,
+              0.05850585
+            ],
+            "estimate": 0.04501
+          },
+          "ndcg_at_10": {
+            "ci95": [
+              0.10916157,
+              0.14164952
+            ],
+            "estimate": 0.12523
+          }
+        },
+        "retrieved_minus_dense": {
+          "R_cap_at_10": {
+            "ci95": [
+              0.03420342,
+              0.06030603
+            ],
+            "estimate": 0.04681
+          },
+          "ndcg_at_10": {
+            "ci95": [
+              0.11664814,
+              0.14804737
+            ],
+            "estimate": 0.13235
+          }
+        },
+        "retrieved_minus_rrf": {
+          "R_cap_at_10": {
+            "ci95": [
+              0.01620162,
+              0.03870387
+            ],
+            "estimate": 0.027
+          },
+          "ndcg_at_10": {
+            "ci95": [
+              0.08311315,
+              0.11119177
+            ],
+            "estimate": 0.09714
+          }
+        }
+      },
+      "queries": 1111
+    },
+    "deepplanning": {
+      "aggregation": "equal mean of three subset query macros",
+      "cost": {
+        "measurement": "OpenRouter account usage difference",
+        "usd": "0.31410382"
+      },
+      "dataset": "DeepPlanning",
+      "integrity": {
+        "dataset_inputs": {
+          "DeepPlanning/shopping_level1": {
+            "candidates": {
+              "bytes": 165984,
+              "sha256": "8261019c9838596a73226e3f66559a00622b7e691b435997f27b24d3ad439873"
+            },
+            "corpus": {
+              "bytes": 8911123,
+              "sha256": "44a8132eab08106e130758c0425b2e39b794b7f8114cdddb15020818877f92c5"
+            },
+            "qrels": {
+              "bytes": 5940,
+              "sha256": "842940eee6a6ada4052ee668bd93aedb660d176ccdc33a281fb504b5d458a279"
+            },
+            "queries": {
+              "bytes": 40915,
+              "sha256": "0b6c586e34b51a0294a7b74a3bac6b41bfef1195461d74b5a571b3aeda857e48"
+            }
+          },
+          "DeepPlanning/shopping_level2": {
+            "candidates": {
+              "bytes": 164198,
+              "sha256": "93dc1e674760c7f4d4f66023fa69399d7859af737f468f50456c68b732fce2ab"
+            },
+            "corpus": {
+              "bytes": 8682701,
+              "sha256": "35bae551c64d91f7c67b41d82ed6fb6bb3594e9fb19793b3fbe72f19910338b9"
+            },
+            "qrels": {
+              "bytes": 6350,
+              "sha256": "6976bedc63c198acbb98d9a529c00ae5975c42e9e13f85a708aaa3765b71b5c2"
+            },
+            "queries": {
+              "bytes": 46482,
+              "sha256": "f8783b8804b8b00373ffb13eeca49d3af3638dd0416281f93bae7a135d7993d1"
+            }
+          },
+          "DeepPlanning/shopping_level3": {
+            "candidates": {
+              "bytes": 67650,
+              "sha256": "e6f7c36e967e9954525c097a64bf7a6535430655af823286caafb7194344b77e"
+            },
+            "corpus": {
+              "bytes": 3625914,
+              "sha256": "9c6277d580ec0c5e23600b09484bcf776015ce70885fe4e54a574f3e5b0f4619"
+            },
+            "qrels": {
+              "bytes": 1896,
+              "sha256": "42acbd01b1bbb3718584f3a09abed1f45ecb6b71b37f813bc77f586be985200d"
+            },
+            "queries": {
+              "bytes": 15495,
+              "sha256": "7596f74d1bddd3e9009e48e9ffdfeb9725b6093f489acb5833d710d20e6a454e"
+            }
+          }
+        },
+        "final_harness_sha256": "bbc44b44fbdf150b9b60a13870874d2bdacbacc54dea4c959133776b0fc26b68",
+        "fingerprint_harness_sha256": "62708397e739493f377d0972e0c02e931ac6c2d6bbc5de2f2762b3c2b9a25c60",
+        "manifest_sha256": "611556170c94e974392ce3dee7dfa7a5f504d7fc693eb57993bc248e7459cf95",
+        "prediction_sha256": {
+          "DeepPlanning/shopping_level1": "4acf7a58ed726b82144f5a05ab606526ecbc8139c39ea4f98803bebd8e0a662a",
+          "DeepPlanning/shopping_level2": "ffc987f74e41a153b02819cc09e75123f5f9f0fade370ba9858a9b39813e9c60",
+          "DeepPlanning/shopping_level3": "baa1b78bfdbfb4407ef7faa0509de5ec128d80a885c783f0f281df67b0e381cb"
+        },
+        "result_sha256": "18b771412aec5ab61af088d3a8d68f6980150c6c0ad55d6fdb4415696a53b2d8",
+        "run_fingerprint": "11c001775c8dbc5415eae610307d309a93784e05c4dc75e5ade483e9c0978223",
+        "run_id": "11c001775c8dbc54",
+        "runner_artifacts": {
+          "semafuse-lazymem-benchmark": {
+            "bytes": 18817640,
+            "sha256": "f26fc0330ac0663d3b546c9ffb3a3b47c5fa6f1c6eaab64b8222080a2143898a"
+          },
+          "semafuse_lazymem.openrouter-retrieval.toml": {
+            "bytes": 2043,
+            "sha256": "64eff5719b2fc8973de0eb6fb9c1a0a6536a32a93a2df911620cead1b20faa32"
+          }
+        }
+      },
+      "metrics": {
+        "bm25": {
+          "R_cap_at_10": {
+            "ci95": [
+              0.246275,
+              0.34022222
+            ],
+            "estimate": 0.29316667
+          },
+          "ndcg_at_10": {
+            "ci95": [
+              0.20782138,
+              0.29895545
+            ],
+            "estimate": 0.25342667
+          }
+        },
+        "dense": {
+          "R_cap_at_10": {
+            "ci95": [
+              0.48461111,
+              0.58094583
+            ],
+            "estimate": 0.5335
+          },
+          "ndcg_at_10": {
+            "ci95": [
+              0.48331744,
+              0.57147395
+            ],
+            "estimate": 0.52795667
+          }
+        },
+        "retrieved": {
+          "R_cap_at_10": {
+            "ci95": [
+              0.66083333,
+              0.75544583
+            ],
+            "estimate": 0.70855667
+          },
+          "ndcg_at_10": {
+            "ci95": [
+              0.65982776,
+              0.74145113
+            ],
+            "estimate": 0.70166667
+          }
+        },
+        "rrf": {
+          "R_cap_at_10": {
+            "ci95": [
+              0.48405417,
+              0.5721125
+            ],
+            "estimate": 0.52789
+          },
+          "ndcg_at_10": {
+            "ci95": [
+              0.48012125,
+              0.55647552
+            ],
+            "estimate": 0.51815333
+          }
+        }
+      },
+      "notes": [
+        "The run fingerprint records harness source 62708397..., while final result serialization records bbc44b44... after the numeric-JSON-ID compatibility patch; both exact hashes are retained."
+      ],
+      "paired_deltas": {
+        "retrieved_minus_bm25": {
+          "R_cap_at_10": {
+            "ci95": [
+              0.36477639,
+              0.46672222
+            ],
+            "estimate": 0.41539
+          },
+          "ndcg_at_10": {
+            "ci95": [
+              0.39685366,
+              0.49780412
+            ],
+            "estimate": 0.44824
+          }
+        },
+        "retrieved_minus_dense": {
+          "R_cap_at_10": {
+            "ci95": [
+              0.1388875,
+              0.21511111
+            ],
+            "estimate": 0.17505667
+          },
+          "ndcg_at_10": {
+            "ci95": [
+              0.13955449,
+              0.21211503
+            ],
+            "estimate": 0.17371
+          }
+        },
+        "retrieved_minus_rrf": {
+          "R_cap_at_10": {
+            "ci95": [
+              0.14616528,
+              0.21700139
+            ],
+            "estimate": 0.18066667
+          },
+          "ndcg_at_10": {
+            "ci95": [
+              0.14783499,
+              0.2194932
+            ],
+            "estimate": 0.18351333
+          }
+        }
+      },
+      "queries": 120
+    }
+  },
+  "schema_version": "lmeb-actual-receipt-v1"
+}

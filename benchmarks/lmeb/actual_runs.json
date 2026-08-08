@@ -1,0 +1,174 @@
+{
+  "schema_version": "lmeb-actual-receipt-spec-v1",
+  "bootstrap": {
+    "seed": 20260808,
+    "replicates": 10000
+  },
+  "models": {
+    "embedding": {
+      "gateway": "OpenRouter OpenAI-compatible API",
+      "model": "perplexity/pplx-embed-v1-0.6b",
+      "provider": "perplexity",
+      "allow_fallbacks": false,
+      "effective_batch_size": 32,
+      "effective_batch_size_provenance": "reported_runtime_override_not_in_fingerprint"
+    },
+    "reranker": {
+      "gateway": "OpenRouter rerank API",
+      "model": "voyageai/rerank-2.5",
+      "provider": "voyageai",
+      "allow_fallbacks": false
+    },
+    "processor": {
+      "invoked": false,
+      "reason": "retrieval-only benchmark mode"
+    }
+  },
+  "runs": {
+    "covid_qa": {
+      "dataset": "Covid-QA",
+      "aggregation": "single-task query macro",
+      "result": "results/actual/lmeb-semafuse-openrouter-covidqa-common-7d9273d85e335d18/result.json",
+      "result_sha256": "2ffb6ffc2878854577627c40ef688c2b900cf4e3ff29893da4164501470bd00d",
+      "name": "lmeb-semafuse-openrouter-covidqa-common",
+      "run_id": "7d9273d85e335d18",
+      "run_fingerprint": "7d9273d85e335d1850f69bc614e23a9aa6d945c6bbe581e8188cf71528e8a4ea",
+      "manifest_sha256": "72161dd14381434b4284bac9d7c7ab00a753efee576d46c41b4bcbdd4b10375e",
+      "fingerprint_harness_sha256": "bbc44b44fbdf150b9b60a13870874d2bdacbacc54dea4c959133776b0fc26b68",
+      "final_harness_sha256": "bbc44b44fbdf150b9b60a13870874d2bdacbacc54dea4c959133776b0fc26b68",
+      "cost_usd": "0.371915842",
+      "tasks": {
+        "Covid-QA/Covid-QA": {
+          "queries": 1111,
+          "predictions_sha256": "84694ae2dd7e26f6981a8ab1bf30088979e56b8593a638f7d0b4203b0626de1b"
+        }
+      },
+      "dataset_inputs": {
+        "Covid-QA/Covid-QA": {
+          "candidates": {
+            "bytes": 1384593,
+            "sha256": "f75d394876fa39f4af3b078809fbfcd0d5a616d5f660ee2f120be9345bcd731a"
+          },
+          "corpus": {
+            "bytes": 2583780,
+            "sha256": "e0778580068fa87355db5e19d1c89fdbf91e7f656e699127d60c738b5d338118"
+          },
+          "qrels": {
+            "bytes": 47114,
+            "sha256": "f5f5d00ef36119d1ddcf7eb5d97f988447eb6e95f6949c44582c330f7bdb6526"
+          },
+          "queries": {
+            "bytes": 90711,
+            "sha256": "f92112839aaaad3168751a563c077eac7382684398ef0efdd6fd920fa9c93216"
+          }
+        }
+      },
+      "runner_artifacts": {
+        "semafuse-lazymem-benchmark": {
+          "bytes": 18817640,
+          "sha256": "f26fc0330ac0663d3b546c9ffb3a3b47c5fa6f1c6eaab64b8222080a2143898a"
+        },
+        "semafuse_lazymem.openrouter-retrieval.toml": {
+          "bytes": 2043,
+          "sha256": "64eff5719b2fc8973de0eb6fb9c1a0a6536a32a93a2df911620cead1b20faa32"
+        }
+      }
+    },
+    "deepplanning": {
+      "dataset": "DeepPlanning",
+      "aggregation": "equal mean of three subset query macros",
+      "result": "results/actual/lmeb-semafuse-openrouter-deepplanning-common-11c001775c8dbc54/result.json",
+      "result_sha256": "18b771412aec5ab61af088d3a8d68f6980150c6c0ad55d6fdb4415696a53b2d8",
+      "name": "lmeb-semafuse-openrouter-deepplanning-common",
+      "run_id": "11c001775c8dbc54",
+      "run_fingerprint": "11c001775c8dbc5415eae610307d309a93784e05c4dc75e5ade483e9c0978223",
+      "manifest_sha256": "611556170c94e974392ce3dee7dfa7a5f504d7fc693eb57993bc248e7459cf95",
+      "fingerprint_harness_sha256": "62708397e739493f377d0972e0c02e931ac6c2d6bbc5de2f2762b3c2b9a25c60",
+      "final_harness_sha256": "bbc44b44fbdf150b9b60a13870874d2bdacbacc54dea4c959133776b0fc26b68",
+      "cost_usd": "0.31410382",
+      "tasks": {
+        "DeepPlanning/shopping_level1": {
+          "queries": 50,
+          "predictions_sha256": "4acf7a58ed726b82144f5a05ab606526ecbc8139c39ea4f98803bebd8e0a662a"
+        },
+        "DeepPlanning/shopping_level2": {
+          "queries": 50,
+          "predictions_sha256": "ffc987f74e41a153b02819cc09e75123f5f9f0fade370ba9858a9b39813e9c60"
+        },
+        "DeepPlanning/shopping_level3": {
+          "queries": 20,
+          "predictions_sha256": "baa1b78bfdbfb4407ef7faa0509de5ec128d80a885c783f0f281df67b0e381cb"
+        }
+      },
+      "dataset_inputs": {
+        "DeepPlanning/shopping_level1": {
+          "candidates": {
+            "bytes": 165984,
+            "sha256": "8261019c9838596a73226e3f66559a00622b7e691b435997f27b24d3ad439873"
+          },
+          "corpus": {
+            "bytes": 8911123,
+            "sha256": "44a8132eab08106e130758c0425b2e39b794b7f8114cdddb15020818877f92c5"
+          },
+          "qrels": {
+            "bytes": 5940,
+            "sha256": "842940eee6a6ada4052ee668bd93aedb660d176ccdc33a281fb504b5d458a279"
+          },
+          "queries": {
+            "bytes": 40915,
+            "sha256": "0b6c586e34b51a0294a7b74a3bac6b41bfef1195461d74b5a571b3aeda857e48"
+          }
+        },
+        "DeepPlanning/shopping_level2": {
+          "candidates": {
+            "bytes": 164198,
+            "sha256": "93dc1e674760c7f4d4f66023fa69399d7859af737f468f50456c68b732fce2ab"
+          },
+          "corpus": {
+            "bytes": 8682701,
+            "sha256": "35bae551c64d91f7c67b41d82ed6fb6bb3594e9fb19793b3fbe72f19910338b9"
+          },
+          "qrels": {
+            "bytes": 6350,
+            "sha256": "6976bedc63c198acbb98d9a529c00ae5975c42e9e13f85a708aaa3765b71b5c2"
+          },
+          "queries": {
+            "bytes": 46482,
+            "sha256": "f8783b8804b8b00373ffb13eeca49d3af3638dd0416281f93bae7a135d7993d1"
+          }
+        },
+        "DeepPlanning/shopping_level3": {
+          "candidates": {
+            "bytes": 67650,
+            "sha256": "e6f7c36e967e9954525c097a64bf7a6535430655af823286caafb7194344b77e"
+          },
+          "corpus": {
+            "bytes": 3625914,
+            "sha256": "9c6277d580ec0c5e23600b09484bcf776015ce70885fe4e54a574f3e5b0f4619"
+          },
+          "qrels": {
+            "bytes": 1896,
+            "sha256": "42acbd01b1bbb3718584f3a09abed1f45ecb6b71b37f813bc77f586be985200d"
+          },
+          "queries": {
+            "bytes": 15495,
+            "sha256": "7596f74d1bddd3e9009e48e9ffdfeb9725b6093f489acb5833d710d20e6a454e"
+          }
+        }
+      },
+      "runner_artifacts": {
+        "semafuse-lazymem-benchmark": {
+          "bytes": 18817640,
+          "sha256": "f26fc0330ac0663d3b546c9ffb3a3b47c5fa6f1c6eaab64b8222080a2143898a"
+        },
+        "semafuse_lazymem.openrouter-retrieval.toml": {
+          "bytes": 2043,
+          "sha256": "64eff5719b2fc8973de0eb6fb9c1a0a6536a32a93a2df911620cead1b20faa32"
+        }
+      },
+      "notes": [
+        "The run fingerprint records harness source 62708397..., while final result serialization records bbc44b44... after the numeric-JSON-ID compatibility patch; both exact hashes are retained."
+      ]
+    }
+  }
+}

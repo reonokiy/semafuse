@@ -28,6 +28,28 @@ python -m lmeb_harness export --manifest my-run.toml --output ranker-input.jsonl
 python -m unittest discover -s tests -v
 ```
 
+## Verify the pinned OpenRouter runs
+
+The large actual-run artifacts stay under the ignored `results/actual/`
+directory. `actual_runs.json` pins their result, prediction, dataset-input,
+manifest, harness, config, and runner-binary hashes. Rebuild or verify the
+query-free receipt with:
+
+```bash
+python -m lmeb_harness.receipt \
+  --spec actual_runs.json \
+  --output receipts/semafuse-openrouter-actual.json
+python -m lmeb_harness.receipt \
+  --spec actual_runs.json \
+  --verify receipts/semafuse-openrouter-actual.json
+```
+
+Receipt generation fails closed on any content-hash, query-set, task-set, or
+reported-metric inconsistency. Its fixed 10,000-replicate paired bootstrap
+resamples queries independently inside each task/subset and then gives each
+task/subset equal weight. The same sampled query indices are used for all four
+stages, so `retrieved` deltas retain their query pairing.
+
 `--ranker` overrides only the manifest's `ranker.kind`; the remaining ranker
 options still come from the manifest. Runs are content-addressed. Each task
 gets an fsynced `predictions.partial.jsonl` checkpoint and `state.json`, so a
