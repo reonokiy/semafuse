@@ -101,6 +101,7 @@ shell-escape = "0.1"
 sqlx = { version = "0.8", features = ["runtime-tokio", "sqlite", "macros", "migrate"] }
 tokio = { version = "1.47", features = ["macros", "rt-multi-thread", "io-std", "io-util", "net", "process", "sync", "time"] }
 rustix = { version = "1", features = ["process"] }
+nltk-porter = "0.1"
 tempfile = "3.20"
 walkdir = "2.5"
 

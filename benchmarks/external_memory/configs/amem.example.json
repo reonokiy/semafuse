@@ -1,0 +1,18 @@
+{
+  "adapter": {
+    "kind": "amem",
+    "config": {
+      "model_name": "all-MiniLM-L6-v2",
+      "llm_backend": "openai",
+      "llm_model": "gpt-4o-mini",
+      "evo_threshold": 100,
+      "api_key_env": "OPENAI_API_KEY"
+    }
+  },
+  "tokenizer": {
+    "kind": "huggingface",
+    "model": "Qwen/Qwen3-32B",
+    "revision": "PIN_EXACT_MODEL_REVISION_BEFORE_RUNNING"
+  },
+  "run_policy": {"track": "development"}
+}

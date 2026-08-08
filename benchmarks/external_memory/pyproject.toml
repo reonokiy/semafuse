@@ -1,0 +1,22 @@
+[build-system]
+requires = ["hatchling>=1.27"]
+build-backend = "hatchling.build"
+
+[project]
+name = "semafuse-external-memory-bench"
+version = "0.1.0"
+description = "Process-isolated adapters for external agent-memory implementations"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+dependencies = []
+
+[project.scripts]
+semafuse-external-memory-worker = "semafuse_external_memory.worker:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/semafuse_external_memory"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]

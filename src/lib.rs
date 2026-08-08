@@ -34,6 +34,10 @@ pub mod hooks;
 /// Agent history discovery and import.
 pub mod importer;
 mod inference;
+/// Label-isolated native loader for the pinned LoCoMo release.
+pub mod locomo;
+/// Frozen official category-aware LoCoMo token-F1 evaluator.
+pub mod locomo_eval;
 /// Label-isolated native loader for the official LongMemEval release.
 pub mod longmemeval;
 /// Frozen LongMemEval answer and official judge prompt helpers.

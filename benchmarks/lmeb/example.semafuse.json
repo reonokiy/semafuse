@@ -1,0 +1,37 @@
+{
+  "schema_version": 1,
+  "run": {
+    "name": "lmeb-semafuse",
+    "protocol": "common-policy",
+    "instruction_setting": "without",
+    "output_dir": "results",
+    "resume": true
+  },
+  "ranker": {
+    "kind": "semafuse-jsonl",
+    "command": [
+      "../../target/release/semafuse-lazymem-benchmark",
+      "--config",
+      "../../semafuse.toml",
+      "--retrieval-only",
+      "--limit",
+      "50"
+    ],
+    "timeout_seconds": 600
+  },
+  "tasks": [
+    {
+      "id": "LoCoMo/single_hop",
+      "dataset": "LoCoMo",
+      "subset": "single_hop",
+      "memory_type": "LMEB_Dialogue",
+      "corpus": "data/Dialogue/LoCoMo/corpus.jsonl",
+      "queries": "data/Dialogue/LoCoMo/single_hop/queries.jsonl",
+      "qrels": "data/Dialogue/LoCoMo/single_hop/qrels.tsv",
+      "candidates": "data/Dialogue/LoCoMo/candidates.jsonl",
+      "candidate_match": "official",
+      "license": "cc-by-nc-4.0",
+      "instruction": ""
+    }
+  ]
+}

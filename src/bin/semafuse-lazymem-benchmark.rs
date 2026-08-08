@@ -3,7 +3,7 @@
 use anyhow::{Context, Result};
 use clap::Parser;
 use semafuse::{
-    benchmark::{BenchmarkQuestion, run_lazymem_question},
+    benchmark::{BenchmarkQuestion, run_lazymem_question, run_strategy_retrieval_question},
     config,
 };
 use std::{
@@ -18,6 +18,12 @@ struct Cli {
     /// Semafuse TOML configuration with `strategies.recall = "lazymem"`.
     #[arg(long)]
     config: PathBuf,
+    /// Run embedding, hybrid retrieval, reranking, and window expansion only.
+    #[arg(long)]
+    retrieval_only: bool,
+    /// Maximum number of final retrieval anchors.
+    #[arg(long, default_value_t = 50)]
+    limit: usize,
 }
 
 #[tokio::main]
@@ -39,9 +45,12 @@ async fn main() -> Result<()> {
         }
         let question: BenchmarkQuestion = serde_json::from_str(&line)
             .with_context(|| format!("parse benchmark JSONL line {}", line_number + 1))?;
-        let response = run_lazymem_question(&config, question)
-            .await
-            .with_context(|| format!("evaluate benchmark JSONL line {}", line_number + 1))?;
+        let response = if cli.retrieval_only {
+            run_strategy_retrieval_question(&config, question, cli.limit).await
+        } else {
+            run_lazymem_question(&config, question, cli.limit).await
+        }
+        .with_context(|| format!("evaluate benchmark JSONL line {}", line_number + 1))?;
         serde_json::to_writer(&mut output, &response)
             .with_context(|| format!("serialize benchmark JSONL line {}", line_number + 1))?;
         output

@@ -1,0 +1,10 @@
+{
+  "method": "amem",
+  "repository": "https://github.com/agiresearch/A-mem",
+  "revision": "ceffb860f0712bbae97b184d440df62bc910ca8d",
+  "package": "agentic-memory",
+  "license": "MIT",
+  "license_file": "https://github.com/agiresearch/A-mem/blob/ceffb860f0712bbae97b184d440df62bc910ca8d/LICENSE",
+  "paper_repository": "https://github.com/WujiangXu/A-mem",
+  "paper_revision_observed": "0c8039f28fdcc08189a23c07a3437d9d2482f9c2"
+}

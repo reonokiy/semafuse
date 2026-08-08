@@ -1,5 +1,7 @@
 target/
 .env
+__pycache__/
+*.py[cod]
 web/.astro/
 web/dist/
 web/node_modules/

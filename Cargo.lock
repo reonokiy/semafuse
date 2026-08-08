@@ -5593,6 +5593,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "nltk-porter"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3ae1d11f98838ac2dc9ca188e86eda22ed083f79eaebf5a41ecacf59228d2e0c"
+
+[[package]]
 name = "no_std_io2"
 version = "0.9.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -9256,6 +9262,7 @@ dependencies = [
  "fs2",
  "hex",
  "indicatif",
+ "nltk-porter",
  "opendal",
  "predicates",
  "reqwest 0.13.4",

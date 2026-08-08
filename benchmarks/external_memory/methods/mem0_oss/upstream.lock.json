@@ -1,0 +1,8 @@
+{
+  "method": "mem0_oss",
+  "repository": "https://github.com/mem0ai/mem0",
+  "revision": "4debc58a83377b18be81ae1e5969a300736b2fac",
+  "package": "mem0ai",
+  "license": "Apache-2.0",
+  "license_file": "https://github.com/mem0ai/mem0/blob/4debc58a83377b18be81ae1e5969a300736b2fac/LICENSE"
+}

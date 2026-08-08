@@ -138,6 +138,7 @@ impl BenchmarkExecution {
 pub async fn run_lazymem_question(
     config: &Config,
     question: BenchmarkQuestion,
+    limit: usize,
 ) -> Result<BenchmarkResponse> {
     ensure!(
         config.strategies.recall == "lazymem",
@@ -151,7 +152,7 @@ pub async fn run_lazymem_question(
             .any(|strategy| strategy == "lazymem"),
         "the LazyMem benchmark runner requires lazymem in strategies.enabled"
     );
-    run_strategy_question(config, question, 50).await
+    run_strategy_question(config, question, limit).await
 }
 
 /// Runs one normalized question through the configured production strategy.
@@ -248,6 +249,15 @@ async fn run_strategy_question_with_execution(
                 question.id
             )
         })?;
+    let (_, strategy_error, strategy_attempts) = store
+        .strategy_checkpoint(strategy_name)
+        .await
+        .with_context(|| format!("read {strategy_name} benchmark indexing checkpoint"))?;
+    if let Some(error) = strategy_error {
+        bail!(
+            "benchmark indexing failed for {strategy_name} after {strategy_attempts} attempt(s): {error}"
+        );
+    }
     let indexing_elapsed = indexing_started.elapsed();
 
     // LongMemEval retrieval evaluates the complete supplied haystack. Some

@@ -1,0 +1,45 @@
+{
+  "adapter": {
+    "kind": "mem0_oss",
+    "config": {
+      "scope_id": "benchmark-history",
+      "infer": true,
+      "search_threshold": 0.1,
+      "rerank": false,
+      "memory_config": {
+        "version": "v1.1",
+        "llm": {
+          "provider": "openai",
+          "config": {
+            "model": "qwen/qwen3-32b",
+            "openai_base_url": "https://openrouter.ai/api/v1",
+            "api_key_env": "OPENROUTER_API_KEY"
+          }
+        },
+        "embedder": {
+          "provider": "openai",
+          "config": {
+            "model": "qwen/qwen3-embedding-8b",
+            "openai_base_url": "https://openrouter.ai/api/v1",
+            "api_key_env": "OPENROUTER_API_KEY"
+          }
+        },
+        "vector_store": {
+          "provider": "qdrant",
+          "config": {
+            "path": "/tmp/REPLACE_WITH_DEDICATED_BENCHMARK_PATH",
+            "collection_name": "mem0_benchmark",
+            "embedding_model_dims": 4096
+          }
+        },
+        "history_db_path": "/tmp/REPLACE_WITH_DEDICATED_BENCHMARK_HISTORY.db"
+      }
+    }
+  },
+  "tokenizer": {
+    "kind": "huggingface",
+    "model": "Qwen/Qwen3-32B",
+    "revision": "PIN_EXACT_MODEL_REVISION_BEFORE_RUNNING"
+  },
+  "run_policy": {"track": "development"}
+}
