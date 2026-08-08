@@ -361,6 +361,61 @@ class ExternalMemoryContractTests(unittest.TestCase):
         adapter.close()
         self.assertIsNone(adapter._upstream_error_counter)
 
+    def test_amem_retries_and_validates_structured_llm_responses(self) -> None:
+        class CompletionStub:
+            def __init__(self) -> None:
+                self.calls = 0
+
+            def get_completion(self, *_: object, **__: object) -> str:
+                self.calls += 1
+                return "not-json" if self.calls == 1 else '{"value":"ok"}'
+
+        class SystemStub:
+            def __init__(self, **_: object) -> None:
+                self.llm_controller = types.SimpleNamespace(llm=CompletionStub())
+
+        module = types.ModuleType("agentic_memory.memory_system")
+        module.AgenticMemorySystem = SystemStub
+        hub_module = types.ModuleType("huggingface_hub")
+        hub_module.snapshot_download = lambda **_: "/tmp/exact-minilm-snapshot"
+        config = {
+            "model_name": "sentence-transformers/all-MiniLM-L6-v2",
+            "model_revision": "1" * 40,
+            "llm_backend": "openai",
+            "llm_model": "test/model",
+            "llm_max_attempts": 3,
+            "api_key_env": "TEST_API_KEY",
+            "openai_base_url": "https://openrouter.ai/api/v1",
+        }
+        with patch.dict(os.environ, {"TEST_API_KEY": "not-a-real-secret"}):
+            adapter = AMemAdapter(config)
+            with self.assertRaisesRegex(ConfigurationError, "llm_max_attempts"):
+                AMemAdapter({**config, "llm_max_attempts": 0})
+        with patch.dict(
+            sys.modules,
+            {"agentic_memory.memory_system": module, "huggingface_hub": hub_module},
+        ):
+            with patch("semafuse_external_memory.adapters.amem.time.sleep"):
+                adapter.reset()
+                response = adapter._memory.llm_controller.llm.get_completion(
+                    "prompt",
+                    response_format={
+                        "type": "json_schema",
+                        "json_schema": {
+                            "schema": {
+                                "type": "object",
+                                "properties": {"value": {"type": "string"}},
+                                "required": ["value"],
+                                "additionalProperties": False,
+                            }
+                        },
+                    },
+                )
+        self.assertEqual(json.loads(response), {"value": "ok"})
+        self.assertEqual(adapter._memory.llm_controller.llm.calls, 2)
+        self.assertEqual(adapter._llm_retry_count, 1)
+        adapter.close()
+
     def test_joined_context_is_counted_exactly(self) -> None:
         class NonAdditiveCounter(TokenCounter):
             def count(self, text: str) -> int:

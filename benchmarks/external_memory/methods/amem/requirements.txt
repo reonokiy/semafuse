@@ -1,2 +1,3 @@
 # Official system package (not the separate paper-evaluation repository), pinned 2026-08-08.
 agentic-memory @ git+https://github.com/agiresearch/A-mem.git@ceffb860f0712bbae97b184d440df62bc910ca8d
+jsonschema==4.26.0

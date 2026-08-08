@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import math
 import os
 import re
+import time
 from typing import Any, Mapping, Sequence
 from urllib.parse import urlsplit
 
@@ -38,6 +40,7 @@ class AMemAdapter(ExternalMemoryAdapter):
             "evo_threshold",
             "api_key_env",
             "openai_base_url",
+            "llm_max_attempts",
         }
         if set(config) - allowed:
             raise ConfigurationError(f"A-MEM config has unknown fields: {sorted(set(config) - allowed)}")
@@ -62,6 +65,13 @@ class AMemAdapter(ExternalMemoryAdapter):
         threshold = config.get("evo_threshold", 100)
         if isinstance(threshold, bool) or not isinstance(threshold, int) or threshold < 1:
             raise ConfigurationError("A-MEM evo_threshold must be a positive integer")
+        max_attempts = config.get("llm_max_attempts", 1)
+        if (
+            isinstance(max_attempts, bool)
+            or not isinstance(max_attempts, int)
+            or not 1 <= max_attempts <= 10
+        ):
+            raise ConfigurationError("A-MEM llm_max_attempts must be an integer in [1, 10]")
         if backend == "openai":
             if "api_key_env" not in config:
                 raise ConfigurationError("A-MEM openai backend requires api_key_env")
@@ -84,6 +94,8 @@ class AMemAdapter(ExternalMemoryAdapter):
             raise ConfigurationError("A-MEM ollama backend does not accept api_key_env or openai_base_url")
         resolved, self.secrets = resolve_env_references(dict(config), "adapter.config")
         self._config = resolved
+        self._llm_max_attempts = max_attempts
+        self._llm_retry_count = 0
         self._memory: Any = None
         self._provenance: dict[str, tuple[tuple[str, ...], str, str | None]] = {}
         self._upstream_logger: logging.Logger | None = None
@@ -101,6 +113,45 @@ class AMemAdapter(ExternalMemoryAdapter):
     def _upstream_error_count(self) -> int:
         counter = getattr(self, "_upstream_error_counter", None)
         return counter.count if counter is not None else 0
+
+    def _install_llm_retry_wrapper(self) -> None:
+        if self._llm_max_attempts == 1:
+            return
+        try:
+            from jsonschema import validate
+        except ImportError as exc:
+            raise AdapterUnavailableError(
+                "jsonschema is required when A-MEM llm_max_attempts is greater than one"
+            ) from exc
+        controller = getattr(getattr(self._memory, "llm_controller", None), "llm", None)
+        completion = getattr(controller, "get_completion", None)
+        if not callable(completion):
+            raise RuntimeError("A-MEM upstream LLM controller cannot be wrapped for retries")
+
+        def completion_with_retries(*args: Any, **kwargs: Any) -> str:
+            response_format = kwargs.get("response_format")
+            if response_format is None and len(args) >= 2:
+                response_format = args[1]
+            schema = None
+            if isinstance(response_format, dict):
+                json_schema = response_format.get("json_schema")
+                if isinstance(json_schema, dict):
+                    schema = json_schema.get("schema")
+            for attempt in range(1, self._llm_max_attempts + 1):
+                try:
+                    response = completion(*args, **kwargs)
+                    payload = json.loads(response)
+                    if isinstance(schema, dict):
+                        validate(instance=payload, schema=schema)
+                    return response
+                except Exception:
+                    if attempt == self._llm_max_attempts:
+                        raise
+                    self._llm_retry_count += 1
+                    time.sleep(float(attempt))
+            raise AssertionError("unreachable A-MEM LLM retry state")
+
+        controller.get_completion = completion_with_retries
 
     def reset(self) -> None:
         self._detach_upstream_error_counter()
@@ -139,6 +190,7 @@ class AMemAdapter(ExternalMemoryAdapter):
                 evo_threshold=self._config.get("evo_threshold", 100),
                 api_key=self._config.get("api_key"),
             )
+            self._install_llm_retry_wrapper()
             if self._upstream_error_count():
                 raise RuntimeError("A-MEM upstream reported an internal error during reset")
         except Exception:

@@ -98,6 +98,108 @@ ranking at 50. Unknown provenance fails the run. Use each upstream's locked
 worker config and isolated environment; the bridge does not reimplement Mem0
 or A-MEM.
 
+## Compact multi-run receipt
+
+`compact_receipt.py` independently verifies and joins completed Semafuse,
+Mem0, and A-MEM run directories without changing the Rust evaluator. It uses
+only the Python standard library and never reads `.env` or makes a network
+request.
+
+First validate each run and obtain the hashes needed by a comparison spec:
+
+```bash
+python benchmarks/locomo/compact_receipt.py inspect-run \
+  --run-dir benchmarks/locomo/results/semafuse-openrouter
+
+python benchmarks/locomo/compact_receipt.py inspect-external-harness \
+  --source-dir benchmarks/external_memory/src/semafuse_external_memory
+```
+
+`inspect-run` checks the complete journal, not only its first row. Its output is
+secret-free and contains the byte hashes for `summary.json` and
+`per-question.jsonl`, the canonical embedded-manifest hash, the run key, method
+IDs, and a hash of the 312 opaque question IDs. If a run also has a standalone
+`manifest.json`, its bytes must equal the embedded manifest and its hash must be
+pinned separately.
+
+Create a JSON spec such as:
+
+```json
+{
+  "schema_version": 1,
+  "label": "development",
+  "baseline": "BM25",
+  "external_harness": {
+    "directory": "../../external_memory/src/semafuse_external_memory",
+    "tree_sha256": "<inspect-external-harness tree_sha256>",
+    "amem_adapter_sha256": "<inspect-external-harness amem_adapter_sha256>"
+  },
+  "runs": [
+    {
+      "id": "semafuse-run",
+      "directory": "../results/semafuse-openrouter",
+      "summary_sha256": "<sha256>",
+      "per_question_sha256": "<sha256>",
+      "manifest_sha256": "<sha256>"
+    },
+    {
+      "id": "mem0-run",
+      "directory": "../results/mem0-openrouter",
+      "summary_sha256": "<sha256>",
+      "per_question_sha256": "<sha256>",
+      "manifest_sha256": "<sha256>"
+    },
+    {
+      "id": "amem-run",
+      "directory": "../results/amem-openrouter",
+      "summary_sha256": "<sha256>",
+      "per_question_sha256": "<sha256>",
+      "manifest_sha256": "<sha256>"
+    }
+  ],
+  "methods": [
+    {"name": "BM25", "run": "semafuse-run", "source_method": "bm25"},
+    {"name": "Semafuse", "run": "semafuse-run", "source_method": "semafuse::retrieved"},
+    {"name": "Mem0", "run": "mem0-run", "source_method": "mem0_oss_raw"},
+    {"name": "A-MEM", "run": "amem-run", "source_method": "amem_openrouter"}
+  ]
+}
+```
+
+Paths are resolved relative to the spec and are never copied into the receipt.
+Build the final artifact with:
+
+```bash
+python benchmarks/locomo/compact_receipt.py build \
+  --spec benchmarks/locomo/receipts/locomo314.development.inputs.json \
+  --output benchmarks/locomo/receipts/locomo314.development.receipt.json
+```
+
+The builder fails closed on byte-hash changes; duplicate JSON keys; malformed
+or non-opaque IDs; mixed envelope, manifest, report, or payload run keys;
+missing or duplicate method/question rows; changed evaluator metadata; unequal
+question sets; unequal BM25 metric vectors; cross-run dataset, protocol, Cargo
+lock, or evaluator-code drift; and summary means that cannot be reproduced from
+the journal.
+
+Every receipt reports `RecallAll@10`, `nDCG@10`, and `RecallAll@50` in fraction
+units. It uses one shared question-level paired bootstrap for all methods and
+deltas: seed `20260808`, 10,000 resamples, a specified SplitMix64 stream, and
+linear percentile 95% intervals. It emits candidate-minus-BM25 deltas plus all
+non-baseline method pairs, including wins, ties, and losses.
+
+Only `development` and `paper-reproduction` labels are accepted. A paper claim
+is rejected unless every run declares itself paper-comparable and all selected
+model-backed methods provide the required protected immutable identities. The
+current retrieval-only and development manifests therefore cannot silently
+become paper-reproduction results.
+
+The spec also pins a deterministic hash over every `.py` relative path and file
+body in `external_memory/src/semafuse_external_memory`, plus the A-MEM adapter
+file separately. Current run keys do not bind this `python_path` source tree, so
+the receipt explicitly calls it the final audited tree and does not claim that
+an earlier run key cryptographically committed to later adapter patches.
+
 ## Score interpretation
 
 The output contains retrieval evidence metrics only: precision, recall-any,

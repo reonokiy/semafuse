@@ -191,14 +191,15 @@ attribution gate still applies.
 ### A-MEM OpenRouter development run
 
 [`configs/amem.locomo314.openrouter.development.json`](configs/amem.locomo314.openrouter.development.json)
-uses Gemini 2.5 Flash Lite through an explicit OpenRouter base URL and resolves
+uses GPT-4o mini through an explicit OpenRouter base URL, validates and retries
+up to three structured-output attempts, and resolves
 `sentence-transformers/all-MiniLM-L6-v2` at immutable Hub revision
 `1110a243fdf4706b3f48f1d95db1a4f5529b4d41` before giving its local snapshot
 to the upstream A-MEM system. It uses the same pinned Qwen3 reader tokenizer as
 the Mem0 run. No secret value is stored in the config.
 
 This remains a `development` run: `agiresearch/A-mem` is not the separate paper
-evaluation repository, Gemini's OpenRouter alias does not expose an immutable
+evaluation repository, GPT-4o mini's OpenRouter alias does not expose an immutable
 provider revision, and the transitive Python environment is not fully locked.
 A-MEM invokes its LLM during ingestion, so unlike the raw Mem0 ablation this
 configuration incurs paid calls when the suite actually adds messages.

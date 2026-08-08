@@ -28,6 +28,14 @@ OpenRouter, use `api_key_env: "OPENROUTER_API_KEY"` and
 fixed Chroma collection name and resets that collection during initialization,
 so run it in a dedicated process/storage environment.
 
+The LoCoMo development config uses `openai/gpt-4o-mini`, matching the A-MEM
+paper's memory-model family, with `llm_max_attempts = 3`. The adapter validates
+each response against the upstream JSON schema before returning it to A-MEM;
+malformed responses and transient provider failures are retried, while
+exhaustion still trips the fail-closed error counter and aborts the run. This
+retry policy is part of the hashed worker config and must be reported with the
+result.
+
 On Linux, an unconstrained installation may resolve a CUDA-enabled PyTorch and
 download more than a gigabyte of GPU libraries even for a CPU run. Install an
 official CPU-only PyTorch wheel first, then install `requirements.txt`. The
