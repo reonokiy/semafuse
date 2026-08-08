@@ -10,6 +10,11 @@ paper table.
 
 The adapter calls the upstream `AgenticMemorySystem`, `add_note`, and
 `search_agentic` APIs. Supported upstream backends are `openai` and `ollama`.
+The pinned upstream catches some LLM, JSON, and retrieval failures internally
+and otherwise returns a degraded result. The adapter therefore attaches an
+error-level counter to the upstream logger and fails the worker on any such
+event. It retains only the count, never the log record or message, so provider
+headers and credentials cannot enter benchmark artifacts.
 The adapter requires explicit `model_name`, its immutable 40-character
 `model_revision`, `llm_backend`, and `llm_model`. It resolves that exact Hub
 snapshot before constructing the pinned upstream system and passes the local

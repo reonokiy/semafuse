@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import math
 import os
 import re
@@ -12,6 +13,18 @@ from ..adapter import ExternalMemoryAdapter, MemoryItem
 from ..config import resolve_env_references
 from ..errors import AdapterUnavailableError, ConfigurationError
 from ..protocol import Message
+
+
+class _UpstreamErrorCounter(logging.Handler):
+    """Count upstream errors without retaining potentially sensitive log text."""
+
+    def __init__(self) -> None:
+        super().__init__(level=logging.ERROR)
+        self.count = 0
+
+    def emit(self, record: logging.LogRecord) -> None:
+        if record.levelno >= logging.ERROR:
+            self.count += 1
 
 
 class AMemAdapter(ExternalMemoryAdapter):
@@ -73,8 +86,24 @@ class AMemAdapter(ExternalMemoryAdapter):
         self._config = resolved
         self._memory: Any = None
         self._provenance: dict[str, tuple[tuple[str, ...], str, str | None]] = {}
+        self._upstream_logger: logging.Logger | None = None
+        self._upstream_error_counter: _UpstreamErrorCounter | None = None
+
+    def _detach_upstream_error_counter(self) -> None:
+        logger = getattr(self, "_upstream_logger", None)
+        counter = getattr(self, "_upstream_error_counter", None)
+        if logger is not None and counter is not None:
+            logger.removeHandler(counter)
+            counter.close()
+        self._upstream_logger = None
+        self._upstream_error_counter = None
+
+    def _upstream_error_count(self) -> int:
+        counter = getattr(self, "_upstream_error_counter", None)
+        return counter.count if counter is not None else 0
 
     def reset(self) -> None:
+        self._detach_upstream_error_counter()
         try:
             from agentic_memory.memory_system import AgenticMemorySystem
             from huggingface_hub import snapshot_download
@@ -82,6 +111,11 @@ class AMemAdapter(ExternalMemoryAdapter):
             raise AdapterUnavailableError(
                 "A-MEM is not installed; install methods/amem/requirements.txt in its own environment"
             ) from exc
+        upstream_logger = logging.getLogger("agentic_memory.memory_system")
+        error_counter = _UpstreamErrorCounter()
+        upstream_logger.addHandler(error_counter)
+        self._upstream_logger = upstream_logger
+        self._upstream_error_counter = error_counter
         model_path = snapshot_download(
             repo_id=self._config["model_name"],
             revision=self._config["model_revision"],
@@ -105,6 +139,11 @@ class AMemAdapter(ExternalMemoryAdapter):
                 evo_threshold=self._config.get("evo_threshold", 100),
                 api_key=self._config.get("api_key"),
             )
+            if self._upstream_error_count():
+                raise RuntimeError("A-MEM upstream reported an internal error during reset")
+        except Exception:
+            self._detach_upstream_error_counter()
+            raise
         finally:
             if self._config["llm_backend"] == "openai":
                 if previous_base_url is None:
@@ -117,9 +156,14 @@ class AMemAdapter(ExternalMemoryAdapter):
         if self._memory is None:
             raise RuntimeError("A-MEM has not been reset")
         for message in messages:
+            error_count = self._upstream_error_count()
             memory_id = self._memory.add_note(
                 f"[{message.role}] {message.content}", time=timestamp, category=session
             )
+            if self._upstream_error_count() != error_count:
+                raise RuntimeError(
+                    "A-MEM upstream reported an internal error while processing a memory"
+                )
             memory_id = str(memory_id)
             provenance = ((message.source_id,), session, timestamp)
             previous = self._provenance.get(memory_id)
@@ -134,7 +178,10 @@ class AMemAdapter(ExternalMemoryAdapter):
     def search(self, query: str, top_k: int) -> Sequence[MemoryItem]:
         if self._memory is None:
             raise RuntimeError("A-MEM has not been reset")
+        error_count = self._upstream_error_count()
         raw_results = self._memory.search_agentic(query, k=top_k)
+        if self._upstream_error_count() != error_count:
+            raise RuntimeError("A-MEM upstream reported an internal error during search")
         if not isinstance(raw_results, list):
             raise RuntimeError("A-MEM search returned an unexpected shape")
         normalized = []
@@ -169,3 +216,4 @@ class AMemAdapter(ExternalMemoryAdapter):
     def close(self) -> None:
         self._memory = None
         self._provenance.clear()
+        self._detach_upstream_error_counter()

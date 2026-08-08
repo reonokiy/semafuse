@@ -422,6 +422,19 @@ pub async fn run_locomo_retrieval_suite(
     validate_record_completeness(&records, &dataset, &methods, &run_key)?;
     let summary = build_locomo_summary_from_records(&suite.baseline_method, &records)?;
     let method_manifest = method_manifest(&methods);
+    let mut limitations = vec![
+        "retrieval-only evidence metrics are not LoCoMo answer F1 and must not be compared with published answer scores",
+        "stateful Semafuse and external memory methods construct once per source conversation and serve that conversation's missing queries sequentially under the same lifecycle",
+        "a resumed run reconstructs only conversations with missing records; construction timing therefore describes the attempt that produced each record and is not additive across records",
+    ];
+    if methods
+        .iter()
+        .any(|method| matches!(method, ResolvedMethod::Semafuse { .. }))
+    {
+        limitations.push(
+            "Semafuse dense, bm25, rrf, and retrieved rows share one production execution per question",
+        );
+    }
     let manifest = json!({
         "schema_version": 1,
         "run_key": run_key,
@@ -473,12 +486,7 @@ pub async fn run_locomo_retrieval_suite(
             "cargo_lock_sha256": cargo_lock_sha256,
             "benchmark_code_sha256": code_sha256,
         },
-        "limitations": [
-            "retrieval-only evidence metrics are not LoCoMo answer F1 and must not be compared with published answer scores",
-            "Semafuse and external memory methods construct once per source conversation and serve that conversation's missing queries sequentially under the same lifecycle",
-            "a resumed run reconstructs only conversations with missing records; construction timing therefore describes the attempt that produced each record and is not additive across records",
-            "Semafuse dense, bm25, rrf, and retrieved rows share one production execution per question",
-        ],
+        "limitations": limitations,
         "credential_handling": "worker and model configs are represented only by hashes and non-secret identities; environment values are never serialized",
     });
     let artifacts = LocomoSuiteArtifacts {

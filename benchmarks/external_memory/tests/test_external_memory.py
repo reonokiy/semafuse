@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import sys
 import tempfile
@@ -291,6 +292,7 @@ class ExternalMemoryContractTests(unittest.TestCase):
             observed,
             [("https://openrouter.ai/api/v1", "/tmp/exact-minilm-snapshot")],
         )
+        adapter.close()
 
     def test_amem_fails_closed_on_unknown_or_conflicting_provenance(self) -> None:
         class MemoryStub:
@@ -311,6 +313,53 @@ class ExternalMemoryContractTests(unittest.TestCase):
         adapter.add([first], "session", None)
         with self.assertRaisesRegex(RuntimeError, "multiple sources"):
             adapter.add([second], "session", None)
+
+    def test_amem_fails_closed_when_upstream_swallows_internal_errors(self) -> None:
+        class SystemStub:
+            def __init__(self, **_: object) -> None:
+                pass
+
+            def add_note(self, *_: object, **__: object) -> str:
+                logging.getLogger("agentic_memory.memory_system").error(
+                    "provider error text that must not be retained"
+                )
+                return "stored-despite-error"
+
+            def search_agentic(self, *_: object, **__: object) -> list[dict[str, object]]:
+                logging.getLogger("agentic_memory.memory_system").error(
+                    "search error text that must not be retained"
+                )
+                return []
+
+        module = types.ModuleType("agentic_memory.memory_system")
+        module.AgenticMemorySystem = SystemStub
+        hub_module = types.ModuleType("huggingface_hub")
+        hub_module.snapshot_download = lambda **_: "/tmp/exact-minilm-snapshot"
+        with patch.dict(os.environ, {"TEST_API_KEY": "not-a-real-secret"}):
+            adapter = AMemAdapter(
+                {
+                    "model_name": "sentence-transformers/all-MiniLM-L6-v2",
+                    "model_revision": "1" * 40,
+                    "llm_backend": "openai",
+                    "llm_model": "test/model",
+                    "api_key_env": "TEST_API_KEY",
+                    "openai_base_url": "https://openrouter.ai/api/v1",
+                }
+            )
+        with patch.dict(
+            sys.modules,
+            {"agentic_memory.memory_system": module, "huggingface_hub": hub_module},
+        ):
+            adapter.reset()
+        with self.assertRaisesRegex(RuntimeError, "internal error while processing"):
+            adapter.add([Message("user", "fact", "source-1")], "session", None)
+
+        adapter._memory = SystemStub()
+        with self.assertRaisesRegex(RuntimeError, "internal error during search"):
+            adapter.search("fact", 1)
+        self.assertEqual(adapter._upstream_error_counter.count, 2)
+        adapter.close()
+        self.assertIsNone(adapter._upstream_error_counter)
 
     def test_joined_context_is_counted_exactly(self) -> None:
         class NonAdditiveCounter(TokenCounter):
