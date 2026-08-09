@@ -102,7 +102,7 @@ class SemafuseLazyMemMethod:
             return self._process
         try:
             process = subprocess.Popen(
-                [self.binary, "--config", str(self.config_path)],
+                [self.binary, "bench", "jsonl", "--config", str(self.config_path)],
                 stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,

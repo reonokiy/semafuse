@@ -107,7 +107,7 @@ Use the Rust runner in retrieval-only mode, for example:
 {
   "kind": "semafuse-jsonl",
   "command": [
-    "../../target/release/semafuse-lazymem-benchmark",
+    "../../target/release/semafuse", "bench", "jsonl",
     "--config", "../../semafuse.toml",
     "--retrieval-only", "--limit", "50"
   ]

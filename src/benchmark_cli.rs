@@ -1,25 +1,113 @@
-//! Rebuild a curated comparison from an immutable Semafuse benchmark journal.
+//! Optional benchmark commands for Semafuse strategies and datasets.
 
 use anyhow::{Context, Result, ensure};
-use clap::Parser;
+use clap::{Args, Subcommand, ValueEnum};
 use semafuse::{
+    benchmark::{BenchmarkQuestion, run_strategy_question, run_strategy_retrieval_question},
     benchmark_journal::{JsonlJournal, SummaryEnvelope, read_summary, write_summary_atomic},
     benchmark_suite::{
-        BenchmarkMode, QuestionMethodRecord, RetrievalProfile, build_summary_from_records,
+        BenchmarkMode, QuestionMethodRecord, RetrievalProfile, SuiteRunOptions,
+        build_summary_from_records, run_longmemeval_suite,
     },
+    config,
+    locomo_suite::{LocomoSuiteRunOptions, run_locomo_retrieval_suite},
 };
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::{
     collections::BTreeSet,
     fs,
+    io::{self, BufRead, Write},
     path::{Path, PathBuf},
 };
 
-/// Build a role-aware report without rerunning retrieval or calling model APIs.
-#[derive(Debug, Parser)]
-#[command(version, about)]
-struct Cli {
+#[derive(Debug, Subcommand)]
+pub(crate) enum BenchmarkCommand {
+    /// Stream normalized JSONL questions through the strategy selected by configuration.
+    Jsonl(JsonlArgs),
+    /// Run the native LongMemEval comparison suite.
+    #[command(name = "longmemeval")]
+    LongMemEval(LongMemEvalArgs),
+    /// Run the native LoCoMo retrieval comparison suite.
+    Locomo(LocomoArgs),
+    /// Rebuild a curated comparison from an immutable benchmark journal.
+    Report(ReportArgs),
+}
+
+#[derive(Debug, Args)]
+pub(crate) struct JsonlArgs {
+    /// Semafuse TOML configuration selecting the strategy under test.
+    #[arg(long)]
+    config: PathBuf,
+    /// Run indexing, retrieval, reranking, and evidence expansion without processing.
+    #[arg(long)]
+    retrieval_only: bool,
+    /// Maximum number of final retrieval anchors.
+    #[arg(long, default_value_t = 50)]
+    limit: usize,
+}
+
+#[derive(Debug, Clone, Copy, ValueEnum)]
+enum CliMode {
+    Retrieval,
+    Full,
+}
+
+impl From<CliMode> for BenchmarkMode {
+    fn from(value: CliMode) -> Self {
+        match value {
+            CliMode::Retrieval => Self::Retrieval,
+            CliMode::Full => Self::Full,
+        }
+    }
+}
+
+#[derive(Debug, Args)]
+pub(crate) struct LongMemEvalArgs {
+    /// Modular benchmark suite TOML.
+    #[arg(long)]
+    suite: PathBuf,
+    /// Official LongMemEval cleaned JSON file.
+    #[arg(long)]
+    dataset: PathBuf,
+    /// Optional frozen JSON split manifest; omit for the full 500 questions.
+    #[arg(long)]
+    split_manifest: Option<PathBuf>,
+    /// Split key inside the manifest.
+    #[arg(long, default_value = "test")]
+    split: String,
+    /// Retrieval-only or complete answer plus official judge evaluation.
+    #[arg(long, value_enum, default_value = "retrieval")]
+    mode: CliMode,
+    /// Crash-safe output directory (`per-question.jsonl`, `summary.json`).
+    #[arg(long)]
+    output_dir: PathBuf,
+    /// Do not load an optional `.env` from the current directory.
+    #[arg(long)]
+    no_dotenv: bool,
+}
+
+#[derive(Debug, Args)]
+pub(crate) struct LocomoArgs {
+    /// Modular LoCoMo suite TOML.
+    #[arg(long)]
+    suite: PathBuf,
+    /// Official pinned `data/locomo10.json` file; it is never copied.
+    #[arg(long)]
+    dataset: PathBuf,
+    /// Confirm that this CC-BY-NC-4.0 run is permitted non-commercial use.
+    #[arg(long)]
+    acknowledge_noncommercial: bool,
+    /// Crash-safe output directory (`per-question.jsonl`, `summary.json`).
+    #[arg(long)]
+    output_dir: PathBuf,
+    /// Do not load an optional `.env` from the current directory.
+    #[arg(long)]
+    no_dotenv: bool,
+}
+
+#[derive(Debug, Args)]
+pub(crate) struct ReportArgs {
     /// Directory containing `summary.json` and `per-question.jsonl`.
     #[arg(long)]
     run_dir: PathBuf,
@@ -28,13 +116,94 @@ struct Cli {
     output: Option<PathBuf>,
 }
 
-fn main() -> Result<()> {
-    let cli = Cli::parse();
-    let source_summary_path = cli.run_dir.join("summary.json");
-    let journal_path = cli.run_dir.join("per-question.jsonl");
-    let output_path = cli
+pub(crate) async fn run(command: BenchmarkCommand) -> Result<()> {
+    match command {
+        BenchmarkCommand::Jsonl(args) => run_jsonl(args).await,
+        BenchmarkCommand::LongMemEval(args) => run_longmemeval(args).await,
+        BenchmarkCommand::Locomo(args) => run_locomo(args).await,
+        BenchmarkCommand::Report(args) => run_report(args),
+    }
+}
+
+async fn run_jsonl(args: JsonlArgs) -> Result<()> {
+    let config = config::load_from_path(&args.config)
+        .with_context(|| format!("load benchmark configuration {}", args.config.display()))?;
+    let stdin = io::stdin();
+    let stdout = io::stdout();
+    let mut output = stdout.lock();
+    for (line_number, line) in stdin.lock().lines().enumerate() {
+        let line = line.context("read benchmark JSONL input")?;
+        if line.trim().is_empty() {
+            continue;
+        }
+        let question: BenchmarkQuestion = serde_json::from_str(&line)
+            .with_context(|| format!("parse benchmark JSONL line {}", line_number + 1))?;
+        let response = if args.retrieval_only {
+            run_strategy_retrieval_question(&config, question, args.limit).await
+        } else {
+            run_strategy_question(&config, question, args.limit).await
+        }
+        .with_context(|| format!("evaluate benchmark JSONL line {}", line_number + 1))?;
+        serde_json::to_writer(&mut output, &response)
+            .with_context(|| format!("serialize benchmark JSONL line {}", line_number + 1))?;
+        output
+            .write_all(b"\n")
+            .with_context(|| format!("write benchmark JSONL line {}", line_number + 1))?;
+        output
+            .flush()
+            .with_context(|| format!("flush benchmark JSONL line {}", line_number + 1))?;
+    }
+    Ok(())
+}
+
+async fn run_longmemeval(args: LongMemEvalArgs) -> Result<()> {
+    if !args.no_dotenv {
+        let _ = dotenvy::dotenv();
+    }
+    let artifacts = run_longmemeval_suite(&SuiteRunOptions {
+        suite_path: args.suite,
+        dataset_path: args.dataset,
+        split_manifest: args.split_manifest,
+        split_name: args.split,
+        mode: args.mode.into(),
+        output_dir: Some(args.output_dir.clone()),
+    })
+    .await?;
+    println!(
+        "completed run {}: {} records; summary: {}",
+        artifacts.manifest["run_key"].as_str().unwrap_or("unknown"),
+        artifacts.records.len(),
+        args.output_dir.join("summary.json").display()
+    );
+    Ok(())
+}
+
+async fn run_locomo(args: LocomoArgs) -> Result<()> {
+    if !args.no_dotenv {
+        let _ = dotenvy::dotenv();
+    }
+    let artifacts = run_locomo_retrieval_suite(&LocomoSuiteRunOptions {
+        suite_path: args.suite,
+        dataset_path: args.dataset,
+        acknowledge_noncommercial: args.acknowledge_noncommercial,
+        output_dir: Some(args.output_dir.clone()),
+    })
+    .await?;
+    println!(
+        "completed LoCoMo run {}: {} records; summary: {}",
+        artifacts.manifest["run_key"].as_str().unwrap_or("unknown"),
+        artifacts.records.len(),
+        args.output_dir.join("summary.json").display()
+    );
+    Ok(())
+}
+
+fn run_report(args: ReportArgs) -> Result<()> {
+    let source_summary_path = args.run_dir.join("summary.json");
+    let journal_path = args.run_dir.join("per-question.jsonl");
+    let output_path = args
         .output
-        .unwrap_or_else(|| cli.run_dir.join("comparison.json"));
+        .unwrap_or_else(|| args.run_dir.join("comparison.json"));
     ensure!(
         output_path != source_summary_path,
         "comparison output must not replace the immutable source summary"
@@ -204,16 +373,16 @@ fn report_code_sha256() -> String {
     let mut digest = Sha256::new();
     for (path, bytes) in [
         (
-            "src/bin/semafuse-memory-report.rs",
-            include_bytes!("semafuse-memory-report.rs").as_slice(),
+            "src/benchmark_cli.rs",
+            include_bytes!("benchmark_cli.rs").as_slice(),
         ),
         (
             "src/benchmark_suite.rs",
-            include_bytes!("../benchmark_suite.rs").as_slice(),
+            include_bytes!("benchmark_suite.rs").as_slice(),
         ),
         (
             "src/benchmark_report.rs",
-            include_bytes!("../benchmark_report.rs").as_slice(),
+            include_bytes!("benchmark_report.rs").as_slice(),
         ),
     ] {
         digest.update((path.len() as u64).to_be_bytes());

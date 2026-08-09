@@ -1,6 +1,6 @@
 # LoCoMo retrieval-only benchmark
 
-This directory configures the native `semafuse-locomo-benchmark` runner. It
+This directory configures the native `semafuse bench locomo` runner. It
 uses the exact LazyMem paper-v2 LoCoMo selection:
 
 - `conv-49` and `conv-50`;
@@ -23,7 +23,7 @@ It is not legal advice.
 After obtaining `data/locomo10.json` from the pinned upstream revision, run:
 
 ```bash
-cargo run --release --bin semafuse-locomo-benchmark -- \
+cargo run --release --bin semafuse --features benchmarks -- bench locomo \
   --suite benchmarks/locomo/configs/paper_v2.baselines.toml \
   --dataset /absolute/path/to/locomo10.json \
   --acknowledge-noncommercial \

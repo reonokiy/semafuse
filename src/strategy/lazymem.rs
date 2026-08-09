@@ -813,6 +813,7 @@ mod tests {
         assert!(build(Some(&value)).is_err());
     }
 
+    #[cfg(unix)]
     #[test]
     fn semafused_strategy_build_only_validates_connection_coordinates() {
         let value = json!({

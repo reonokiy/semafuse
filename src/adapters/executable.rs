@@ -302,7 +302,7 @@ mod tests {
         assert!(status.success());
         assert_eq!(
             fs::read_to_string(capture).unwrap().trim(),
-            "serve --port 4321"
+            "\"serve\" \"--port\" \"4321\""
         );
     }
 }

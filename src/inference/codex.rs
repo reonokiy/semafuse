@@ -497,7 +497,7 @@ while [ "$#" -gt 0 ]; do
 done
 [ -n "$output" ]
 [ -s "$schema" ]
-[ "$PWD" = "$requested_cwd" ]
+[ "$(pwd -P)" = "$(cd "$requested_cwd" && pwd -P)" ]
 prompt=$(cat)
 case "$prompt" in
     *"untrusted quoted data"*"# History Window"*) ;;

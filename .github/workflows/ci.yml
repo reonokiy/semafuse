@@ -16,6 +16,7 @@ permissions:
 
 env:
   CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
 
 jobs:
   rust:
@@ -35,6 +36,8 @@ jobs:
         run: cargo clippy --locked --all-targets -- -D warnings
       - name: Run daemon Clippy
         run: cargo clippy --locked --all-targets --no-default-features --features daemon -- -D warnings
+      - name: Run benchmark CLI Clippy
+        run: cargo clippy --locked --bin semafuse --features benchmarks -- -D warnings
       - name: Run models-candle Clippy
         run: cargo clippy --locked --all-targets --no-default-features --features models-candle -- -D warnings
       - name: Run tests
@@ -42,7 +45,7 @@ jobs:
       - name: Run daemon tests
         run: cargo test --locked --all-targets --features daemon
       - name: Run models-candle tests
-        run: cargo test --locked --all-targets --features models-candle
+        run: cargo test --locked --lib --features models-candle
       - name: Build documentation
         env:
           RUSTDOCFLAGS: -D warnings
@@ -86,7 +89,7 @@ jobs:
         run: cargo check --locked --all-targets --no-default-features --features models-candle
       - name: Test models-candle daemon
         if: matrix.test_models_candle
-        run: cargo test --locked --all-targets --features models-candle
+        run: cargo test --locked --lib --features models-candle
 
   web:
     name: Web

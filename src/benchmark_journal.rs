@@ -492,12 +492,18 @@ fn create_summary_temporary(path: &Path) -> Result<(PathBuf, File), BenchmarkJou
     Err(BenchmarkJournalError::TemporaryFileExhausted)
 }
 
+#[cfg(unix)]
 fn sync_parent_directory(path: &Path) -> Result<(), BenchmarkJournalError> {
     let parent = path.parent().filter(|value| !value.as_os_str().is_empty());
     let parent = parent.unwrap_or_else(|| Path::new("."));
     File::open(parent)
         .and_then(|directory| directory.sync_all())
         .map_err(|source| io_error("sync summary output directory", source))
+}
+
+#[cfg(not(unix))]
+fn sync_parent_directory(_path: &Path) -> Result<(), BenchmarkJournalError> {
+    Ok(())
 }
 
 fn contains_sensitive_material(value: &Value) -> bool {

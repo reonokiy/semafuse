@@ -10,7 +10,9 @@
   "ranker": {
     "kind": "semafuse-jsonl",
     "command": [
-      "../../target/release/semafuse-lazymem-benchmark",
+      "../../target/release/semafuse",
+      "bench",
+      "jsonl",
       "--config",
       "../../semafuse.toml",
       "--retrieval-only",

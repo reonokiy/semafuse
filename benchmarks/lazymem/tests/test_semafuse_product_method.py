@@ -54,7 +54,7 @@ import json
 import pathlib
 import sys
 
-mode = pathlib.Path(sys.argv[2]).read_text(encoding=\"utf-8\").strip()
+mode = pathlib.Path(sys.argv[-1]).read_text(encoding=\"utf-8\").strip()
 for line in sys.stdin:
     question = json.loads(line)
     response = {{
@@ -124,15 +124,15 @@ class SemafuseProductCliTests(unittest.TestCase):
                 "out.jsonl",
                 "--semafuse-config",
                 "strategy.toml",
-                "--semafuse-benchmark-binary",
-                "target/release/semafuse-lazymem-benchmark",
+                "--semafuse-binary",
+                "target/release/semafuse",
             ]
         )
         self.assertEqual(args.method, "semafuse-lazymem")
         self.assertEqual(args.semafuse_config, "strategy.toml")
         self.assertEqual(
-            args.semafuse_benchmark_binary,
-            "target/release/semafuse-lazymem-benchmark",
+            args.semafuse_binary,
+            "target/release/semafuse",
         )
 
     def test_product_method_requires_custom_profile_and_runner_config(self) -> None:
@@ -183,7 +183,7 @@ class SemafuseProductCliTests(unittest.TestCase):
                 generic_judge=False,
                 approximate_tokens=False,
                 semafuse_config=str(strategy_config),
-                semafuse_benchmark_binary="semafuse-lazymem-benchmark",
+                semafuse_binary="semafuse",
             )
             override = "SEMAFUSE__STRATEGIES__SETTINGS__LAZYMEM__EMBEDDING__MODEL"
             with patch.dict(os.environ, {}, clear=True):

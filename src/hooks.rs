@@ -18,7 +18,7 @@ use serde_json::Value;
 use std::{
     collections::HashSet,
     fs::{self, OpenOptions},
-    io::{Read, Seek, Write},
+    io::{self, Read, Seek, Write},
     path::{Path, PathBuf},
     time::UNIX_EPOCH,
 };
@@ -592,7 +592,7 @@ fn filter_spool_file(
     };
     match file.try_lock_exclusive() {
         Ok(()) => {}
-        Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+        Err(error) if lock_is_contended(&error) => {
             anyhow::bail!(
                 "hook spool {} is still owned by an active hook; retry forget",
                 path.display()
@@ -802,7 +802,7 @@ pub async fn replay_spool(
                 drop(file);
                 fs::rename(path, claimed)?;
             }
-            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {}
+            Err(error) if lock_is_contended(&error) => {}
             Err(error) => return Err(error.into()),
         }
     }
@@ -837,7 +837,7 @@ pub async fn replay_spool(
             .open(&generation)?;
         match generation_lock.try_lock_exclusive() {
             Ok(()) => {}
-            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => continue,
+            Err(error) if lock_is_contended(&error) => continue,
             Err(error) => return Err(error.into()),
         }
         let text = fs::read_to_string(&generation)?;
@@ -932,7 +932,7 @@ fn recover_pending_spool_writes(dir: &Path) -> Result<()> {
             .with_context(|| format!("open interrupted write-ahead spool {}", path.display()))?;
         match file.try_lock_exclusive() {
             Ok(()) => {}
-            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+            Err(error) if lock_is_contended(&error) => {
                 anyhow::bail!(
                     "write-ahead spool {} is still owned by an active hook",
                     path.display()
@@ -1014,6 +1014,11 @@ fn sync_directory(path: &Path) -> Result<()> {
 #[cfg(not(unix))]
 fn sync_directory(_path: &Path) -> Result<()> {
     Ok(())
+}
+
+fn lock_is_contended(error: &io::Error) -> bool {
+    let expected = fs2::lock_contended_error();
+    error.raw_os_error().is_some() && error.raw_os_error() == expected.raw_os_error()
 }
 
 #[cfg(unix)]
@@ -1127,7 +1132,7 @@ mod tests {
 
         let filter = ForgetFilter {
             session_id: Some("private-session".into()),
-            repository: Some(repository.display().to_string()),
+            repository: Some(repository.canonicalize().unwrap().display().to_string()),
             agent: Some(AgentKind::Codex),
             before_ms: Some(2_000_000),
         };

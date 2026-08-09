@@ -253,7 +253,7 @@ is already `lazymem` and its strategy settings match the public-reproduction
 profile:
 
 ```bash
-cargo build --release --bin semafuse-lazymem-benchmark
+cargo build --release --bin semafuse --features benchmarks
 cd benchmarks/lazymem
 cp configs/semafuse_lazymem.product.toml runs/semafuse-lazymem.toml
 
@@ -265,7 +265,7 @@ semafuse-lazymem-bench run \
   --split test \
   --method semafuse-lazymem \
   --semafuse-config runs/semafuse-lazymem.toml \
-  --semafuse-benchmark-binary ../../target/release/semafuse-lazymem-benchmark \
+  --semafuse-binary ../../target/release/semafuse \
   --output runs/semafuse-lazymem.longmemeval.test.jsonl
 ```
 
@@ -316,7 +316,7 @@ semafuse-lazymem-bench run \
   --split test \
   --method semafuse-lazymem \
   --semafuse-config runs/semafuse-lazymem-codex.toml \
-  --semafuse-benchmark-binary ../../target/release/semafuse-lazymem-benchmark \
+  --semafuse-binary ../../target/release/semafuse \
   --output runs/semafuse-lazymem.codex.longmemeval.test.jsonl
 ```
 
@@ -391,7 +391,7 @@ call and a Codex answer call, but no judge call.
 
 ```bash
 cd /path/to/semafuse
-cargo build --release --bin semafuse-lazymem-benchmark
+cargo build --release --bin semafuse --features benchmarks
 
 cd benchmarks/lazymem
 codex login status
@@ -409,7 +409,7 @@ PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python -m semafuse_lazymem_bench.cli ru
   --input tests/fixtures/longmemeval.json \
   --method semafuse-lazymem \
   --semafuse-config configs/semafuse_lazymem.local-smoke.toml \
-  --semafuse-benchmark-binary ../../target/release/semafuse-lazymem-benchmark \
+  --semafuse-binary ../../target/release/semafuse \
   --allow-nonpaper-count \
   --limit 1 \
   --approximate-tokens \

@@ -1,6 +1,6 @@
 # Native memory benchmark
 
-`semafuse-memory-benchmark` is the Rust comparison runner for LongMemEval. It
+`semafuse bench longmemeval` is the Rust comparison runner for LongMemEval. It
 loads the official cleaned JSON directly, hides all answers and evidence labels
 behind opaque IDs, runs each configured method on an isolated case, writes a
 crash-safe JSONL journal, and builds paired bootstrap comparisons.
@@ -28,9 +28,9 @@ is not the paper's private split and must not replace the full-500 result.
 Build once in release mode, then run either retrieval protocol:
 
 ```bash
-cargo build --release --bin semafuse-memory-benchmark
+cargo build --release --bin semafuse --features benchmarks
 
-target/release/semafuse-memory-benchmark \
+target/release/semafuse bench longmemeval \
   --suite benchmarks/memory/configs/longmemeval-all-role.retrieval.toml \
   --dataset /path/to/longmemeval_s_cleaned.json \
   --output-dir benchmarks/memory/results/all-role-full
@@ -49,7 +49,7 @@ question and records its dense, BM25, RRF, reranked, expanded-context, and
 retained-memory views without repeating embedding/reranker calls:
 
 ```bash
-target/release/semafuse-memory-benchmark \
+target/release/semafuse bench longmemeval \
   --suite benchmarks/memory/configs/longmemeval-semafuse.retrieval.toml \
   --dataset /path/to/longmemeval_s_cleaned.json \
   --output-dir benchmarks/memory/results/semafuse-full
@@ -64,7 +64,7 @@ For a retrieval-complete run that does not spend tokens on memory compression,
 use the checked-in OpenRouter profile:
 
 ```bash
-target/release/semafuse-memory-benchmark \
+target/release/semafuse bench longmemeval \
   --suite benchmarks/memory/configs/longmemeval-semafuse-openrouter.retrieval.toml \
   --dataset /path/to/longmemeval_s_cleaned.json \
   --output-dir benchmarks/memory/results/semafuse-openrouter-current
@@ -86,9 +86,9 @@ rebuilt from an existing run without loading `.env`, retrieval models, or API
 clients:
 
 ```bash
-cargo build --release --bin semafuse-memory-report
+cargo build --release --bin semafuse --features benchmarks
 
-target/release/semafuse-memory-report \
+target/release/semafuse bench report \
   --run-dir benchmarks/memory/results/semafuse-openrouter-full
 ```
 

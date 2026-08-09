@@ -1,3 +1,6 @@
+#[cfg(feature = "benchmarks")]
+mod benchmark_cli;
+
 use anyhow::{Context, Result, bail};
 use chrono::DateTime;
 use clap::{Parser, Subcommand};
@@ -12,6 +15,7 @@ use semafuse::{
     hooks,
     importer::DeferredImportBlobStore,
     mcp,
+    model::normalize_repository,
     storage::{EventStore, ForgetFilter, IngestBatch, SqliteStore},
     strategy,
 };
@@ -192,6 +196,12 @@ enum Commands {
         #[command(subcommand)]
         command: StrategyCommands,
     },
+    /// Run optional benchmark protocols and reports
+    #[cfg(feature = "benchmarks")]
+    Bench {
+        #[command(subcommand)]
+        command: benchmark_cli::BenchmarkCommand,
+    },
     /// Inspect the separately managed semafused process
     Daemon {
         #[command(subcommand)]
@@ -305,6 +315,8 @@ impl Commands {
             } => "hooks.install",
             Self::Spool { .. } => "spool.replay",
             Self::Strategy { .. } => "strategy",
+            #[cfg(feature = "benchmarks")]
+            Self::Bench { .. } => "bench",
             Self::Daemon { .. } => "daemon.status",
             Self::Mcp { .. } => "mcp",
             Self::Doctor { .. } => "doctor",
@@ -813,7 +825,9 @@ async fn run(cli: Cli) -> Result<()> {
         } => {
             let filter = ForgetFilter {
                 session_id: session,
-                repository,
+                repository: repository.map(|repository| {
+                    normalize_repository(None, Some(&repository)).unwrap_or(repository)
+                }),
                 agent,
                 before_ms: before
                     .as_deref()
@@ -1169,6 +1183,8 @@ async fn run(cli: Cli) -> Result<()> {
                 }
             }
         }
+        #[cfg(feature = "benchmarks")]
+        Commands::Bench { command } => benchmark_cli::run(command).await?,
         Commands::Daemon {
             command:
                 DaemonCommands::Status {

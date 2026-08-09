@@ -2,6 +2,9 @@ use super::command_exists_in;
 use std::ffi::OsStr;
 use tempfile::TempDir;
 
+#[cfg(feature = "benchmarks")]
+use clap::Parser;
+
 #[test]
 fn command_lookup_uses_pathext_with_windows_semantics() {
     let temp = TempDir::new().unwrap();
@@ -64,5 +67,24 @@ fn command_lookup_ignores_pathext_on_posix() {
         Some(temp.path().as_os_str()),
         Some(OsStr::new(".EXE")),
         false,
+    ));
+}
+
+#[cfg(feature = "benchmarks")]
+#[test]
+fn bench_jsonl_is_a_feature_gated_semafuse_subcommand() {
+    let cli = super::Cli::try_parse_from([
+        "semafuse",
+        "bench",
+        "jsonl",
+        "--config",
+        "/tmp/semafuse.toml",
+    ])
+    .unwrap();
+    assert!(matches!(
+        cli.command,
+        super::Commands::Bench {
+            command: super::benchmark_cli::BenchmarkCommand::Jsonl(_)
+        }
     ));
 }

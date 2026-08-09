@@ -202,7 +202,7 @@ def _run_identity(
         return sorted(overrides), hashlib.sha256(encoded).hexdigest()
 
     semafuse_config = getattr(args, "semafuse_config", None)
-    semafuse_binary = getattr(args, "semafuse_benchmark_binary", None)
+    semafuse_binary = getattr(args, "semafuse_binary", None)
     binary_command = str(semafuse_binary) if semafuse_binary else None
     binary_path = (
         Path(shutil.which(binary_command) or binary_command)
@@ -341,7 +341,7 @@ def _run(args: argparse.Namespace) -> None:
         )
     elif args.method == "semafuse-lazymem":
         method = SemafuseLazyMemMethod(
-            binary=args.semafuse_benchmark_binary,
+            binary=args.semafuse_binary,
             config_path=args.semafuse_config,
         )
     elif args.method in ("rag20", "rag50"):
@@ -520,10 +520,10 @@ def _add_semafuse_runner_arguments(parser: argparse.ArgumentParser) -> None:
         ),
     )
     parser.add_argument(
-        "--semafuse-benchmark-binary",
-        default="semafuse-lazymem-benchmark",
+        "--semafuse-binary",
+        default="semafuse",
         help=(
-            "Semafuse JSONL benchmark executable for --method semafuse-lazymem "
+            "Semafuse CLI built with the benchmarks feature for --method semafuse-lazymem "
             "(default: %(default)s)"
         ),
     )

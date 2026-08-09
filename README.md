@@ -105,9 +105,9 @@ semafuse <command> --help
 ## Process Boundary
 
 `semafuse` is the one-shot command. Imports, hooks, searches, maintenance,
-strategy operations, benchmark requests, and `daemon status` connect to their
-dependencies and then exit. The stdio MCP command is the explicit exception
-because its protocol owns stdin/stdout for the lifetime of one client session.
+strategy operations, and `daemon status` connect to their dependencies and then
+exit. The stdio MCP command is the explicit exception because its protocol owns
+stdin/stdout for the lifetime of one client session.
 
 `semafused` is a separate, all-Rust foreground process for services that
 benefit from staying warm. The first built-in service hosts local embedding and
@@ -115,6 +115,11 @@ reranking models, while its versioned service envelope and status registry allow
 other long-lived services to be added later. It has no daemonization,
 `start`, `stop`, or `restart` command; systemd or another supervisor owns
 its lifecycle.
+
+Benchmark tooling is exposed through the optional `semafuse bench` command
+(`--features benchmarks`). Its `jsonl`, `longmemeval`, `locomo`, and `report`
+subcommands select benchmark workflows; memory strategies themselves remain
+runtime configuration and never create strategy-specific binaries.
 
 The model service selects its Candle device automatically: CUDA when compiled
 with `models-cuda`, Metal on macOS, and CPU otherwise. macOS builds include an
