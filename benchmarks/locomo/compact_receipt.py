@@ -23,7 +23,7 @@ from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
 
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 BOOTSTRAP_SEED = 20260808
 BOOTSTRAP_RESAMPLES = 10_000
 BOOTSTRAP_CONFIDENCE = 0.95
@@ -45,6 +45,8 @@ _OPAQUE_QUESTION_ID = re.compile(r"^q_[0-9a-f]{64}$")
 _OPAQUE_MESSAGE_ID = re.compile(r"^m_[0-9a-f]{64}$")
 _SAFE_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$")
 _SAFE_METHOD = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$")
+_SAFE_DISPLAY_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9 _./:+()\-]{0,95}$")
+_SAFE_ADAPTER_PATH = re.compile(r"^adapters/[A-Za-z0-9][A-Za-z0-9_.-]*\.py$")
 _SAFE_MODEL_ID = re.compile(
     r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}(?:/[A-Za-z0-9][A-Za-z0-9_.-]{0,127})?$"
 )
@@ -71,6 +73,15 @@ _METHOD_KINDS = {
     "semafuse_production_retrieval",
     "external_jsonl",
 }
+_REQUIRED_ADAPTER_PATHS = frozenset(
+    {"adapters/amem.py", "adapters/amem_paper.py"}
+)
+_RUN_KEY_BOUND_EXTERNAL_FIELDS = (
+    "executable_sha256",
+    "python_tree_sha256",
+    "dependency_lock_sha256",
+    "python_environment_sha256",
+)
 _CATEGORY_NUMBERS = {
     "multi-hop": 1,
     "temporal": 2,
@@ -119,7 +130,7 @@ class MethodSelection:
 class ExternalHarnessSpec:
     directory: Path
     tree_sha256: str
-    amem_adapter_sha256: str
+    adapter_sha256s: Mapping[str, str]
 
 
 @dataclass
@@ -263,6 +274,24 @@ def _require_name(value: Any, label: str, *, method: bool = False) -> str:
     return value
 
 
+def _require_display_name(value: Any, label: str) -> str:
+    if (
+        not isinstance(value, str)
+        or not _SAFE_DISPLAY_NAME.fullmatch(value)
+        or value != value.strip()
+        or ".." in value
+        or "//" in value
+    ):
+        raise VerificationError(f"{label} is not a safe display name")
+    return value
+
+
+def _require_adapter_path(value: Any, label: str) -> str:
+    if not isinstance(value, str) or not _SAFE_ADAPTER_PATH.fullmatch(value):
+        raise VerificationError(f"{label} is not a safe adapter source path")
+    return value
+
+
 def _require_int(value: Any, label: str, *, minimum: int = 0) -> int:
     if isinstance(value, bool) or not isinstance(value, int) or value < minimum:
         raise VerificationError(f"{label} must be an integer >= {minimum}")
@@ -308,7 +337,7 @@ def load_comparison_spec(path: Path) -> ComparisonSpec:
     raw_harness = _require_object(root["external_harness"], "external_harness")
     _require_exact_keys(
         raw_harness,
-        {"directory", "tree_sha256", "amem_adapter_sha256"},
+        {"directory", "tree_sha256", "adapter_sha256s"},
         set(),
         "external_harness",
     )
@@ -318,15 +347,30 @@ def load_comparison_spec(path: Path) -> ComparisonSpec:
     harness_directory = Path(harness_directory_value)
     if not harness_directory.is_absolute():
         harness_directory = path.parent / harness_directory
+    raw_adapter_sha256s = _require_object(
+        raw_harness["adapter_sha256s"], "external_harness.adapter_sha256s"
+    )
+    missing_adapters = _REQUIRED_ADAPTER_PATHS - set(raw_adapter_sha256s)
+    if missing_adapters:
+        raise VerificationError(
+            "external_harness.adapter_sha256s lacks required adapters: "
+            f"{sorted(missing_adapters)}"
+        )
+    adapter_sha256s = {
+        _require_adapter_path(
+            path_value, "external_harness.adapter_sha256s key"
+        ): _require_sha256(
+            sha256_value,
+            f"external_harness.adapter_sha256s[{path_value!r}]",
+        )
+        for path_value, sha256_value in raw_adapter_sha256s.items()
+    }
     external_harness = ExternalHarnessSpec(
         directory=harness_directory,
         tree_sha256=_require_sha256(
             raw_harness["tree_sha256"], "external_harness.tree_sha256"
         ),
-        amem_adapter_sha256=_require_sha256(
-            raw_harness["amem_adapter_sha256"],
-            "external_harness.amem_adapter_sha256",
-        ),
+        adapter_sha256s=adapter_sha256s,
     )
 
     run_specs: list[RunSpec] = []
@@ -391,7 +435,7 @@ def load_comparison_spec(path: Path) -> ComparisonSpec:
             set(),
             f"methods[{index}]",
         )
-        name = _require_name(method_entry["name"], f"methods[{index}].name")
+        name = _require_display_name(method_entry["name"], f"methods[{index}].name")
         run_id = _require_name(method_entry["run"], f"methods[{index}].run")
         source_method = _require_name(
             method_entry["source_method"], f"methods[{index}].source_method", method=True
@@ -867,15 +911,22 @@ def inspect_external_harness(directory: Path) -> dict[str, Any]:
         digest.update(len(raw).to_bytes(8, "big"))
         digest.update(raw)
         files[relative] = {"bytes": len(raw), "sha256": _sha256_bytes(raw)}
-    amem_path = "adapters/amem.py"
-    if amem_path not in files:
-        raise VerificationError("external harness lacks adapters/amem.py")
+    missing_adapters = _REQUIRED_ADAPTER_PATHS - set(files)
+    if missing_adapters:
+        raise VerificationError(
+            f"external harness lacks required adapters: {sorted(missing_adapters)}"
+        )
+    adapter_sha256s = {
+        path: value["sha256"]
+        for path, value in files.items()
+        if _SAFE_ADAPTER_PATH.fullmatch(path) and path != "adapters/__init__.py"
+    }
     return {
         "tree_sha256": digest.hexdigest(),
         "algorithm": "domain-separated SHA-256 over sorted relative .py path+bytes",
         "file_count": len(files),
         "total_bytes": sum(value["bytes"] for value in files.values()),
-        "amem_adapter_sha256": files[amem_path]["sha256"],
+        "adapter_sha256s": adapter_sha256s,
     }
 
 
@@ -883,8 +934,10 @@ def _verify_external_harness(spec: ExternalHarnessSpec) -> dict[str, Any]:
     inspected = inspect_external_harness(spec.directory)
     if inspected["tree_sha256"] != spec.tree_sha256:
         raise VerificationError("external harness deterministic tree SHA-256 mismatch")
-    if inspected["amem_adapter_sha256"] != spec.amem_adapter_sha256:
-        raise VerificationError("A-MEM adapter SHA-256 mismatch")
+    inspected_adapters = inspected["adapter_sha256s"]
+    for path, expected_sha256 in spec.adapter_sha256s.items():
+        if inspected_adapters.get(path) != expected_sha256:
+            raise VerificationError(f"external harness adapter SHA-256 mismatch for {path}")
     return inspected
 
 
@@ -1109,7 +1162,11 @@ def _method_identity(parent: Mapping[str, Any]) -> dict[str, Any]:
                 "method identity.upstream_revision must be null or an immutable Git SHA"
             )
         identity["upstream_revision"] = revision
-    for key in ("protected_identity_complete", "model_revisions_verified"):
+    for key in (
+        "protected_identity_complete",
+        "model_revisions_verified",
+        "dependency_pins_verified",
+    ):
         if key in parent:
             if not isinstance(parent[key], bool):
                 raise VerificationError(f"method identity.{key} must be boolean")
@@ -1119,6 +1176,10 @@ def _method_identity(parent: Mapping[str, Any]) -> dict[str, Any]:
         "resolved_config_sha256",
         "worker_config_sha256",
         "command_sha256",
+        "executable_sha256",
+        "python_tree_sha256",
+        "dependency_lock_sha256",
+        "python_environment_sha256",
     ):
         if key in parent:
             identity[key] = _require_sha256(parent[key], f"method identity.{key}")
@@ -1131,6 +1192,31 @@ def _method_identity(parent: Mapping[str, Any]) -> dict[str, Any]:
         )
         identity["model_revisions_sha256"] = _sha256_bytes(_canonical_json(revisions))
     return identity
+
+
+def _set_external_run_key_binding(
+    parent: Mapping[str, Any],
+    identity: dict[str, Any],
+    audited_python_tree_sha256: str,
+) -> None:
+    if identity["kind"] != "external_jsonl":
+        return
+    present = [key in parent for key in _RUN_KEY_BOUND_EXTERNAL_FIELDS]
+    pins_claim_present = "dependency_pins_verified" in parent
+    if (any(present) or pins_claim_present) and not (
+        all(present) and pins_claim_present
+    ):
+        raise VerificationError(
+            "external method identity must provide executable_sha256, "
+            "python_tree_sha256, dependency_lock_sha256, and "
+            "python_environment_sha256 together with dependency_pins_verified"
+        )
+    run_key_bound = all(present)
+    if run_key_bound and identity["python_tree_sha256"] != audited_python_tree_sha256:
+        raise VerificationError(
+            "external method python_tree_sha256 does not match the audited harness tree"
+        )
+    identity["run_key_bound"] = run_key_bound
 
 
 def _looks_like_absolute_path(value: str) -> bool:
@@ -1282,8 +1368,12 @@ def build_receipt(spec: ComparisonSpec) -> dict[str, Any]:
     for selection in spec.methods:
         run = runs[selection.run_id]
         records = run.records[selection.source_method]
-        method_identity = _method_identity(
-            run.method_manifests[selection.source_method]
+        parent = run.method_manifests[selection.source_method]
+        method_identity = _method_identity(parent)
+        _set_external_run_key_binding(
+            parent,
+            method_identity,
+            external_harness["tree_sha256"],
         )
         _assert_receipt_safe(method_identity)
         method_identities[selection.name] = method_identity
@@ -1426,14 +1516,20 @@ def build_receipt(spec: ComparisonSpec) -> dict[str, Any]:
             "external_harness": {
                 **external_harness,
                 "scope": "benchmarks/external_memory/src/semafuse_external_memory/**/*.py",
-                "amem_fail_closed_adapter_included": True,
+                "required_adapter_paths": sorted(_REQUIRED_ADAPTER_PATHS),
                 "audit_state": "final_tree_at_receipt_build",
-                "run_key_bound": False,
                 "run_key_binding_note": (
-                    "The LoCoMo run manifest did not hash python_path source files. This "
-                    "receipt verifies the final audited external harness tree, including "
-                    "the A-MEM fail-closed adapter patch, but does not retroactively claim "
-                    "that earlier run keys committed to these bytes."
+                    "Each selected external method reports source.identity.run_key_bound. "
+                    "It is true only when that run's original manifest contains executable, "
+                    "Python-tree, dependency-lock, and Python-environment SHA-256 identities "
+                    "and its Python-tree hash matches this audited harness. The runner also "
+                    "binds the separate source.identity.dependency_pins_verified boolean into "
+                    "the run key. A true value reports that every exact dependency-lock pin "
+                    "matched the actual interpreter environment; it does not claim a clean "
+                    "environment or the absence of extra installed distributions. The complete "
+                    "installed-distribution inventory remains bound by python_environment_sha256. "
+                    "Legacy manifests missing the complete identity bundle remain false and are "
+                    "not retroactively upgraded."
                 ),
             },
             "runs": {

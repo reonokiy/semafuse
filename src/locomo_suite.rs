@@ -37,7 +37,7 @@ use serde_json::{Map, Value, json};
 use sha2::{Digest, Sha256};
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap, HashSet},
-    fs,
+    env, fs,
     path::{Path, PathBuf},
     process::Stdio,
     time::{Duration, Instant},
@@ -47,6 +47,7 @@ use tokio::{
     process::{Child, ChildStdin, ChildStdout, Command},
     time::timeout,
 };
+use walkdir::WalkDir;
 
 const SUITE_SCHEMA_VERSION: u32 = 1;
 const RECORD_SCHEMA_VERSION: u32 = 1;
@@ -180,6 +181,10 @@ enum MethodConfig {
         working_directory: Option<PathBuf>,
         #[serde(default)]
         python_path: Option<PathBuf>,
+        #[serde(default)]
+        source_root: Option<PathBuf>,
+        #[serde(default)]
+        dependency_lock: Option<PathBuf>,
         #[serde(default = "default_limit")]
         top_k: usize,
         #[serde(default = "default_context_tokens")]
@@ -287,8 +292,14 @@ struct ResolvedExternalMethod {
     reader_tokenizer_revision: Option<String>,
     command: Vec<String>,
     command_sha256: String,
+    executable_invocation: PathBuf,
+    executable_sha256: String,
     working_directory: Option<PathBuf>,
     python_path: Option<PathBuf>,
+    python_tree_sha256: Option<String>,
+    dependency_lock_sha256: Option<String>,
+    python_environment_sha256: Option<String>,
+    dependency_pins_verified: bool,
     top_k: usize,
     max_context_tokens: usize,
     timeout: Duration,
@@ -576,11 +587,17 @@ fn validate_suite(suite: &SuiteConfig) -> Result<()> {
             MethodConfig::ExternalJsonl {
                 id,
                 command,
+                source_root,
+                dependency_lock,
                 top_k,
                 max_context_tokens,
                 timeout_seconds,
                 ..
             } => {
+                ensure!(
+                    source_root.is_some() == dependency_lock.is_some(),
+                    "external method {id} must configure source_root and dependency_lock together"
+                );
                 ensure!(
                     *top_k >= 50,
                     "external method {id} must request at least 50 native items for fixed @50 scoring"
@@ -666,6 +683,8 @@ fn resolve_methods(suite: &SuiteConfig, suite_dir: &Path) -> Result<Vec<Resolved
                 command,
                 working_directory,
                 python_path,
+                source_root,
+                dependency_lock,
                 top_k,
                 max_context_tokens,
                 timeout_seconds,
@@ -681,6 +700,82 @@ fn resolve_methods(suite: &SuiteConfig, suite_dir: &Path) -> Result<Vec<Resolved
                     .as_ref()
                     .map(|path| resolve_path(suite_dir, path))
                     .transpose()?;
+                let command_directory = match &working_directory {
+                    Some(path) => path.clone(),
+                    None => env::current_dir().context("resolve current command directory")?,
+                };
+                let program = command
+                    .first()
+                    .with_context(|| format!("external method {id} has no command"))?;
+                let search_path = env::var_os("PATH");
+                let executable =
+                    resolve_executable(program, &command_directory, search_path.as_deref())?;
+                let executable_sha256 = sha256_file(&executable.identity_target)?;
+                let (
+                    python_tree_sha256,
+                    dependency_lock_sha256,
+                    python_environment_sha256,
+                    dependency_pins_verified,
+                ) =
+                    match (source_root, dependency_lock) {
+                        (Some(source_root), Some(dependency_lock)) => {
+                            let source_root = resolve_source_root(suite_dir, source_root)?;
+                            let dependency_lock =
+                                resolve_dependency_lock(suite_dir, dependency_lock)?;
+                            let environment = if identity.track == "contract-test" {
+                                None
+                            } else {
+                                Some(
+                                    inspect_python_environment(
+                                        &executable.invocation_path,
+                                        working_directory.as_deref(),
+                                    )
+                                    .with_context(|| {
+                                        format!(
+                                            "inspect Python environment for external method {id}"
+                                        )
+                                    })?,
+                                )
+                            };
+                            let dependency_pins_verified =
+                                if is_strict_python_dependency_lock(&dependency_lock) {
+                                    let environment = environment.as_ref().with_context(|| {
+                                        format!(
+                                            "external method {id} cannot verify a strict dependency lock on the contract-test track"
+                                        )
+                                    })?;
+                                    validate_dependency_pins(
+                                        &dependency_lock,
+                                        &environment.distributions,
+                                    )
+                                    .with_context(|| {
+                                        format!(
+                                            "verify Python dependencies for external method {id}"
+                                        )
+                                    })?;
+                                    true
+                                } else {
+                                    false
+                                };
+                            (
+                                Some(python_tree_sha256(&source_root)?),
+                                Some(sha256_file(&dependency_lock)?),
+                                environment
+                                    .map(|environment| environment.python_environment_sha256),
+                                dependency_pins_verified,
+                            )
+                        }
+                        (None, None) => {
+                            ensure!(
+                                identity.track == "contract-test",
+                                "external method {id} must configure source_root and dependency_lock outside contract-test"
+                            );
+                            (None, None, None, false)
+                        }
+                        _ => bail!(
+                            "external method {id} must configure source_root and dependency_lock together"
+                        ),
+                    };
                 let command_sha256 = hash_strings(command);
                 Ok(ResolvedMethod::ExternalJsonl(ResolvedExternalMethod {
                     id: id.clone(),
@@ -694,8 +789,14 @@ fn resolve_methods(suite: &SuiteConfig, suite_dir: &Path) -> Result<Vec<Resolved
                     reader_tokenizer_revision: identity.reader_tokenizer_revision,
                     command: command.clone(),
                     command_sha256,
+                    executable_invocation: executable.invocation_path,
+                    executable_sha256,
                     working_directory,
                     python_path,
+                    python_tree_sha256,
+                    dependency_lock_sha256,
+                    python_environment_sha256,
+                    dependency_pins_verified,
                     top_k: *top_k,
                     max_context_tokens: *max_context_tokens,
                     timeout: Duration::from_secs(*timeout_seconds),
@@ -776,14 +877,378 @@ fn external_config_identity(path: &Path) -> Result<ExternalConfigIdentity> {
 }
 
 fn resolve_path(base: &Path, path: &Path) -> Result<PathBuf> {
-    let candidate = if path.is_absolute() {
-        path.to_path_buf()
-    } else {
-        base.join(path)
-    };
+    let candidate = configured_path(base, path);
     candidate
         .canonicalize()
         .with_context(|| format!("resolve configured path {}", candidate.display()))
+}
+
+fn configured_path(base: &Path, path: &Path) -> PathBuf {
+    if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        base.join(path)
+    }
+}
+
+struct ResolvedExecutable {
+    invocation_path: PathBuf,
+    identity_target: PathBuf,
+}
+
+fn resolve_executable(
+    program: &str,
+    relative_base: &Path,
+    search_path: Option<&std::ffi::OsStr>,
+) -> Result<ResolvedExecutable> {
+    ensure!(!program.trim().is_empty(), "external command[0] is empty");
+    let relative_base = if relative_base.is_absolute() {
+        relative_base.to_path_buf()
+    } else {
+        env::current_dir()
+            .context("resolve current directory for external executable")?
+            .join(relative_base)
+    };
+    let program_path = Path::new(program);
+    let candidate = if program_path.is_absolute() || program_path.components().count() > 1 {
+        configured_path(&relative_base, program_path)
+    } else {
+        let search_path = search_path
+            .with_context(|| format!("PATH is not set while resolving executable {program}"))?;
+        env::split_paths(search_path)
+            .map(|directory| {
+                let directory = if directory.is_absolute() {
+                    directory
+                } else {
+                    relative_base.join(directory)
+                };
+                directory.join(program_path)
+            })
+            .find(|path| is_executable_file(path))
+            .with_context(|| format!("executable {program} was not found on PATH"))?
+    };
+    ensure!(
+        is_executable_file(&candidate),
+        "external executable must be an executable regular file"
+    );
+    let identity_target = candidate
+        .canonicalize()
+        .with_context(|| format!("resolve external executable {}", candidate.display()))?;
+    ensure!(
+        is_executable_file(&identity_target),
+        "external executable must be an executable regular file"
+    );
+    Ok(ResolvedExecutable {
+        invocation_path: candidate,
+        identity_target,
+    })
+}
+
+fn is_executable_file(path: &Path) -> bool {
+    let Ok(metadata) = fs::metadata(path) else {
+        return false;
+    };
+    if !metadata.is_file() {
+        return false;
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        metadata.permissions().mode() & 0o111 != 0
+    }
+    #[cfg(not(unix))]
+    {
+        true
+    }
+}
+
+fn resolve_source_root(base: &Path, path: &Path) -> Result<PathBuf> {
+    let candidate = configured_path(base, path);
+    let metadata = fs::symlink_metadata(&candidate)
+        .with_context(|| format!("inspect Python source root {}", candidate.display()))?;
+    ensure!(
+        !metadata.file_type().is_symlink(),
+        "Python source root must not be a symlink"
+    );
+    ensure!(metadata.is_dir(), "Python source root must be a directory");
+    candidate
+        .canonicalize()
+        .with_context(|| format!("resolve Python source root {}", candidate.display()))
+}
+
+fn resolve_dependency_lock(base: &Path, path: &Path) -> Result<PathBuf> {
+    let candidate = configured_path(base, path);
+    let metadata = fs::symlink_metadata(&candidate)
+        .with_context(|| format!("inspect dependency lock {}", candidate.display()))?;
+    ensure!(
+        !metadata.file_type().is_symlink() && metadata.is_file(),
+        "dependency lock must be a regular non-symlink file"
+    );
+    candidate
+        .canonicalize()
+        .with_context(|| format!("resolve dependency lock {}", candidate.display()))
+}
+
+#[derive(Debug)]
+struct PythonEnvironmentIdentity {
+    distributions: BTreeMap<String, String>,
+    python_environment_sha256: String,
+}
+
+const PYTHON_DISTRIBUTION_INVENTORY_SCRIPT: &str = r#"
+import importlib.metadata
+import json
+import sys
+
+rows = []
+for distribution in importlib.metadata.distributions():
+    name = distribution.metadata.get("Name")
+    version = distribution.version
+    if not isinstance(name, str) or not isinstance(version, str):
+        raise RuntimeError("installed distribution has no string Name or Version metadata")
+    rows.append([name, version])
+sys.stdout.write(json.dumps(rows, ensure_ascii=True, separators=(",", ":")))
+"#;
+
+fn inspect_python_environment(
+    invocation_interpreter: &Path,
+    working_directory: Option<&Path>,
+) -> Result<PythonEnvironmentIdentity> {
+    // Use the invocation path rather than its canonical target: for venv
+    // interpreters, Python discovers pyvenv.cfg from the invoked path. Isolated
+    // mode keeps this metadata-only preflight independent of PYTHONPATH and the
+    // benchmark source tree while retaining the venv's site-packages.
+    let mut command = std::process::Command::new(invocation_interpreter);
+    command.args(["-I", "-c", PYTHON_DISTRIBUTION_INVENTORY_SCRIPT]);
+    if let Some(directory) = working_directory {
+        command.current_dir(directory);
+    }
+    let output = command.output().with_context(|| {
+        format!(
+            "run Python distribution preflight with {}",
+            invocation_interpreter.display()
+        )
+    })?;
+    ensure!(
+        output.status.success(),
+        "Python distribution preflight failed with status {}: {}",
+        output.status,
+        bounded_process_error(&output.stderr)
+    );
+    let rows: Vec<(String, String)> = serde_json::from_slice(&output.stdout)
+        .context("Python distribution preflight returned invalid JSON")?;
+    let mut distributions = BTreeMap::new();
+    for (raw_name, version) in rows {
+        let name = normalize_python_distribution_name(&raw_name)?;
+        ensure!(
+            !version.is_empty()
+                && version.trim() == version
+                && !version.chars().any(char::is_control),
+            "installed Python distribution {name} has an invalid version"
+        );
+        if let Some(existing) = distributions.insert(name.clone(), version.clone()) {
+            ensure!(
+                existing == version,
+                "installed Python distribution {name} has conflicting versions {existing} and {version}"
+            );
+        }
+    }
+    ensure!(
+        !distributions.is_empty(),
+        "Python distribution preflight found no installed distributions"
+    );
+
+    Ok(PythonEnvironmentIdentity {
+        python_environment_sha256: installed_distributions_sha256(&distributions),
+        distributions,
+    })
+}
+
+fn installed_distributions_sha256(distributions: &BTreeMap<String, String>) -> String {
+    let mut digest = Sha256::new();
+    digest.update(b"semafuse-python-installed-distributions/v1");
+    for (name, version) in distributions {
+        digest.update((name.len() as u64).to_be_bytes());
+        digest.update(name.as_bytes());
+        digest.update((version.len() as u64).to_be_bytes());
+        digest.update(version.as_bytes());
+    }
+    hex::encode(digest.finalize())
+}
+
+fn bounded_process_error(stderr: &[u8]) -> String {
+    String::from_utf8_lossy(stderr)
+        .chars()
+        .take(2_000)
+        .collect::<String>()
+        .trim()
+        .to_owned()
+}
+
+fn normalize_python_distribution_name(raw: &str) -> Result<String> {
+    ensure!(
+        !raw.is_empty() && raw.trim() == raw,
+        "Python distribution name must be non-empty without surrounding whitespace"
+    );
+    ensure!(
+        raw.is_ascii()
+            && raw
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.')),
+        "invalid Python distribution name {raw:?}"
+    );
+    ensure!(
+        raw.as_bytes()
+            .first()
+            .is_some_and(u8::is_ascii_alphanumeric)
+            && raw.as_bytes().last().is_some_and(u8::is_ascii_alphanumeric),
+        "invalid Python distribution name {raw:?}"
+    );
+
+    let mut normalized = String::with_capacity(raw.len());
+    let mut previous_separator = false;
+    for byte in raw.bytes() {
+        if matches!(byte, b'-' | b'_' | b'.') {
+            if !previous_separator {
+                normalized.push('-');
+                previous_separator = true;
+            }
+        } else {
+            normalized.push((byte as char).to_ascii_lowercase());
+            previous_separator = false;
+        }
+    }
+    Ok(normalized)
+}
+
+fn is_strict_python_dependency_lock(path: &Path) -> bool {
+    path.file_name()
+        .is_some_and(|name| name == "requirements.lock.txt")
+}
+
+fn validate_dependency_pins(
+    dependency_lock: &Path,
+    installed: &BTreeMap<String, String>,
+) -> Result<()> {
+    let contents = fs::read_to_string(dependency_lock)
+        .with_context(|| format!("read dependency lock {}", dependency_lock.display()))?;
+    let mut pins = BTreeMap::new();
+    for (index, raw_line) in contents.lines().enumerate() {
+        let line_number = index + 1;
+        let line = raw_line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        if let Some(url) = line.strip_prefix("--extra-index-url=") {
+            ensure!(
+                !url.is_empty() && !url.chars().any(char::is_whitespace),
+                "dependency lock line {line_number} has an invalid --extra-index-url"
+            );
+            continue;
+        }
+        if let Some(rest) = line.strip_prefix("--extra-index-url") {
+            ensure!(
+                rest.chars().next().is_some_and(char::is_whitespace),
+                "dependency lock line {line_number} has an unrecognized requirement option"
+            );
+            let mut fields = rest.split_whitespace();
+            let url = fields.next().unwrap_or_default();
+            ensure!(
+                !url.is_empty() && fields.next().is_none(),
+                "dependency lock line {line_number} has an invalid --extra-index-url"
+            );
+            continue;
+        }
+
+        let (raw_name, version) = line.split_once("==").with_context(|| {
+            format!("dependency lock line {line_number} is not an exact name==version pin")
+        })?;
+        ensure!(
+            !version.is_empty()
+                && !version.contains("==")
+                && !version.chars().any(char::is_whitespace)
+                && !version.chars().any(char::is_control),
+            "dependency lock line {line_number} has an invalid pinned version"
+        );
+        let name = normalize_python_distribution_name(raw_name).with_context(|| {
+            format!("dependency lock line {line_number} has an invalid package name")
+        })?;
+        ensure!(
+            pins.insert(name.clone(), version.to_owned()).is_none(),
+            "dependency lock contains duplicate pin for {name}"
+        );
+    }
+    ensure!(
+        !pins.is_empty(),
+        "strict dependency lock contains no exact pins"
+    );
+    for (name, expected) in pins {
+        let actual = installed
+            .get(&name)
+            .with_context(|| format!("pinned Python distribution {name} is not installed"))?;
+        ensure!(
+            actual == &expected,
+            "pinned Python distribution {name} has version {actual}, expected {expected}"
+        );
+    }
+    Ok(())
+}
+
+fn python_tree_sha256(root: &Path) -> Result<String> {
+    let metadata = fs::symlink_metadata(root)
+        .with_context(|| format!("inspect Python source tree {}", root.display()))?;
+    ensure!(
+        !metadata.file_type().is_symlink() && metadata.is_dir(),
+        "Python source tree root must be a regular directory"
+    );
+
+    let mut sources = Vec::new();
+    for entry in WalkDir::new(root).follow_links(false) {
+        let entry = entry.with_context(|| format!("walk Python source tree {}", root.display()))?;
+        if entry.path() == root {
+            continue;
+        }
+        ensure!(
+            !entry.file_type().is_symlink(),
+            "Python source tree contains a symlink"
+        );
+        if entry.file_type().is_dir() {
+            continue;
+        }
+        ensure!(
+            entry.file_type().is_file(),
+            "Python source tree contains a non-regular file"
+        );
+        if entry.path().extension().and_then(|value| value.to_str()) != Some("py") {
+            continue;
+        }
+        let relative = entry
+            .path()
+            .strip_prefix(root)
+            .context("Python source escaped its configured root")?;
+        let relative = relative
+            .to_str()
+            .context("Python source tree contains a non-UTF-8 path")?
+            .replace(std::path::MAIN_SEPARATOR, "/");
+        sources.push((relative, entry.into_path()));
+    }
+    ensure!(
+        !sources.is_empty(),
+        "Python source tree contains no .py files"
+    );
+    sources.sort_by(|left, right| left.0.cmp(&right.0));
+
+    let mut digest = Sha256::new();
+    digest.update(b"semafuse-external-memory-python-tree/v1");
+    for (relative, path) in sources {
+        let bytes = fs::read(&path)
+            .with_context(|| format!("read Python source {} for hashing", path.display()))?;
+        digest.update((relative.len() as u64).to_be_bytes());
+        digest.update(relative.as_bytes());
+        digest.update((bytes.len() as u64).to_be_bytes());
+        digest.update(bytes);
+    }
+    Ok(hex::encode(digest.finalize()))
 }
 
 fn validate_paper_dataset(dataset: &PreparedDataset) -> Result<()> {
@@ -1288,7 +1753,7 @@ struct ExternalWorker {
 
 impl ExternalWorker {
     async fn spawn(method: &ResolvedExternalMethod) -> Result<Self> {
-        let mut command = Command::new(&method.command[0]);
+        let mut command = Command::new(&method.executable_invocation);
         command
             .args(&method.command[1..])
             .arg("--config")
@@ -1891,9 +2356,18 @@ fn method_manifest(methods: &[ResolvedMethod]) -> Vec<Value> {
                 "reader_tokenizer_revision": external.reader_tokenizer_revision,
                 "protected_identity_complete": external.track != "development"
                     && external.upstream_revision.is_some()
-                    && !external.model_revisions.is_empty(),
+                    && !external.model_revisions.is_empty()
+                    && external.python_tree_sha256.is_some()
+                    && external.dependency_lock_sha256.is_some()
+                    && external.python_environment_sha256.is_some()
+                    && external.dependency_pins_verified,
                 "worker_config_sha256": external.worker_config_sha256,
                 "command_sha256": external.command_sha256,
+                "executable_sha256": external.executable_sha256,
+                "python_tree_sha256": external.python_tree_sha256,
+                "dependency_lock_sha256": external.dependency_lock_sha256,
+                "python_environment_sha256": external.python_environment_sha256,
+                "dependency_pins_verified": external.dependency_pins_verified,
                 "top_k": external.top_k,
                 "max_context_tokens": external.max_context_tokens,
                 "timeout_seconds": external.timeout.as_secs(),
@@ -1969,7 +2443,7 @@ fn run_key(
     code_sha256: &str,
 ) -> String {
     let mut digest = Sha256::new();
-    digest.update(b"semafuse-locomo-retrieval-run/v1");
+    digest.update(b"semafuse-locomo-retrieval-run/v2");
     digest.update((suite_bytes.len() as u64).to_be_bytes());
     digest.update(suite_bytes);
     digest.update(dataset_sha256.as_bytes());
@@ -1989,11 +2463,25 @@ fn run_key(
             ResolvedMethod::ExternalJsonl(method) => {
                 digest.update(method.worker_config_sha256.as_bytes());
                 digest.update(method.command_sha256.as_bytes());
+                digest.update(method.executable_sha256.as_bytes());
+                update_optional_sha256(&mut digest, &method.python_tree_sha256);
+                update_optional_sha256(&mut digest, &method.dependency_lock_sha256);
+                update_optional_sha256(&mut digest, &method.python_environment_sha256);
+                digest.update([u8::from(method.dependency_pins_verified)]);
             }
             _ => {}
         }
     }
     hex::encode(digest.finalize())
+}
+
+fn update_optional_sha256(digest: &mut Sha256, value: &Option<String>) {
+    if let Some(value) = value {
+        digest.update([1]);
+        digest.update(value.as_bytes());
+    } else {
+        digest.update([0]);
+    }
 }
 
 #[cfg(test)]
@@ -2128,6 +2616,319 @@ mod tests {
         assert!(project_external_source_ids(&[item(vec!["unknown"])], &corpus, 50).is_err());
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn executable_resolution_uses_path_and_binds_file_bytes() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let directory = tempdir().unwrap();
+        let bin = directory.path().join("bin");
+        fs::create_dir(&bin).unwrap();
+        let executable = bin.join("worker");
+        let bytes = b"#!/bin/sh\nexit 0\n";
+        fs::write(&executable, bytes).unwrap();
+        let mut permissions = fs::metadata(&executable).unwrap().permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(&executable, permissions).unwrap();
+
+        let resolved = resolve_executable(
+            "worker",
+            directory.path(),
+            Some(std::ffi::OsStr::new("bin/../bin")),
+        )
+        .unwrap();
+        assert_eq!(
+            resolved.invocation_path,
+            directory.path().join("bin/../bin/worker")
+        );
+        assert_ne!(resolved.invocation_path, resolved.identity_target);
+        assert_eq!(resolved.identity_target, executable.canonicalize().unwrap());
+        assert_eq!(
+            sha256_file(&resolved.identity_target).unwrap(),
+            hex::encode(Sha256::digest(bytes))
+        );
+    }
+
+    #[test]
+    fn python_tree_hash_is_path_stable_and_content_bound() {
+        let first = tempdir().unwrap();
+        fs::create_dir(first.path().join("pkg")).unwrap();
+        fs::write(first.path().join("pkg/b.py"), b"B\n").unwrap();
+        fs::write(first.path().join("a.py"), b"A\n").unwrap();
+        fs::write(first.path().join("ignored.txt"), b"ignored").unwrap();
+
+        let second = tempdir().unwrap();
+        fs::create_dir(second.path().join("pkg")).unwrap();
+        fs::write(second.path().join("a.py"), b"A\n").unwrap();
+        fs::write(second.path().join("pkg/b.py"), b"B\n").unwrap();
+
+        let expected = "21e0e22606a49f4a3813dc462fe749bd499ae3cccf69acb434903ef7e8b6fbf9";
+        assert_eq!(python_tree_sha256(first.path()).unwrap(), expected);
+        assert_eq!(python_tree_sha256(second.path()).unwrap(), expected);
+
+        fs::write(second.path().join("pkg/b.py"), b"changed\n").unwrap();
+        assert_ne!(python_tree_sha256(second.path()).unwrap(), expected);
+    }
+
+    #[test]
+    fn external_identity_inputs_fail_closed() {
+        let directory = tempdir().unwrap();
+        let worker_config = directory.path().join("worker.json");
+        fs::write(
+            &worker_config,
+            br#"{"adapter":{"kind":"fake"},"run_policy":{"track":"development"}}"#,
+        )
+        .unwrap();
+        let search_path = env::var_os("PATH");
+        let command = resolve_executable("python3", directory.path(), search_path.as_deref())
+            .unwrap()
+            .invocation_path;
+        let suite = SuiteConfig {
+            schema_version: 1,
+            name: "identity-test".into(),
+            baseline_method: "bm25".into(),
+            methods: vec![
+                MethodConfig::Bm25 {
+                    id: "bm25".into(),
+                    limit: 50,
+                },
+                MethodConfig::ExternalJsonl {
+                    id: "external".into(),
+                    worker_config: worker_config.clone(),
+                    command: vec![command.to_string_lossy().into_owned()],
+                    working_directory: None,
+                    python_path: None,
+                    source_root: None,
+                    dependency_lock: None,
+                    top_k: 50,
+                    max_context_tokens: 16_384,
+                    timeout_seconds: 10,
+                },
+            ],
+        };
+        let error = resolve_methods(&suite, directory.path()).unwrap_err();
+        assert!(format!("{error:#}").contains("outside contract-test"));
+
+        let source_root = directory.path().join("source-root");
+        fs::create_dir(&source_root).unwrap();
+        fs::write(source_root.join("module.py"), b"module\n").unwrap();
+        let environment = inspect_python_environment(&command, None).unwrap();
+        let (package, version) = environment.distributions.first_key_value().unwrap();
+        let lock_contents = format!("{package}=={version}\n");
+        let dependency_lock = directory.path().join("requirements.lock.txt");
+        fs::write(&dependency_lock, &lock_contents).unwrap();
+        let mut configured = suite.clone();
+        let MethodConfig::ExternalJsonl {
+            source_root: configured_source_root,
+            dependency_lock: configured_dependency_lock,
+            ..
+        } = &mut configured.methods[1]
+        else {
+            unreachable!()
+        };
+        *configured_source_root = Some("source-root".into());
+        *configured_dependency_lock = Some("requirements.lock.txt".into());
+        validate_suite(&configured).unwrap();
+        let resolved = resolve_methods(&configured, directory.path()).unwrap();
+        let ResolvedMethod::ExternalJsonl(resolved) = &resolved[1] else {
+            unreachable!()
+        };
+        assert_eq!(
+            resolved.python_tree_sha256.as_deref(),
+            Some(python_tree_sha256(&source_root).unwrap().as_str())
+        );
+        assert_eq!(
+            resolved.dependency_lock_sha256.as_deref(),
+            Some(hex::encode(Sha256::digest(lock_contents.as_bytes())).as_str())
+        );
+        assert!(resolved.python_environment_sha256.is_some());
+        assert!(resolved.dependency_pins_verified);
+
+        let mut incomplete = configured.clone();
+        let MethodConfig::ExternalJsonl {
+            dependency_lock, ..
+        } = &mut incomplete.methods[1]
+        else {
+            unreachable!()
+        };
+        *dependency_lock = None;
+        let error = validate_suite(&incomplete).unwrap_err();
+        assert!(
+            format!("{error:#}").contains("configure source_root and dependency_lock together")
+        );
+
+        let empty_source = directory.path().join("empty-source");
+        fs::create_dir(&empty_source).unwrap();
+        let error = python_tree_sha256(&empty_source).unwrap_err();
+        assert!(format!("{error:#}").contains("contains no .py files"));
+
+        let source_file = directory.path().join("source.py");
+        fs::write(&source_file, b"source\n").unwrap();
+        let error = python_tree_sha256(&source_file).unwrap_err();
+        assert!(format!("{error:#}").contains("regular directory"));
+
+        let dependency_directory = directory.path().join("dependency-directory");
+        fs::create_dir(&dependency_directory).unwrap();
+        let error = resolve_dependency_lock(directory.path(), &dependency_directory).unwrap_err();
+        assert!(format!("{error:#}").contains("regular non-symlink file"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn python_tree_rejects_symlinks_when_supported() {
+        use std::os::unix::fs::symlink;
+
+        let directory = tempdir().unwrap();
+        fs::write(directory.path().join("source.py"), b"source\n").unwrap();
+        match symlink("source.py", directory.path().join("linked.py")) {
+            Ok(()) => {
+                let error = python_tree_sha256(directory.path()).unwrap_err();
+                assert!(format!("{error:#}").contains("contains a symlink"));
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied => {}
+            Err(error) => panic!("create test symlink: {error}"),
+        }
+    }
+
+    #[test]
+    fn installed_distribution_fingerprint_captures_complete_package_state() {
+        let first = BTreeMap::from([
+            ("demo".to_owned(), "1.0".to_owned()),
+            ("shared".to_owned(), "2.0".to_owned()),
+        ]);
+        let changed_version = BTreeMap::from([
+            ("demo".to_owned(), "1.1".to_owned()),
+            ("shared".to_owned(), "2.0".to_owned()),
+        ]);
+        let added_distribution = BTreeMap::from([
+            ("demo".to_owned(), "1.0".to_owned()),
+            ("extra".to_owned(), "3.0".to_owned()),
+            ("shared".to_owned(), "2.0".to_owned()),
+        ]);
+        assert_ne!(
+            installed_distributions_sha256(&first),
+            installed_distributions_sha256(&changed_version)
+        );
+        assert_ne!(
+            installed_distributions_sha256(&first),
+            installed_distributions_sha256(&added_distribution)
+        );
+    }
+
+    #[test]
+    fn strict_dependency_lock_rejects_pin_mismatch_and_unknown_syntax() {
+        let directory = tempdir().unwrap();
+        let lock = directory.path().join("requirements.lock.txt");
+        let installed = BTreeMap::from([
+            ("demo-pkg".to_owned(), "1.0+cpu".to_owned()),
+            ("other".to_owned(), "2.0".to_owned()),
+        ]);
+
+        fs::write(
+            &lock,
+            b"# exact lock\n--extra-index-url https://example.invalid/simple\nDemo_Pkg==1.0+cpu\nother==2.0\n",
+        )
+        .unwrap();
+        assert!(is_strict_python_dependency_lock(&lock));
+        validate_dependency_pins(&lock, &installed).unwrap();
+
+        fs::write(&lock, b"demo-pkg==9.0\n").unwrap();
+        let error = validate_dependency_pins(&lock, &installed).unwrap_err();
+        assert!(format!("{error:#}").contains("has version 1.0+cpu, expected 9.0"));
+
+        fs::write(&lock, b"demo-pkg>=1.0\n").unwrap();
+        let error = validate_dependency_pins(&lock, &installed).unwrap_err();
+        assert!(format!("{error:#}").contains("not an exact name==version pin"));
+
+        fs::write(&lock, b"--extra-index-url-typo https://example.invalid\n").unwrap();
+        let error = validate_dependency_pins(&lock, &installed).unwrap_err();
+        assert!(format!("{error:#}").contains("unrecognized requirement option"));
+    }
+
+    #[test]
+    fn external_identity_hashes_are_manifested_and_bound_into_run_key() {
+        let method = |executable_sha256: &str,
+                      python_tree_sha256: &str,
+                      dependency_lock_sha256: &str,
+                      python_environment_sha256: &str| {
+            let model_revisions = BTreeMap::from([("embedding".into(), "model-revision".into())]);
+            vec![ResolvedMethod::ExternalJsonl(ResolvedExternalMethod {
+                id: "external".into(),
+                worker_config: "worker.json".into(),
+                worker_config_sha256: "worker-config".into(),
+                adapter_kind: "paper".into(),
+                track: "paper-reproduction".into(),
+                upstream_revision: Some("upstream-revision".into()),
+                model_revisions,
+                reader_tokenizer_model: None,
+                reader_tokenizer_revision: None,
+                command: vec!["worker".into()],
+                command_sha256: "command".into(),
+                executable_invocation: "/resolved/worker".into(),
+                executable_sha256: executable_sha256.into(),
+                working_directory: None,
+                python_path: None,
+                python_tree_sha256: Some(python_tree_sha256.into()),
+                dependency_lock_sha256: Some(dependency_lock_sha256.into()),
+                python_environment_sha256: Some(python_environment_sha256.into()),
+                dependency_pins_verified: true,
+                top_k: 50,
+                max_context_tokens: 16_384,
+                timeout: Duration::from_secs(10),
+            })]
+        };
+        let baseline = method("executable-a", "python-a", "lock-a", "environment-a");
+        let baseline_key = run_key(b"suite", "dataset", &baseline, "cargo", "code");
+        assert_ne!(
+            baseline_key,
+            run_key(
+                b"suite",
+                "dataset",
+                &method("executable-b", "python-a", "lock-a", "environment-a"),
+                "cargo",
+                "code"
+            )
+        );
+        assert_ne!(
+            baseline_key,
+            run_key(
+                b"suite",
+                "dataset",
+                &method("executable-a", "python-b", "lock-a", "environment-a"),
+                "cargo",
+                "code"
+            )
+        );
+        assert_ne!(
+            baseline_key,
+            run_key(
+                b"suite",
+                "dataset",
+                &method("executable-a", "python-a", "lock-b", "environment-a"),
+                "cargo",
+                "code"
+            )
+        );
+        assert_ne!(
+            baseline_key,
+            run_key(
+                b"suite",
+                "dataset",
+                &method("executable-a", "python-a", "lock-a", "environment-b"),
+                "cargo",
+                "code"
+            )
+        );
+
+        let manifest = method_manifest(&baseline);
+        assert_eq!(manifest[0]["executable_sha256"], "executable-a");
+        assert_eq!(manifest[0]["python_tree_sha256"], "python-a");
+        assert_eq!(manifest[0]["dependency_lock_sha256"], "lock-a");
+        assert_eq!(manifest[0]["python_environment_sha256"], "environment-a");
+        assert_eq!(manifest[0]["dependency_pins_verified"], true);
+        assert_eq!(manifest[0]["protected_identity_complete"], true);
+    }
+
     #[tokio::test]
     async fn existing_fake_worker_protocol_round_trips() {
         let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
@@ -2138,6 +2939,9 @@ mod tests {
         {
             return;
         }
+        let search_path = env::var_os("PATH");
+        let executable = resolve_executable("python3", &external, search_path.as_deref()).unwrap();
+        let executable_sha256 = sha256_file(&executable.identity_target).unwrap();
         let method = ResolvedExternalMethod {
             id: "fake".into(),
             worker_config: external.join("configs/fake.contract-test.json"),
@@ -2154,8 +2958,14 @@ mod tests {
                 "semafuse_external_memory.worker".into(),
             ],
             command_sha256: "command".into(),
+            executable_invocation: executable.invocation_path,
+            executable_sha256,
             working_directory: Some(external.clone()),
             python_path: Some(external.join("src")),
+            python_tree_sha256: None,
+            dependency_lock_sha256: None,
+            python_environment_sha256: None,
+            dependency_pins_verified: false,
             top_k: 50,
             max_context_tokens: 16_384,
             timeout: Duration::from_secs(10),

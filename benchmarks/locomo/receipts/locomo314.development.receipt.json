@@ -14,15 +14,19 @@
   "classification": {
     "label": "development",
     "paper_reproduction_blockers": [
-      "method A-MEM external track is not paper-reproduction",
-      "method A-MEM lacks a complete protected identity",
-      "method A-MEM lacks an immutable upstream revision",
-      "method A-MEM lacks immutable model revisions",
+      "method A-MEM package/dev external track is not paper-reproduction",
+      "method A-MEM package/dev lacks a complete protected identity",
+      "method A-MEM package/dev lacks an immutable upstream revision",
+      "method A-MEM package/dev lacks immutable model revisions",
+      "method A-MEM paper-original/common-policy external track is not paper-reproduction",
+      "method A-MEM paper-original/common-policy lacks a complete protected identity",
+      "method A-MEM paper-original/common-policy lacks immutable model revisions",
       "method Mem0 external track is not paper-reproduction",
       "method Mem0 lacks a complete protected identity",
       "method Mem0 lacks an immutable upstream revision",
       "method Mem0 lacks immutable model revisions",
       "method Semafuse model revisions are not verified",
+      "run amem-paper-original-run declares paper_comparable=false",
       "run amem-run declares paper_comparable=false",
       "run mem0-run declares paper_comparable=false",
       "run semafuse-run declares paper_comparable=false"
@@ -30,31 +34,31 @@
     "paper_reproduction_eligible": false
   },
   "methods": {
-    "A-MEM": {
+    "A-MEM package/dev": {
       "latency": {
         "accounted_wall_s": {
-          "amortized_per_question": 11.470647703246794,
+          "amortized_per_question": 11.045243691205128,
           "definition": "query wall total plus shared construction counted once per validated attempt",
-          "total": 3578.8420834129997
+          "total": 3446.116031656
         },
         "query_wall_s": {
           "denominator": 312,
-          "mean": 0.09251390991666666,
-          "p50": 0.087127935,
-          "p95": 0.13552644369999997,
-          "total": 28.864339894
+          "mean": 0.1030343854775641,
+          "p50": 0.0958287525,
+          "p95": 0.1510797902,
+          "total": 32.146728269
         },
         "shared_construction_s": {
           "amortization_denominators": [
             156,
             156
           ],
-          "amortized_per_question": 11.378133793330127,
+          "amortized_per_question": 10.942209305727564,
           "group_identifiers_serialized": false,
           "grouping": "exact_value_and_construction_amortization_n",
           "shared_attempt_count": 2,
           "source_rows": 312,
-          "total": 3549.977743519
+          "total": 3413.969303387
         },
         "unit": "seconds"
       },
@@ -87,11 +91,17 @@
       "source": {
         "identity": {
           "adapter_kind": "amem",
-          "command_sha256": "ddf33570d1bf196831cb9accba50614fc274f36ef2bb35b74793b6f89e5094dc",
+          "command_sha256": "84d617b9f020264f33e65ce1e8d770e77897415575997e26848798cb9e8fc380",
+          "dependency_lock_sha256": "20214087ed6b299872b2130ea1b1020ed27534df8e09a8d9eb3a79295f8119d5",
+          "dependency_pins_verified": false,
+          "executable_sha256": "8c515a32b1a5d3d807e53359901a4d09ec06819b488736641aabd6a12eefba63",
           "id": "amem_openrouter",
           "kind": "external_jsonl",
           "model_revisions_sha256": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
           "protected_identity_complete": false,
+          "python_environment_sha256": "426a85d392502953956834079cae312ac5aa7841eaefaa67cecb786408c2f0e1",
+          "python_tree_sha256": "cd2bc3ba106e0c9c448c8a2c03a28686a78102c2eb1bfdfe1214487f364728eb",
+          "run_key_bound": true,
           "track": "development",
           "upstream_revision": null,
           "worker_config_sha256": "08ad9d2b720424af1eb4d59d2c03197947ef63e7c690b3af7153134d523a6368"
@@ -100,19 +110,95 @@
         "run": "amem-run"
       }
     },
-    "BM25": {
+    "A-MEM paper-original/common-policy": {
       "latency": {
         "accounted_wall_s": {
-          "amortized_per_question": 0.005889109679487179,
+          "amortized_per_question": 16.72120581660898,
           "definition": "query wall total plus shared construction counted once per validated attempt",
-          "total": 1.83740222
+          "total": 5217.016214782001
         },
         "query_wall_s": {
           "denominator": 312,
-          "mean": 0.005889109679487179,
-          "p50": 0.005830846,
-          "p95": 0.00795578755,
-          "total": 1.83740222
+          "mean": 1.619215761195513,
+          "p50": 1.503037302,
+          "p95": 2.1416298609499997,
+          "total": 505.195317493
+        },
+        "shared_construction_s": {
+          "amortization_denominators": [
+            156,
+            156
+          ],
+          "amortized_per_question": 15.101990055413463,
+          "group_identifiers_serialized": false,
+          "grouping": "exact_value_and_construction_amortization_n",
+          "shared_attempt_count": 2,
+          "source_rows": 312,
+          "total": 4711.820897289001
+        },
+        "unit": "seconds"
+      },
+      "metrics": {
+        "RecallAll@10": {
+          "ci95": {
+            "lower": 0.2980769230769231,
+            "upper": 0.40064102564102566
+          },
+          "denominator": 312,
+          "mean": 0.34935897435897434
+        },
+        "RecallAll@50": {
+          "ci95": {
+            "lower": 0.5384615384615384,
+            "upper": 0.6474358974358975
+          },
+          "denominator": 312,
+          "mean": 0.592948717948718
+        },
+        "nDCG@10": {
+          "ci95": {
+            "lower": 0.24000352339799602,
+            "upper": 0.32003959062018594
+          },
+          "denominator": 312,
+          "mean": 0.27927455858098926
+        }
+      },
+      "source": {
+        "identity": {
+          "adapter_kind": "amem_paper",
+          "command_sha256": "84d617b9f020264f33e65ce1e8d770e77897415575997e26848798cb9e8fc380",
+          "dependency_lock_sha256": "f6cf4bb03b3eb48614be5c895d2be4c48a9d37f4972b6afb1279d8d60e3686cf",
+          "dependency_pins_verified": true,
+          "executable_sha256": "8c515a32b1a5d3d807e53359901a4d09ec06819b488736641aabd6a12eefba63",
+          "id": "amem_paper_original",
+          "kind": "external_jsonl",
+          "model_revisions_sha256": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
+          "protected_identity_complete": false,
+          "python_environment_sha256": "426a85d392502953956834079cae312ac5aa7841eaefaa67cecb786408c2f0e1",
+          "python_tree_sha256": "cd2bc3ba106e0c9c448c8a2c03a28686a78102c2eb1bfdfe1214487f364728eb",
+          "run_key_bound": true,
+          "track": "development",
+          "upstream_revision": "0c8039f28fdcc08189a23c07a3437d9d2482f9c2",
+          "worker_config_sha256": "26e2dc44956b4c456fbcddee7aa45aa20236e3b72bab085975cceb132e363e7e"
+        },
+        "method": "amem_paper_original",
+        "run": "amem-paper-original-run"
+      }
+    },
+    "BM25": {
+      "latency": {
+        "accounted_wall_s": {
+          "amortized_per_question": 0.007355511057692308,
+          "definition": "query wall total plus shared construction counted once per validated attempt",
+          "total": 2.29491945
+        },
+        "query_wall_s": {
+          "denominator": 312,
+          "mean": 0.007355511057692308,
+          "p50": 0.0070804430000000005,
+          "p95": 0.01027935155,
+          "total": 2.29491945
         },
         "shared_construction_s": {
           "amortization_denominators": [],
@@ -163,28 +249,28 @@
     "Mem0": {
       "latency": {
         "accounted_wall_s": {
-          "amortized_per_question": 0.7647114970705129,
+          "amortized_per_question": 0.8025162762628205,
           "definition": "query wall total plus shared construction counted once per validated attempt",
-          "total": 238.589987086
+          "total": 250.38507819400002
         },
         "query_wall_s": {
           "denominator": 312,
-          "mean": 0.23553737462500002,
-          "p50": 0.23063202,
-          "p95": 0.2757186156,
-          "total": 73.487660883
+          "mean": 0.2548925357403846,
+          "p50": 0.25095877050000004,
+          "p95": 0.30718557215,
+          "total": 79.526471151
         },
         "shared_construction_s": {
           "amortization_denominators": [
             156,
             156
           ],
-          "amortized_per_question": 0.5291741224455128,
+          "amortized_per_question": 0.5476237405224359,
           "group_identifiers_serialized": false,
           "grouping": "exact_value_and_construction_amortization_n",
           "shared_attempt_count": 2,
           "source_rows": 312,
-          "total": 165.102326203
+          "total": 170.858607043
         },
         "unit": "seconds"
       },
@@ -217,11 +303,17 @@
       "source": {
         "identity": {
           "adapter_kind": "mem0_oss",
-          "command_sha256": "336ef6f3811c5599f1ada28a04241fa5edeaee19a1fafc775a7ebbc5f875a5eb",
+          "command_sha256": "84d617b9f020264f33e65ce1e8d770e77897415575997e26848798cb9e8fc380",
+          "dependency_lock_sha256": "deab655e8575dcb3f4c4981fd073d6a346452ed7890d1c6f8bbcde082a5f2ef5",
+          "dependency_pins_verified": false,
+          "executable_sha256": "8c515a32b1a5d3d807e53359901a4d09ec06819b488736641aabd6a12eefba63",
           "id": "mem0_oss_raw",
           "kind": "external_jsonl",
           "model_revisions_sha256": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
           "protected_identity_complete": false,
+          "python_environment_sha256": "aaf556e537c071e4e599da75167b4ad9ebbf4209f85116c289b33b9d6bdd049e",
+          "python_tree_sha256": "cd2bc3ba106e0c9c448c8a2c03a28686a78102c2eb1bfdfe1214487f364728eb",
+          "run_key_bound": true,
           "track": "development",
           "upstream_revision": null,
           "worker_config_sha256": "f8af3d60a48a3a32f24f7975d28633c1f1e246291d288181ed80e5ae0c5c265a"
@@ -233,28 +325,28 @@
     "Semafuse": {
       "latency": {
         "accounted_wall_s": {
-          "amortized_per_question": 0.46439968986858976,
+          "amortized_per_question": 0.4815772725064102,
           "definition": "query wall total plus shared construction counted once per validated attempt",
-          "total": 144.892703239
+          "total": 150.25210902199998
         },
         "query_wall_s": {
           "denominator": 312,
-          "mean": 0.45650290297115387,
-          "p50": 0.448682869,
-          "p95": 0.4953688544999999,
-          "total": 142.428905727
+          "mean": 0.4713434584198718,
+          "p50": 0.4588228395,
+          "p95": 0.5392385585999999,
+          "total": 147.059159027
         },
         "shared_construction_s": {
           "amortization_denominators": [
             156,
             156
           ],
-          "amortized_per_question": 0.007896786897435898,
+          "amortized_per_question": 0.010233814086538463,
           "group_identifiers_serialized": false,
           "grouping": "history_identity_sha256",
           "shared_attempt_count": 2,
           "source_rows": 312,
-          "total": 2.463797512
+          "total": 3.192949995
         },
         "unit": "seconds"
       },
@@ -277,11 +369,11 @@
         },
         "nDCG@10": {
           "ci95": {
-            "lower": 0.7024426864971405,
-            "upper": 0.7766319312324151
+            "lower": 0.70225400183952,
+            "upper": 0.7763447939078375
           },
           "denominator": 312,
-          "mean": 0.7393910083324345
+          "mean": 0.7391210163014679
         }
       },
       "source": {
@@ -329,12 +421,12 @@
           },
           "nDCG@10": {
             "ci95": {
-              "lower": -0.23245453184419565,
-              "upper": -0.16220747223612986
+              "lower": -0.23219608530130065,
+              "upper": -0.1620637236141808
             },
             "denominator": 312,
             "losses": 150,
-            "mean_delta": -0.1968550250927412,
+            "mean_delta": -0.1965850330617745,
             "ties": 134,
             "wins": 28
           }
@@ -342,7 +434,7 @@
         "reference": "Semafuse"
       },
       {
-        "candidate": "A-MEM",
+        "candidate": "A-MEM package/dev",
         "metrics": {
           "RecallAll@10": {
             "ci95": {
@@ -368,12 +460,12 @@
           },
           "nDCG@10": {
             "ci95": {
-              "lower": -0.5424962214289443,
-              "upper": -0.458355265842584
+              "lower": -0.5422300850845785,
+              "upper": -0.4580404483560985
             },
             "denominator": 312,
             "losses": 246,
-            "mean_delta": -0.500756297474096,
+            "mean_delta": -0.5004863054431293,
             "ties": 60,
             "wins": 6
           }
@@ -381,7 +473,46 @@
         "reference": "Semafuse"
       },
       {
-        "candidate": "A-MEM",
+        "candidate": "A-MEM paper-original/common-policy",
+        "metrics": {
+          "RecallAll@10": {
+            "ci95": {
+              "lower": -0.4551282051282051,
+              "upper": -0.33974358974358976
+            },
+            "denominator": 312,
+            "losses": 129,
+            "mean_delta": -0.3974358974358974,
+            "ties": 178,
+            "wins": 5
+          },
+          "RecallAll@50": {
+            "ci95": {
+              "lower": -0.2532051282051283,
+              "upper": -0.15064102564102566
+            },
+            "denominator": 312,
+            "losses": 73,
+            "mean_delta": -0.20192307692307693,
+            "ties": 229,
+            "wins": 10
+          },
+          "nDCG@10": {
+            "ci95": {
+              "lower": -0.505614472424013,
+              "upper": -0.41445666476452936
+            },
+            "denominator": 312,
+            "losses": 227,
+            "mean_delta": -0.45984645772047855,
+            "ties": 67,
+            "wins": 18
+          }
+        },
+        "reference": "Semafuse"
+      },
+      {
+        "candidate": "A-MEM package/dev",
         "metrics": {
           "RecallAll@10": {
             "ci95": {
@@ -418,11 +549,89 @@
           }
         },
         "reference": "Mem0"
+      },
+      {
+        "candidate": "A-MEM paper-original/common-policy",
+        "metrics": {
+          "RecallAll@10": {
+            "ci95": {
+              "lower": -0.3141025641025641,
+              "upper": -0.19871794871794873
+            },
+            "denominator": 312,
+            "losses": 92,
+            "mean_delta": -0.2564102564102564,
+            "ties": 208,
+            "wins": 12
+          },
+          "RecallAll@50": {
+            "ci95": {
+              "lower": -0.21794871794871795,
+              "upper": -0.11538461538461542
+            },
+            "denominator": 312,
+            "losses": 65,
+            "mean_delta": -0.16666666666666666,
+            "ties": 234,
+            "wins": 13
+          },
+          "nDCG@10": {
+            "ci95": {
+              "lower": -0.3057327704206279,
+              "upper": -0.22101743485653025
+            },
+            "denominator": 312,
+            "losses": 177,
+            "mean_delta": -0.263261424658704,
+            "ties": 100,
+            "wins": 35
+          }
+        },
+        "reference": "Mem0"
+      },
+      {
+        "candidate": "A-MEM paper-original/common-policy",
+        "metrics": {
+          "RecallAll@10": {
+            "ci95": {
+              "lower": -0.0288461538461538,
+              "upper": 0.07371794871794873
+            },
+            "denominator": 312,
+            "losses": 30,
+            "mean_delta": 0.022435897435897436,
+            "ties": 245,
+            "wins": 37
+          },
+          "RecallAll@50": {
+            "ci95": {
+              "lower": 0.04166666666666663,
+              "upper": 0.13461538461538458
+            },
+            "denominator": 312,
+            "losses": 16,
+            "mean_delta": 0.08653846153846154,
+            "ties": 253,
+            "wins": 43
+          },
+          "nDCG@10": {
+            "ci95": {
+              "lower": 0.006886609648327988,
+              "upper": 0.0743347934160829
+            },
+            "denominator": 312,
+            "losses": 66,
+            "mean_delta": 0.04063984772265082,
+            "ties": 155,
+            "wins": 91
+          }
+        },
+        "reference": "A-MEM package/dev"
       }
     ],
     "relative_to_bm25": {
-      "A-MEM": {
-        "candidate": "A-MEM",
+      "A-MEM package/dev": {
+        "candidate": "A-MEM package/dev",
         "metrics": {
           "RecallAll@10": {
             "ci95": {
@@ -456,6 +665,45 @@
             "mean_delta": -0.1393624189082619,
             "ties": 135,
             "wins": 60
+          }
+        },
+        "reference": "BM25"
+      },
+      "A-MEM paper-original/common-policy": {
+        "candidate": "A-MEM paper-original/common-policy",
+        "metrics": {
+          "RecallAll@10": {
+            "ci95": {
+              "lower": -0.16987179487179488,
+              "upper": -0.04807692307692307
+            },
+            "denominator": 312,
+            "losses": 66,
+            "mean_delta": -0.10897435897435898,
+            "ties": 214,
+            "wins": 32
+          },
+          "RecallAll@50": {
+            "ci95": {
+              "lower": -0.09294871794871795,
+              "upper": 0.022435897435897467
+            },
+            "denominator": 312,
+            "losses": 50,
+            "mean_delta": -0.035256410256410256,
+            "ties": 223,
+            "wins": 39
+          },
+          "nDCG@10": {
+            "ci95": {
+              "lower": -0.14924678732052526,
+              "upper": -0.0504084473937956
+            },
+            "denominator": 312,
+            "losses": 116,
+            "mean_delta": -0.09872257118561109,
+            "ties": 113,
+            "wins": 83
           }
         },
         "reference": "BM25"
@@ -526,14 +774,14 @@
           },
           "nDCG@10": {
             "ci95": {
-              "lower": 0.32031377037079956,
-              "upper": 0.40274250687006136
+              "lower": 0.3199908475307877,
+              "upper": 0.40257804591293156
             },
             "denominator": 312,
             "losses": 16,
-            "mean_delta": 0.3613938785658341,
-            "ties": 94,
-            "wins": 202
+            "mean_delta": 0.36112388653486743,
+            "ties": 93,
+            "wins": 203
           }
         },
         "reference": "BM25"
@@ -550,83 +798,108 @@
     "question_set_sha256": "0a104fae539a6465ea6a069bb4ecaad8c2a0460889063615b69b7ba8aecf9035"
   },
   "provenance": {
-    "common_manifest_fingerprint_sha256": "9172e05521d8e9a7bcdbd0b2dfda8742205159013d0a4d000b92ce373c508ebe",
+    "common_manifest_fingerprint_sha256": "19b2becb4b30f2286ceb4f362dfd867aa37853195f3067ddca855d919f5ec007",
     "dataset_sha256": "79fa87e90f04081343b8c8debecb80a9a6842b76a7aa537dc9fdf651ea698ff4",
     "external_harness": {
+      "adapter_sha256s": {
+        "adapters/amem.py": "f974e6793cb756ffa0ee354f6931bdc4d037dc785acd6e86d6bb2af697c8e393",
+        "adapters/amem_paper.py": "2af641f804c5c1b5bed77d12f25d6a5499050c5f1a24d4091a1d0031f00e374d",
+        "adapters/fake.py": "c190e459e12d8865076c3e6ebe6a288c1583961c05df22c41cd929597eaf332e",
+        "adapters/mem0_oss.py": "903f24fa2a8910c168415171faacc9a63fc66395c0d597067b25e86bc2a6ccba"
+      },
       "algorithm": "domain-separated SHA-256 over sorted relative .py path+bytes",
-      "amem_adapter_sha256": "f974e6793cb756ffa0ee354f6931bdc4d037dc785acd6e86d6bb2af697c8e393",
-      "amem_fail_closed_adapter_included": true,
       "audit_state": "final_tree_at_receipt_build",
-      "file_count": 12,
-      "run_key_binding_note": "The LoCoMo run manifest did not hash python_path source files. This receipt verifies the final audited external harness tree, including the A-MEM fail-closed adapter patch, but does not retroactively claim that earlier run keys committed to these bytes.",
-      "run_key_bound": false,
+      "file_count": 16,
+      "required_adapter_paths": [
+        "adapters/amem.py",
+        "adapters/amem_paper.py"
+      ],
+      "run_key_binding_note": "Each selected external method reports source.identity.run_key_bound. It is true only when that run's original manifest contains executable, Python-tree, dependency-lock, and Python-environment SHA-256 identities and its Python-tree hash matches this audited harness. The runner also binds the separate source.identity.dependency_pins_verified boolean into the run key. A true value reports that every exact dependency-lock pin matched the actual interpreter environment; it does not claim a clean environment or the absence of extra installed distributions. The complete installed-distribution inventory remains bound by python_environment_sha256. Legacy manifests missing the complete identity bundle remain false and are not retroactively upgraded.",
       "scope": "benchmarks/external_memory/src/semafuse_external_memory/**/*.py",
-      "total_bytes": 67121,
-      "tree_sha256": "9774729a03268cdfad8b18d9362dbe47b0e188931caf25b738e477a2826aedb1"
+      "total_bytes": 136493,
+      "tree_sha256": "cd2bc3ba106e0c9c448c8a2c03a28686a78102c2eb1bfdfe1214487f364728eb"
     },
     "runs": {
+      "amem-paper-original-run": {
+        "artifacts": {
+          "embedded_manifest": {
+            "canonicalization": "RFC-8259 JSON sorted keys, UTF-8, no whitespace",
+            "sha256": "f9f57507df825c683a01de447e6ce7318cc13303bb20123885f523ee7461c9e0"
+          },
+          "manifest_file": null,
+          "per_question": {
+            "bytes": 2974015,
+            "sha256": "ad4d1ba1f6c97da8653719c07add511af9b68f2c98afad63a170b8c911f5d0d8"
+          },
+          "summary": {
+            "bytes": 96721,
+            "sha256": "984c3fa1d75397b5f433688f99a72723c06b0e4a30b559dfd7ce8c15830cdaab"
+          }
+        },
+        "run_key": "b1c2face0a5f17810feaef047f5376ef9ddada15a43e65d55b058e27420067ae"
+      },
       "amem-run": {
         "artifacts": {
           "embedded_manifest": {
             "canonicalization": "RFC-8259 JSON sorted keys, UTF-8, no whitespace",
-            "sha256": "ad5f3041ae45ba9cb5fefa97d29e3e96abee0c8ce9dfd664bc884acd2c396c63"
+            "sha256": "799339ee28e940a07e8252e63ad3020fc102743790b91be4f593828c7efd42bd"
           },
           "manifest_file": null,
           "per_question": {
-            "bytes": 2968838,
-            "sha256": "dd48a150a43e39fc2dadca214bec3d2a0ffeade2ea8e6b11e4cb3ca6a0bd4ec7"
+            "bytes": 2968846,
+            "sha256": "0fa352bd2b5d38f5102654f21dfc53b0c74c8de4f70ef3cdba052f9098503bad"
           },
           "summary": {
-            "bytes": 95814,
-            "sha256": "07f0482e464ff7282f7a2b1d821154334888e1d89fa620488ebbe3e2d11bed9e"
+            "bytes": 96299,
+            "sha256": "3eba3b0624d8cbb32c51968dc333a01d9dbf1a751bed7b4aa977c2f67f4a48c1"
           }
         },
-        "run_key": "ce3895730288d395289726cf0c0b782d2e8269293977968a1da3b12cb3765be5"
+        "run_key": "6f6b170552adde2fe62a4d4ec58b5163eec683480bce1431052e602dcc62e996"
       },
       "mem0-run": {
         "artifacts": {
           "embedded_manifest": {
             "canonicalization": "RFC-8259 JSON sorted keys, UTF-8, no whitespace",
-            "sha256": "93edf5ec9be29dadea1afb3ee4b3fda3fc5689d81b48d44f930847c65945f61f"
+            "sha256": "60bb64d0c50effe3c707ad20a8bb04d0045c9dca2ffd5ac681fb626d8eb6b8a1"
           },
           "manifest_file": null,
           "per_question": {
-            "bytes": 2967838,
-            "sha256": "359248cf03febbb8936bba5b322bae8bbcd2939c8ff78899ea1d2c5210b604b0"
+            "bytes": 2967990,
+            "sha256": "e24168622d7962c5ade065976364f5241c3ec7da3eb7179ff172ba2378435673"
           },
           "summary": {
-            "bytes": 95778,
-            "sha256": "fe08c7f39ac9a7d43ee9be54b65ccb83dc9ca5cbb9a10b5668d70c641fb269e6"
+            "bytes": 96259,
+            "sha256": "65eab82d9c5e7364d99d7ad25b782897c00f043585b253ef4d9f244c9cf68b6f"
           }
         },
-        "run_key": "ec9f83b9b3a342d1868665526668b2ab81a8a1bee91390e336e1935dac451114"
+        "run_key": "67799c9fe3e34c2814d467a90404c224404d7c37aebb5cac2bdfd5d56671dee9"
       },
       "semafuse-run": {
         "artifacts": {
           "embedded_manifest": {
             "canonicalization": "RFC-8259 JSON sorted keys, UTF-8, no whitespace",
-            "sha256": "36994771fbca2fd69fcb00989a21e9201f56012d9272d2e557c13598347e2365"
+            "sha256": "eea3711922ef3f9bdbb83bfc4f868fddeacce7a31834acd96bcfaa47e37256d1"
           },
           "manifest_file": null,
           "per_question": {
-            "bytes": 9172674,
-            "sha256": "6d80f98cc01869692987d0a6613235591ee9513906d8f57030072258dff3c4fb"
+            "bytes": 9172055,
+            "sha256": "1041e58796c0b3182ffe6f25a7efb5bc43e467d9ab1d0b56ec117659a6975c4d"
           },
           "summary": {
-            "bytes": 271392,
-            "sha256": "98c5023306ba55e4ab23b17becfd34536f45dc61125cece6ed163a3db0b8d6dc"
+            "bytes": 271391,
+            "sha256": "a943826e4fd56211a5ff8842642ff7d274d421b635c93c3e5d42cbd1692ade65"
           }
         },
-        "run_key": "1fff7ec687e4aa5054c59eec301690e2ec32bb0abec2b0da3e7715d5e8d5c36c"
+        "run_key": "79c2dae0791fd8fad6c554d4aaff1e6310dafc4528a4b67b03cb8a80158c8d85"
       }
     },
     "tool": {
       "path": "benchmarks/locomo/compact_receipt.py",
-      "sha256": "a7a61c951a33c0198ace16d4049fc7d1d2c59cbef6d6ae859dd5dd8334ed240a"
+      "sha256": "037414f572fbcd7fb36823d69a41a93c7410cb531fb872bcafec0effa426fef4"
     },
     "upstream_commit": "3eb6f2c585f5e1699204e3c3bdf7adc5c28cb376"
   },
-  "schema_version": 1,
+  "schema_version": 2,
   "track": "paper-v2-selection/retrieval-only-common-evaluator",
   "validation": {
     "absolute_paths_serialized": false,

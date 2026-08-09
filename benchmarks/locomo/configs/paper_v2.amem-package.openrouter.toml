@@ -1,0 +1,23 @@
+# Paid development run of the reusable agiresearch/A-mem package under the
+# shared retrieval-only evaluator. This is not the A-MEM paper repository.
+schema_version = 1
+name = "LoCoMo paper-v2 A-MEM reusable-package retrieval development"
+baseline_method = "bm25"
+
+[[methods]]
+kind = "bm25"
+id = "bm25"
+limit = 50
+
+[[methods]]
+kind = "external_jsonl"
+id = "amem_openrouter"
+worker_config = "../../external_memory/configs/amem.locomo314.openrouter.development.json"
+command = ["python3", "-m", "semafuse_external_memory.worker"]
+working_directory = "../../external_memory"
+python_path = "../../external_memory/src"
+source_root = "../../external_memory/src/semafuse_external_memory"
+dependency_lock = "../../external_memory/methods/amem/requirements.txt"
+top_k = 50
+max_context_tokens = 16384
+timeout_seconds = 1800

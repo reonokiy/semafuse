@@ -1,33 +1,43 @@
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "label": "development",
   "baseline": "BM25",
   "external_harness": {
     "directory": "../../external_memory/src/semafuse_external_memory",
-    "tree_sha256": "9774729a03268cdfad8b18d9362dbe47b0e188931caf25b738e477a2826aedb1",
-    "amem_adapter_sha256": "f974e6793cb756ffa0ee354f6931bdc4d037dc785acd6e86d6bb2af697c8e393"
+    "tree_sha256": "cd2bc3ba106e0c9c448c8a2c03a28686a78102c2eb1bfdfe1214487f364728eb",
+    "adapter_sha256s": {
+      "adapters/amem.py": "f974e6793cb756ffa0ee354f6931bdc4d037dc785acd6e86d6bb2af697c8e393",
+      "adapters/amem_paper.py": "2af641f804c5c1b5bed77d12f25d6a5499050c5f1a24d4091a1d0031f00e374d"
+    }
   },
   "runs": [
     {
       "id": "semafuse-run",
-      "directory": "../results/semafuse-openrouter",
-      "summary_sha256": "98c5023306ba55e4ab23b17becfd34536f45dc61125cece6ed163a3db0b8d6dc",
-      "per_question_sha256": "6d80f98cc01869692987d0a6613235591ee9513906d8f57030072258dff3c4fb",
-      "manifest_sha256": "36994771fbca2fd69fcb00989a21e9201f56012d9272d2e557c13598347e2365"
+      "directory": "../results/semafuse-openrouter-v2",
+      "summary_sha256": "a943826e4fd56211a5ff8842642ff7d274d421b635c93c3e5d42cbd1692ade65",
+      "per_question_sha256": "1041e58796c0b3182ffe6f25a7efb5bc43e467d9ab1d0b56ec117659a6975c4d",
+      "manifest_sha256": "eea3711922ef3f9bdbb83bfc4f868fddeacce7a31834acd96bcfaa47e37256d1"
     },
     {
       "id": "mem0-run",
-      "directory": "../results/mem0-openrouter",
-      "summary_sha256": "fe08c7f39ac9a7d43ee9be54b65ccb83dc9ca5cbb9a10b5668d70c641fb269e6",
-      "per_question_sha256": "359248cf03febbb8936bba5b322bae8bbcd2939c8ff78899ea1d2c5210b604b0",
-      "manifest_sha256": "93edf5ec9be29dadea1afb3ee4b3fda3fc5689d81b48d44f930847c65945f61f"
+      "directory": "../results/mem0-openrouter-v2",
+      "summary_sha256": "65eab82d9c5e7364d99d7ad25b782897c00f043585b253ef4d9f244c9cf68b6f",
+      "per_question_sha256": "e24168622d7962c5ade065976364f5241c3ec7da3eb7179ff172ba2378435673",
+      "manifest_sha256": "60bb64d0c50effe3c707ad20a8bb04d0045c9dca2ffd5ac681fb626d8eb6b8a1"
     },
     {
       "id": "amem-run",
-      "directory": "../results/amem-openrouter",
-      "summary_sha256": "07f0482e464ff7282f7a2b1d821154334888e1d89fa620488ebbe3e2d11bed9e",
-      "per_question_sha256": "dd48a150a43e39fc2dadca214bec3d2a0ffeade2ea8e6b11e4cb3ca6a0bd4ec7",
-      "manifest_sha256": "ad5f3041ae45ba9cb5fefa97d29e3e96abee0c8ce9dfd664bc884acd2c396c63"
+      "directory": "../results/amem-package-openrouter-v2",
+      "summary_sha256": "3eba3b0624d8cbb32c51968dc333a01d9dbf1a751bed7b4aa977c2f67f4a48c1",
+      "per_question_sha256": "0fa352bd2b5d38f5102654f21dfc53b0c74c8de4f70ef3cdba052f9098503bad",
+      "manifest_sha256": "799339ee28e940a07e8252e63ad3020fc102743790b91be4f593828c7efd42bd"
+    },
+    {
+      "id": "amem-paper-original-run",
+      "directory": "../results/amem-paper-original-openrouter",
+      "summary_sha256": "984c3fa1d75397b5f433688f99a72723c06b0e4a30b559dfd7ce8c15830cdaab",
+      "per_question_sha256": "ad4d1ba1f6c97da8653719c07add511af9b68f2c98afad63a170b8c911f5d0d8",
+      "manifest_sha256": "f9f57507df825c683a01de447e6ce7318cc13303bb20123885f523ee7461c9e0"
     }
   ],
   "methods": [
@@ -47,9 +57,14 @@
       "source_method": "mem0_oss_raw"
     },
     {
-      "name": "A-MEM",
+      "name": "A-MEM package/dev",
       "run": "amem-run",
       "source_method": "amem_openrouter"
+    },
+    {
+      "name": "A-MEM paper-original/common-policy",
+      "run": "amem-paper-original-run",
+      "source_method": "amem_paper_original"
     }
   ]
 }

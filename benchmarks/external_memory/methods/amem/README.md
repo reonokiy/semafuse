@@ -1,4 +1,4 @@
-# A-MEM dependency
+# A-MEM reusable-package development baseline
 
 Create an isolated Python 3.11 or 3.12 environment and install
 `requirements.txt`.

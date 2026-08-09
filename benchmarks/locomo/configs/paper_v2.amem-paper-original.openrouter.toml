@@ -1,0 +1,25 @@
+# Paid development run of the original A-MEM paper structure under the shared
+# retrieval-only evaluator. Activate/install the pinned A-MEM paper worker
+# environment so `python3` resolves to that interpreter. This is not the
+# paper's answer-F1 protocol.
+schema_version = 1
+name = "LoCoMo paper-v2 A-MEM paper-original common retrieval development"
+baseline_method = "bm25"
+
+[[methods]]
+kind = "bm25"
+id = "bm25"
+limit = 50
+
+[[methods]]
+kind = "external_jsonl"
+id = "amem_paper_original"
+worker_config = "../../external_memory/configs/amem_paper_original.locomo314.openrouter.development.json"
+command = ["python3", "-m", "semafuse_external_memory.worker"]
+working_directory = "../../external_memory"
+python_path = "../../external_memory/src"
+source_root = "../../external_memory/src/semafuse_external_memory"
+dependency_lock = "../../external_memory/methods/amem_paper/requirements.lock.txt"
+top_k = 50
+max_context_tokens = 16384
+timeout_seconds = 1800

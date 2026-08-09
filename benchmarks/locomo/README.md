@@ -1,7 +1,7 @@
 # LoCoMo retrieval-only benchmark
 
 This directory configures the native `semafuse-locomo-benchmark` runner. It
-uses the exact LazyMem paper-v2 LoCoMo selection:
+uses the pinned paper-v2 LoCoMo selection:
 
 - `conv-49` and `conv-50`;
 - official categories 1–4;
@@ -12,6 +12,9 @@ uses the exact LazyMem paper-v2 LoCoMo selection:
 The runner accepts only the pinned upstream `locomo10.json` SHA-256 and never
 copies question, answer, conversation, or evidence text into result artifacts.
 Do **not** add the official dataset to this repository.
+
+See [RESULTS.md](RESULTS.md) for the frozen-runner five-method development
+comparison and its reproducibility limits.
 
 LoCoMo data is licensed CC BY-NC 4.0. `--acknowledge-noncommercial` is a
 fail-closed execution guard: pass it only after confirming the intended run is
@@ -86,12 +89,19 @@ worker_config = "../../external_memory/configs/mem0_oss.locomo314.openrouter-raw
 command = ["/absolute/path/to/mem0-venv/bin/python", "-m", "semafuse_external_memory.worker"]
 working_directory = "../../external_memory"
 python_path = "../../external_memory/src"
+source_root = "../../external_memory/src/semafuse_external_memory"
+dependency_lock = "../../external_memory/methods/mem0_oss/requirements.txt"
 top_k = 50
 max_context_tokens = 16384
 timeout_seconds = 600
 ```
 
-The runner appends `--config <resolved-worker-config>` to `command`. External
+The runner binds the selected executable bytes, the complete configured Python
+source tree, the dependency-lock bytes, and an inventory of every distribution
+installed in the actual invocation interpreter into the manifest and run key.
+Files named `requirements.lock.txt` are additionally parsed fail-closed and all
+exact pins must match that environment before execution. The runner then
+appends `--config <resolved-worker-config>` to `command`. External
 items may cite multiple source messages; the common evaluator flattens source
 IDs in native item order, keeps the first occurrence, and caps the message
 ranking at 50. Unknown provenance fails the run. Use each upstream's locked
@@ -109,7 +119,7 @@ First validate each run and obtain the hashes needed by a comparison spec:
 
 ```bash
 python benchmarks/locomo/compact_receipt.py inspect-run \
-  --run-dir benchmarks/locomo/results/semafuse-openrouter
+  --run-dir benchmarks/locomo/results/semafuse-openrouter-v2
 
 python benchmarks/locomo/compact_receipt.py inspect-external-harness \
   --source-dir benchmarks/external_memory/src/semafuse_external_memory
@@ -126,32 +136,42 @@ Create a JSON spec such as:
 
 ```json
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "label": "development",
   "baseline": "BM25",
   "external_harness": {
     "directory": "../../external_memory/src/semafuse_external_memory",
     "tree_sha256": "<inspect-external-harness tree_sha256>",
-    "amem_adapter_sha256": "<inspect-external-harness amem_adapter_sha256>"
+    "adapter_sha256s": {
+      "adapters/amem.py": "<inspect-external-harness adapter sha256>",
+      "adapters/amem_paper.py": "<inspect-external-harness adapter sha256>"
+    }
   },
   "runs": [
     {
       "id": "semafuse-run",
-      "directory": "../results/semafuse-openrouter",
+      "directory": "../results/semafuse-openrouter-v2",
       "summary_sha256": "<sha256>",
       "per_question_sha256": "<sha256>",
       "manifest_sha256": "<sha256>"
     },
     {
       "id": "mem0-run",
-      "directory": "../results/mem0-openrouter",
+      "directory": "../results/mem0-openrouter-v2",
       "summary_sha256": "<sha256>",
       "per_question_sha256": "<sha256>",
       "manifest_sha256": "<sha256>"
     },
     {
       "id": "amem-run",
-      "directory": "../results/amem-openrouter",
+      "directory": "../results/amem-package-openrouter-v2",
+      "summary_sha256": "<sha256>",
+      "per_question_sha256": "<sha256>",
+      "manifest_sha256": "<sha256>"
+    },
+    {
+      "id": "amem-paper-original-run",
+      "directory": "../results/amem-paper-original-openrouter",
       "summary_sha256": "<sha256>",
       "per_question_sha256": "<sha256>",
       "manifest_sha256": "<sha256>"
@@ -161,7 +181,12 @@ Create a JSON spec such as:
     {"name": "BM25", "run": "semafuse-run", "source_method": "bm25"},
     {"name": "Semafuse", "run": "semafuse-run", "source_method": "semafuse::retrieved"},
     {"name": "Mem0", "run": "mem0-run", "source_method": "mem0_oss_raw"},
-    {"name": "A-MEM", "run": "amem-run", "source_method": "amem_openrouter"}
+    {"name": "A-MEM package/dev", "run": "amem-run", "source_method": "amem_openrouter"},
+    {
+      "name": "A-MEM paper-original/common-policy",
+      "run": "amem-paper-original-run",
+      "source_method": "amem_paper_original"
+    }
   ]
 }
 ```
@@ -175,13 +200,14 @@ python benchmarks/locomo/compact_receipt.py build \
   --output benchmarks/locomo/receipts/locomo314.development.receipt.json
 ```
 
-The repository includes that verified development spec and receipt for the
-completed Semafuse, Mem0 OSS raw, and A-MEM comparison. The large run
-directories remain ignored; the spec pins their summary, journal, and embedded
-manifest hashes, while the compact receipt contains only aggregate metrics,
-latency accounting, immutable identities, and validation claims. Rebuilding
-the receipt requires the corresponding local result directories and fails if
-any pinned byte changes.
+The repository includes that verified development spec and receipt for five
+methods assembled from four runs: BM25 and Semafuse, Mem0 OSS raw, the reusable
+A-MEM package, and the A-MEM paper-original backend under the common policy.
+The large run directories remain ignored; the spec pins their summary, journal,
+and embedded manifest hashes, while the compact receipt contains only aggregate
+metrics, latency accounting, immutable identities, and validation claims.
+Rebuilding the receipt requires the corresponding local result directories and
+fails if any pinned byte changes.
 
 `actual_runs.json` records the sequential OpenRouter account-usage observations
 for those runs. Its combined settled window is stronger evidence than the
@@ -233,10 +259,16 @@ current retrieval-only and development manifests therefore cannot silently
 become paper-reproduction results.
 
 The spec also pins a deterministic hash over every `.py` relative path and file
-body in `external_memory/src/semafuse_external_memory`, plus the A-MEM adapter
-file separately. Current run keys do not bind this `python_path` source tree, so
-the receipt explicitly calls it the final audited tree and does not claim that
-an earlier run key cryptographically committed to later adapter patches.
+body in `external_memory/src/semafuse_external_memory`, plus the selected A-MEM
+adapter files separately. For v2 external runs, `run_key_bound=true` means the
+run key contains the executable, Python-tree, dependency-lock, and complete
+installed-distribution inventory hashes and the tree matches this audit. It
+does not mean the declared dependency pins or a VCS commit were verified in the
+invocation environment. That separate fact is reported by
+`dependency_pins_verified`; the paper backend's 72 exact pins verify, while the
+development package and Mem0 Git requirements remain unverified by that check.
+The secret-free version maps from the actual invocation interpreters are kept
+under [`receipts/environments`](receipts/environments/README.md).
 
 ## Score interpretation
 
