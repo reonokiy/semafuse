@@ -1083,17 +1083,22 @@ async fn run(cli: Cli) -> Result<()> {
         Commands::Spool {
             command: SpoolCommands::Replay { db, spool_dir },
         } => {
-            let runtime_config = config::load()?;
-            let store = SqliteStore::open(&db_path(db)).await?;
-            let blob_store =
-                OpenDalBlobStore::from_config_for_store(&runtime_config.blob, &store).await?;
+            let runtime_config = config::load().context("load spool replay configuration")?;
+            let database = db_path(db);
+            let store = SqliteStore::open(&database)
+                .await
+                .with_context(|| format!("open spool replay database {}", database.display()))?;
+            let blob_store = OpenDalBlobStore::from_config_for_store(&runtime_config.blob, &store)
+                .await
+                .context("initialize spool replay blob store")?;
             let count = hooks::replay_spool(
                 &spool_dir.unwrap_or_else(config::default_spool_dir),
                 &store,
                 Some(&blob_store),
                 &runtime_config,
             )
-            .await?;
+            .await
+            .context("replay hook spool")?;
             if json_output {
                 print_json(&json!({"ok":true,"command":"spool.replay","replayed":count}))?;
             } else if count == 0 {

@@ -744,25 +744,31 @@ pub async fn replay_spool(
     blobs: Option<&dyn BlobStore>,
     config: &Config,
 ) -> Result<usize> {
-    secure_spool_dir(dir)?;
+    secure_spool_dir(dir).with_context(|| format!("prepare spool directory {}", dir.display()))?;
+    let replay_lock_path = dir.join("replay.lock");
     let replay_lock = private_open_options()
         .create(true)
         .truncate(false)
         .read(true)
         .write(true)
-        .open(dir.join("replay.lock"))?;
+        .open(&replay_lock_path)
+        .with_context(|| format!("open replay lock {}", replay_lock_path.display()))?;
     secure_open_file(&replay_lock)?;
-    lock_exclusive_wait(&replay_lock)?;
+    lock_exclusive_wait(&replay_lock)
+        .with_context(|| format!("acquire replay lock {}", replay_lock_path.display()))?;
+    let append_lock_path = dir.join("hooks.lock");
     let append_lock = private_open_options()
         .create(true)
         .truncate(false)
         .read(true)
         .write(true)
-        .open(dir.join("hooks.lock"))?;
+        .open(&append_lock_path)
+        .with_context(|| format!("open append lock {}", append_lock_path.display()))?;
     secure_open_file(&append_lock)?;
-    lock_exclusive_wait(&append_lock)?;
-    recover_pending_spool_writes(dir)?;
-    remove_incomplete_forget_files(dir)?;
+    lock_exclusive_wait(&append_lock)
+        .with_context(|| format!("acquire append lock {}", append_lock_path.display()))?;
+    recover_pending_spool_writes(dir).context("recover interrupted spool writes")?;
+    remove_incomplete_forget_files(dir).context("remove interrupted spool forget files")?;
     let live = dir.join("hooks.jsonl");
     if live.exists() && live.metadata()?.len() > 0 {
         let stem = format!(
@@ -778,9 +784,16 @@ pub async fn replay_spool(
             }
             suffix += 1;
         };
-        fs::rename(&live, claimed)?;
+        fs::rename(&live, &claimed).with_context(|| {
+            format!(
+                "claim live spool generation {} as {}",
+                live.display(),
+                claimed.display()
+            )
+        })?;
     }
-    let pending = fs::read_dir(dir)?
+    let pending = fs::read_dir(dir)
+        .with_context(|| format!("list pending spool files in {}", dir.display()))?
         .filter_map(|entry| entry.ok())
         .map(|entry| entry.path())
         .filter(|path| {
@@ -790,7 +803,11 @@ pub async fn replay_spool(
         })
         .collect::<Vec<_>>();
     for path in pending {
-        let file = private_open_options().read(true).write(true).open(&path)?;
+        let file = private_open_options()
+            .read(true)
+            .write(true)
+            .open(&path)
+            .with_context(|| format!("open pending spool {}", path.display()))?;
         match file.try_lock_exclusive() {
             Ok(()) => {
                 let name = path
@@ -798,18 +815,31 @@ pub async fn replay_spool(
                     .and_then(|name| name.to_str())
                     .context("non-Unicode pending spool filename")?;
                 let claimed = dir.join(name.replacen("hooks.pending.", "hooks.replay.", 1));
-                file.unlock()?;
+                file.unlock()
+                    .with_context(|| format!("unlock pending spool {}", path.display()))?;
                 drop(file);
-                fs::rename(path, claimed)?;
+                fs::rename(&path, &claimed).with_context(|| {
+                    format!(
+                        "claim pending spool {} as {}",
+                        path.display(),
+                        claimed.display()
+                    )
+                })?;
             }
             Err(error) if lock_is_contended(&error) => {}
-            Err(error) => return Err(error.into()),
+            Err(error) => {
+                return Err(error)
+                    .with_context(|| format!("lock pending spool {}", path.display()));
+            }
         }
     }
-    append_lock.unlock()?;
+    append_lock
+        .unlock()
+        .with_context(|| format!("release append lock {}", append_lock_path.display()))?;
     let lifecycle_guard = store.lock_lifecycle()?;
 
-    let mut generations = fs::read_dir(dir)?
+    let mut generations = fs::read_dir(dir)
+        .with_context(|| format!("list replay generations in {}", dir.display()))?
         .filter_map(|entry| entry.ok())
         .map(|entry| entry.path())
         .filter(|path| {
@@ -834,13 +864,18 @@ pub async fn replay_spool(
         let generation_lock = private_open_options()
             .read(true)
             .write(true)
-            .open(&generation)?;
+            .open(&generation)
+            .with_context(|| format!("open replay generation {}", generation.display()))?;
         match generation_lock.try_lock_exclusive() {
             Ok(()) => {}
             Err(error) if lock_is_contended(&error) => continue,
-            Err(error) => return Err(error.into()),
+            Err(error) => {
+                return Err(error)
+                    .with_context(|| format!("lock replay generation {}", generation.display()));
+            }
         }
-        let text = fs::read_to_string(&generation)?;
+        let text = fs::read_to_string(&generation)
+            .with_context(|| format!("read replay generation {}", generation.display()))?;
         for line in text.lines().filter(|line| !line.trim().is_empty()) {
             let record: SpoolRecord = serde_json::from_str(line)?;
             let adapter = crate::adapters::hook_projector(record.agent);
@@ -880,9 +915,12 @@ pub async fn replay_spool(
             unmanaged_attachment_objects += ingest_stats.unmanaged_attachment_objects;
             count += 1;
         }
-        generation_lock.unlock()?;
+        generation_lock
+            .unlock()
+            .with_context(|| format!("unlock replay generation {}", generation.display()))?;
         drop(generation_lock);
-        fs::remove_file(generation)?;
+        fs::remove_file(&generation)
+            .with_context(|| format!("remove replay generation {}", generation.display()))?;
     }
     drop(lifecycle_guard);
     cleanup_replayed_attachments(
@@ -895,7 +933,9 @@ pub async fn replay_spool(
     if let Err(error) = strategy::dispatch_pending(store, config, None).await {
         eprintln!("semafuse strategy delivery pending: {error:#}");
     }
-    replay_lock.unlock()?;
+    replay_lock
+        .unlock()
+        .with_context(|| format!("release replay lock {}", replay_lock_path.display()))?;
     Ok(count)
 }
 
