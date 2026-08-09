@@ -1976,7 +1976,7 @@ fn deadline_hook_discards_a_forgotten_pending_spool_while_lifecycle_is_busy() {
 #[test]
 fn sqlite_database_path_accepts_url_characters() {
     let temp = TempDir::new().unwrap();
-    let db = temp.path().join("history?2026.db");
+    let db = temp.path().join("history#2026.db");
     bin().args(["init", "--db"]).arg(&db).assert().success();
     assert!(db.is_file());
 }
