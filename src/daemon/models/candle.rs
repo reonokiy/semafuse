@@ -1,17 +1,17 @@
 use std::{fs, path::Path, sync::Arc};
 
+use crate::daemon_ipc::protocol::ModelIdentity;
 use candle_core::{DType, Device, Tensor};
 use candle_nn::VarBuilder;
 use candle_transformers::models::xlm_roberta::{
     Config as XlmRobertaConfig, XLMRobertaForSequenceClassification,
 };
 use fastembed::{Qwen3Config, Qwen3Model, Qwen3TextEmbedding};
-use semafuse::daemon_ipc::protocol::ModelIdentity;
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use tokenizers::{PaddingDirection, PaddingStrategy, Tokenizer, TruncationParams};
 
-use crate::{
+use crate::daemon::{
     config::{EmbeddingModelConfig, ModelsConfig, RerankerModelConfig},
     models::{EmbeddingEngine, ModelEngineError, ModelEngines, RerankerEngine},
 };

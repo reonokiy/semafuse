@@ -3,7 +3,8 @@
 //! The released LoCoMo JSON keeps answers, question categories, evidence
 //! references, and source dialog identifiers next to the conversation text.
 //! This module separates those annotations from the serializable
-//! [`BenchmarkInput`] given to a memory system. Every question, session, and
+//! [`crate::longmemeval::BenchmarkInput`] given to a memory system. Every
+//! question, session, and
 //! message identifier in that input is a deterministic opaque digest.
 //!
 //! LoCoMo data is licensed under CC BY-NC 4.0. Parsing is fail-closed unless

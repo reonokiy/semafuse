@@ -3,7 +3,7 @@
 //! The types in this module deliberately mirror the normalized JSONL records
 //! emitted by `benchmarks/lazymem`. Benchmark histories are never mixed with a
 //! user's durable store: one-shot calls get a fresh in-memory SQLite store,
-//! while [`StrategyRetrievalSession`] owns one isolated store per explicitly
+//! while [`StrategyRetrievalSession`](crate::benchmark::StrategyRetrievalSession) owns one isolated store per explicitly
 //! identity-checked shared history. Both paths use ordinary ingestion, strategy
 //! dispatch, and timed recall APIs.
 

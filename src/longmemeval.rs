@@ -2,7 +2,8 @@
 //!
 //! LongMemEval places evaluator annotations next to the messages that a memory
 //! system consumes.  This module deliberately splits every question into a
-//! serializable [`BenchmarkInput`] and a non-serializable [`EvaluatorOnly`]
+//! serializable [`BenchmarkInput`](crate::longmemeval::BenchmarkInput) and a
+//! non-serializable [`EvaluatorOnly`](crate::longmemeval::EvaluatorOnly)
 //! view.  The former contains only opaque identifiers, message text, roles,
 //! and the original timestamps.  Source identifiers and all answer labels stay
 //! in the evaluator view.

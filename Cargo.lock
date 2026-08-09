@@ -9254,11 +9254,15 @@ dependencies = [
  "assert_cmd",
  "async-trait",
  "base64 0.22.1",
+ "candle-core",
+ "candle-nn",
+ "candle-transformers",
  "chrono",
  "clap",
  "config",
  "dirs",
  "dotenvy",
+ "fastembed",
  "fs2",
  "hex",
  "indicatif",
@@ -9275,33 +9279,13 @@ dependencies = [
  "shell-escape",
  "sqlx",
  "tempfile",
- "tokio",
- "walkdir",
-]
-
-[[package]]
-name = "semafused"
-version = "0.1.0"
-dependencies = [
- "async-trait",
- "candle-core",
- "candle-nn",
- "candle-transformers",
- "clap",
- "fastembed",
- "hex",
- "rustix",
- "semafuse",
- "serde",
- "serde_json",
- "sha2 0.10.9",
- "tempfile",
  "thiserror 2.0.18",
  "tokenizers",
  "tokio",
  "toml 0.8.23",
  "tracing",
  "tracing-subscriber",
+ "walkdir",
 ]
 
 [[package]]

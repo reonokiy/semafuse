@@ -3,14 +3,14 @@ use std::{
     sync::Arc,
 };
 
-use async_trait::async_trait;
-use semafuse::daemon_ipc::protocol::{
+use crate::daemon_ipc::protocol::{
     DaemonRequest, DaemonResponse, DaemonState, DaemonStatus, ErrorCode, ModelRequest,
     ProtocolError, RequestEnvelope, ResponseEnvelope, ServiceResponse, ServiceState,
 };
+use async_trait::async_trait;
 use serde_json::Value;
 
-use crate::error::{DaemonError, Result};
+use crate::daemon::error::{DaemonError, Result};
 
 #[derive(Debug)]
 pub enum ServiceRequest {
@@ -115,7 +115,7 @@ pub(crate) fn protocol_error(
     message: impl Into<String>,
     retryable: bool,
 ) -> ProtocolError {
-    use semafuse::daemon_ipc::protocol::MAX_ERROR_MESSAGE_BYTES;
+    use crate::daemon_ipc::protocol::MAX_ERROR_MESSAGE_BYTES;
 
     let mut message = message.into();
     if message.len() > MAX_ERROR_MESSAGE_BYTES {
@@ -135,7 +135,7 @@ pub(crate) fn protocol_error(
 
 #[cfg(test)]
 mod tests {
-    use semafuse::daemon_ipc::protocol::{ModelRequest, ResponseEnvelope};
+    use crate::daemon_ipc::protocol::{ModelRequest, ResponseEnvelope};
 
     use super::*;
 

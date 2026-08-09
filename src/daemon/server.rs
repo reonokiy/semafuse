@@ -11,8 +11,8 @@ use std::{
     time::Duration,
 };
 
+use crate::daemon_ipc::protocol::ResponseEnvelope;
 use rustix::process::geteuid;
-use semafuse::daemon_ipc::protocol::ResponseEnvelope;
 use tokio::{
     net::{UnixListener, UnixStream},
     sync::Semaphore,
@@ -21,7 +21,7 @@ use tokio::{
 };
 use tracing::{debug, error, warn};
 
-use crate::{
+use crate::daemon::{
     config::Config,
     error::{DaemonError, Result},
     ipc::{read_request, write_response},

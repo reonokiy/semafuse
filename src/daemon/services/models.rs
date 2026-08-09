@@ -1,17 +1,17 @@
 use std::sync::Arc;
 
-use async_trait::async_trait;
-use semafuse::daemon_ipc::protocol::{
+use crate::daemon_ipc::protocol::{
     ErrorCode, IndexedEmbedding, IndexedScore, MAX_EMBEDDING_DIMENSIONS, MAX_EMBEDDING_VALUES,
     MAX_FINGERPRINT_BYTES, MAX_ITEMS, MAX_TEXT_BYTES, MAX_TOTAL_TEXT_BYTES, ModelRequest,
     ModelResponse, ModelServiceStatus, ProtocolError, ServiceResponse, ServiceState,
 };
+use async_trait::async_trait;
 use tokio::{
     sync::{OwnedSemaphorePermit, Semaphore},
     task,
 };
 
-use crate::{
+use crate::daemon::{
     models::{EmbeddingEngine, ModelEngineError, ModelEngines, RerankerEngine},
     router::{Service, ServiceRequest, protocol_error},
 };
@@ -404,10 +404,10 @@ fn map_engine_error(error: ModelEngineError) -> ProtocolError {
 mod tests {
     use std::{thread, time::Duration};
 
-    use semafuse::daemon_ipc::protocol::{ModelIdentity, RequestEnvelope, ResponseEnvelope};
+    use crate::daemon_ipc::protocol::{ModelIdentity, RequestEnvelope, ResponseEnvelope};
     use tokio::sync::Barrier;
 
-    use crate::router::ServiceRouter;
+    use crate::daemon::router::ServiceRouter;
 
     use super::*;
 

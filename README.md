@@ -58,7 +58,7 @@ mise use -g github:reonokiy/semafuse@0.1.0
 
 Because this repository is private, authenticate mise through the GitHub CLI or set
 `MISE_GITHUB_TOKEN` to a token with read access to the repository. The release workflow
-accepts only a `v<version>` tag matching both Rust packages, reruns the same Rust and Web
+accepts only a `v<version>` tag matching the Rust package, reruns the same Rust and Web
 quality checks used for pushes and pull requests, and smoke-tests every supported binary.
 Each Linux/macOS archive contains `semafuse`, a models-candle-enabled `semafused`, the
 daemon example config, and the license; the Windows archive contains `semafuse.exe` and
@@ -69,7 +69,7 @@ To build and install from source instead:
 
 ```bash
 cargo install --path . --locked
-cargo install --path semafused --locked --features models-candle
+cargo install --path . --locked --bin semafused --no-default-features --features models-candle
 ```
 
 Rust, Node.js, and pnpm are pinned in `rust-toolchain.toml`, `mise.toml`, and
@@ -81,12 +81,14 @@ distribution build toolchain on Linux). On Unix, reproduce CI locally with:
 mise install
 
 cargo fmt --all -- --check
-cargo clippy --locked --workspace --all-targets -- -D warnings
-cargo clippy --locked -p semafused --all-targets --features models-candle -- -D warnings
-cargo test --locked --workspace --all-targets
-cargo test --locked -p semafused --all-targets --features models-candle
-RUSTDOCFLAGS="-D warnings" cargo doc --locked --workspace --no-deps
-RUSTDOCFLAGS="-D warnings" cargo doc --locked -p semafused --no-deps --features models-candle
+cargo clippy --locked --all-targets -- -D warnings
+cargo clippy --locked --all-targets --no-default-features --features daemon -- -D warnings
+cargo clippy --locked --all-targets --no-default-features --features models-candle -- -D warnings
+cargo test --locked --all-targets
+cargo test --locked --all-targets --features daemon
+cargo test --locked --all-targets --features models-candle
+RUSTDOCFLAGS="-D warnings" cargo doc --locked --no-deps
+RUSTDOCFLAGS="-D warnings" cargo doc --locked --no-deps --no-default-features --features models-candle
 
 pnpm --dir web install --frozen-lockfile
 pnpm --dir web check
@@ -123,10 +125,10 @@ never falls back from a failed local request to HTTP. Install the optional
 models-enabled daemon separately:
 
 ```bash
-cargo install --path semafused --locked --features models-candle
+cargo install --path . --locked --bin semafused --no-default-features --features models-candle
 ```
 
-See [the semafused guide](semafused/README.md) for strict local model layout,
+See [the semafused guide](docs/semafused.md) for strict local model layout,
 configuration, foreground execution, and supervisor examples. Inspect an
 already-running process without changing it with:
 
@@ -700,12 +702,12 @@ cargo sqlx prepare
 `.sqlx/` must be committed together with queries; it enables `query!` / `query_as!` to perform compile-time SQL validation
 in build environments without a database connection.
 
-Run the Unix workspace and models-candle gates in [Build and Install](#build-and-install).
+Run the Unix package and models-candle gates in [Build and Install](#build-and-install).
 After they pass, build the same two Rust executables shipped on Unix:
 
 ```bash
 cargo build --locked --release -p semafuse --bin semafuse
-cargo build --locked --release -p semafused --bin semafused --features models-candle
+cargo build --locked --release -p semafuse --bin semafused --no-default-features --features models-candle
 ```
 
 Tests cover import and deduplication for all four agents, cross-agent hook recall, OpenDAL image storage, spool

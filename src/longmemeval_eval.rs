@@ -3,7 +3,9 @@
 //! This module deliberately performs no HTTP or model invocation.  The caller
 //! generates one answer for every selected LongMemEval question, including
 //! abstention questions, then passes the judge prompt to its pinned judge
-//! backend and applies [`judge_response_is_correct`] to the raw response.
+//! backend and applies
+//! [`judge_response_is_correct`](crate::longmemeval_eval::judge_response_is_correct)
+//! to the raw response.
 
 use serde::{Deserialize, Serialize};
 use std::{error::Error, fmt, str::FromStr};

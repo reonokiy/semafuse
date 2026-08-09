@@ -1,7 +1,7 @@
 use std::{path::PathBuf, process::ExitCode};
 
 use clap::Parser;
-use semafused::{Config, Server};
+use semafuse::daemon::{Config, Server};
 use tracing::{error, info};
 use tracing_subscriber::EnvFilter;
 
@@ -36,7 +36,7 @@ async fn main() -> ExitCode {
     }
 }
 
-async fn run(args: Args) -> semafused::Result<()> {
+async fn run(args: Args) -> semafuse::daemon::Result<()> {
     let config = Config::load(&args.config)?;
     let server = Server::from_config(config).await?;
     info!(socket = %server.socket_path().display(), "starting semafused");

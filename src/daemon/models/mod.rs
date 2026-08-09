@@ -6,10 +6,10 @@
 
 use std::sync::Arc;
 
-use semafuse::daemon_ipc::protocol::ModelIdentity;
+use crate::daemon_ipc::protocol::ModelIdentity;
 use thiserror::Error;
 
-use crate::config::ModelsConfig;
+use crate::daemon::config::ModelsConfig;
 
 #[derive(Debug, Error)]
 pub enum ModelEngineError {

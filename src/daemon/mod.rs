@@ -4,6 +4,7 @@
 //! It intentionally contains no daemonization or process-management commands.
 //! A supervisor owns the process lifecycle; clients communicate over a local
 //! Unix-domain socket.
+#![deny(unsafe_code)]
 
 pub mod config;
 pub mod error;

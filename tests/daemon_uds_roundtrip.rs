@@ -1,13 +1,15 @@
+#![cfg(all(feature = "daemon", unix))]
+
 use std::{fs, os::unix::fs::PermissionsExt, sync::Arc, time::Duration};
 
-use semafuse::{
-    daemon_ipc::protocol::ModelIdentity,
-    daemon_ipc::{DaemonClient, ModelServiceClient},
-};
-use semafused::{
+use semafuse::daemon::{
     Config, DaemonError, Server, ServiceRouter,
     models::{EmbeddingEngine, ModelEngineError, ModelEngines, RerankerEngine},
     services::ModelsService,
+};
+use semafuse::{
+    daemon_ipc::protocol::ModelIdentity,
+    daemon_ipc::{DaemonClient, ModelServiceClient},
 };
 use tempfile::TempDir;
 use tokio::sync::oneshot;

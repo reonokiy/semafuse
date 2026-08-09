@@ -25,6 +25,10 @@ pub mod benchmark_suite;
 pub mod blob;
 /// Configuration defaults, loading, and validation.
 pub mod config;
+/// Foreground daemon, local services, and Unix-socket server.
+#[cfg(feature = "daemon")]
+#[allow(missing_docs)]
+pub mod daemon;
 #[doc(hidden)]
 pub mod daemon_ipc;
 /// Portable export and explicit retention operations.

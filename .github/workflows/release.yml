@@ -34,10 +34,9 @@ jobs:
         shell: bash
         run: |
           crate_version="$(awk -F '"' '/^version = "/ { print $2; exit }' Cargo.toml)"
-          daemon_version="$(awk -F '"' '/^version = "/ { print $2; exit }' semafused/Cargo.toml)"
           tag_version="${GITHUB_REF_NAME#v}"
-          if [[ "$tag_version" != "$crate_version" || "$tag_version" != "$daemon_version" ]]; then
-            echo "Tag $GITHUB_REF_NAME does not match package versions (semafuse=$crate_version, semafused=$daemon_version)" >&2
+          if [[ "$tag_version" != "$crate_version" ]]; then
+            echo "Tag $GITHUB_REF_NAME does not match the Semafuse package version ($crate_version)" >&2
             exit 1
           fi
 
@@ -82,7 +81,7 @@ jobs:
       - name: Build semafused release binary
         if: matrix.archive == 'tar.gz'
         shell: bash
-        run: cargo build --locked --release --target "${{ matrix.target }}" -p semafused --bin semafused --features models-candle
+        run: cargo build --locked --release --target "${{ matrix.target }}" -p semafuse --bin semafused --no-default-features --features models-candle
       - name: Smoke-test semafuse
         shell: bash
         run: |
@@ -104,7 +103,7 @@ jobs:
           mkdir -p dist "$staging"
           cp "target/${{ matrix.target }}/release/semafuse" "$staging/"
           cp "target/${{ matrix.target }}/release/semafused" "$staging/"
-          cp semafused/semafused.example.toml "$staging/"
+          cp semafused.example.toml "$staging/"
           cp LICENSE "$staging/"
           tar -C "$staging" -czf "dist/$archive" semafuse semafused semafused.example.toml LICENSE
       - name: Package Windows binary

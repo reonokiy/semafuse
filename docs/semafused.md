@@ -16,22 +16,22 @@ The light build contains the daemon, protocol router, and injectable service
 boundary but no model runtime:
 
 ```sh
-cargo build --release -p semafused
+cargo build --release --bin semafused --no-default-features --features daemon
 ```
 
 For the production local Qwen embedding and BGE reranker service, enable the
 model feature explicitly:
 
 ```sh
-cargo build --release -p semafused --features models-candle
+cargo build --release --bin semafused --no-default-features --features models-candle
 # or
-cargo install --path semafused --locked --features models-candle
+cargo install --path . --locked --bin semafused --no-default-features --features models-candle
 ```
 
 `models-mkl` additionally enables Intel MKL where the host supports it:
 
 ```sh
-cargo build --release -p semafused --features models-mkl
+cargo build --release --bin semafused --no-default-features --features models-mkl
 ```
 
 The current model loader runs on CPU; `models-mkl` can accelerate supported
@@ -67,7 +67,7 @@ weights, maximum length, and implementation version into a `sha256:` identity,
 then runs golden inference checks. A mismatched or incompatible checkpoint
 causes startup to fail instead of serving silently different vectors.
 
-Copy [semafused.example.toml](./semafused.example.toml), replace all paths with
+Copy [semafused.example.toml](../semafused.example.toml), replace all paths with
 absolute paths, and keep the socket inside a private directory. TOML does not
 expand `$HOME` or `$XDG_RUNTIME_DIR`.
 

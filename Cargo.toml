@@ -5,13 +5,29 @@ edition = "2024"
 description = "Local, agent-neutral conversation memory for coding agents"
 license = "MIT"
 
-[workspace]
-members = ["semafused"]
-default-members = ["."]
-resolver = "3"
-
 [features]
 default = ["services-fs"]
+daemon = [
+    "dep:thiserror",
+    "dep:toml",
+    "dep:tracing",
+    "dep:tracing-subscriber",
+    "tokio/signal",
+]
+models-candle = [
+    "daemon",
+    "dep:candle-core",
+    "dep:candle-nn",
+    "dep:candle-transformers",
+    "dep:fastembed",
+    "dep:tokenizers",
+]
+models-mkl = [
+    "models-candle",
+    "candle-core/mkl",
+    "candle-nn/mkl",
+    "fastembed/mkl",
+]
 services-aliyun-drive = ["opendal/services-aliyun-drive"]
 services-alluxio = ["opendal/services-alluxio"]
 services-azblob = ["opendal/services-azblob"]
@@ -104,7 +120,25 @@ rustix = { version = "1", features = ["process"] }
 nltk-porter = "0.1"
 tempfile = "3.20"
 walkdir = "2.5"
+thiserror = { version = "2", optional = true }
+toml = { version = "0.8", optional = true }
+tracing = { version = "0.1", optional = true }
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"], optional = true }
+
+# Keep these versions aligned. FastEmbed 5.17.3 uses Candle 0.11 and
+# tokenizers 0.22.2. The dependency is feature-gated because FastEmbed also
+# pulls its ORT integration even when only its Candle Qwen3 model is used.
+candle-core = { version = "=0.11.0", optional = true }
+candle-nn = { version = "=0.11.0", optional = true }
+candle-transformers = { version = "=0.11.0", optional = true }
+fastembed = { version = "=5.17.3", default-features = false, features = ["qwen3", "ort-load-dynamic"], optional = true }
+tokenizers = { version = "=0.22.2", default-features = false, features = ["onig"], optional = true }
 
 [dev-dependencies]
 assert_cmd = "2.0"
 predicates = "3.1"
+
+[[bin]]
+name = "semafused"
+path = "src/bin/semafused.rs"
+required-features = ["daemon"]

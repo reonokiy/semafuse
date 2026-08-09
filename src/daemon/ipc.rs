@@ -2,14 +2,14 @@
 
 use std::io;
 
-use semafuse::daemon_ipc::protocol::{
+use crate::daemon_ipc::protocol::{
     ErrorCode, FrameHeader, FrameKind, HEADER_LEN, HeaderError, MAX_REQUEST_PAYLOAD_BYTES,
     MAX_RESPONSE_PAYLOAD_BYTES, ProtocolError, RequestEnvelope, ResponseEnvelope,
 };
 use thiserror::Error;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
-pub use semafuse::daemon_ipc::protocol;
+pub use crate::daemon_ipc::protocol;
 
 #[derive(Debug)]
 pub struct IncomingRequest {
@@ -158,7 +158,7 @@ where
 }
 
 fn truncate_error_message(mut message: String) -> String {
-    use semafuse::daemon_ipc::protocol::MAX_ERROR_MESSAGE_BYTES;
+    use crate::daemon_ipc::protocol::MAX_ERROR_MESSAGE_BYTES;
 
     if message.len() <= MAX_ERROR_MESSAGE_BYTES {
         return message;
@@ -173,7 +173,7 @@ fn truncate_error_message(mut message: String) -> String {
 
 #[cfg(test)]
 mod tests {
-    use semafuse::daemon_ipc::protocol::{DaemonRequest, RequestEnvelope};
+    use crate::daemon_ipc::protocol::{DaemonRequest, RequestEnvelope};
 
     use super::*;
 

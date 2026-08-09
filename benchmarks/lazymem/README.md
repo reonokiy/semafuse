@@ -342,7 +342,7 @@ model, and the copied TOML with the output journal.
 
 The embedding and reranker can be moved off the HTTP path without moving them
 into each short-lived Semafuse command. Install and start
-[`semafused`](../../semafused/README.md) separately, using absolute local
+[`semafused`](../../docs/semafused.md) separately, using absolute local
 directories for `Qwen/Qwen3-Embedding-0.6B` and
 `BAAI/bge-reranker-v2-m3`. After it reports ready, inspect its semantic
 fingerprints:

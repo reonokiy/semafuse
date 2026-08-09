@@ -32,21 +32,25 @@ jobs:
       - name: Check formatting
         run: cargo fmt --all -- --check
       - name: Run Clippy
-        run: cargo clippy --locked --workspace --all-targets -- -D warnings
+        run: cargo clippy --locked --all-targets -- -D warnings
+      - name: Run daemon Clippy
+        run: cargo clippy --locked --all-targets --no-default-features --features daemon -- -D warnings
       - name: Run models-candle Clippy
-        run: cargo clippy --locked -p semafused --all-targets --features models-candle -- -D warnings
+        run: cargo clippy --locked --all-targets --no-default-features --features models-candle -- -D warnings
       - name: Run tests
-        run: cargo test --locked --workspace --all-targets
+        run: cargo test --locked --all-targets
+      - name: Run daemon tests
+        run: cargo test --locked --all-targets --features daemon
       - name: Run models-candle tests
-        run: cargo test --locked -p semafused --all-targets --features models-candle
+        run: cargo test --locked --all-targets --features models-candle
       - name: Build documentation
         env:
           RUSTDOCFLAGS: -D warnings
-        run: cargo doc --locked --workspace --no-deps
+        run: cargo doc --locked --no-deps
       - name: Build models-candle documentation
         env:
           RUSTDOCFLAGS: -D warnings
-        run: cargo doc --locked -p semafused --no-deps --features models-candle
+        run: cargo doc --locked --no-deps --no-default-features --features models-candle
 
   rust-platforms:
     name: Rust (${{ matrix.runner }})
@@ -55,10 +59,8 @@ jobs:
       matrix:
         include:
           - runner: macos-15
-            package_args: --workspace
             test_models_candle: true
           - runner: windows-2025
-            package_args: -p semafuse
             test_models_candle: false
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 45
@@ -70,15 +72,21 @@ jobs:
       - name: Report Rust toolchain
         run: rustc --version --verbose
       - name: Check all targets
-        run: cargo check --locked --all-targets ${{ matrix.package_args }}
+        run: cargo check --locked --all-targets
       - name: Run tests
-        run: cargo test --locked --all-targets ${{ matrix.package_args }}
+        run: cargo test --locked --all-targets
+      - name: Check daemon
+        if: matrix.test_models_candle
+        run: cargo check --locked --all-targets --no-default-features --features daemon
+      - name: Test daemon
+        if: matrix.test_models_candle
+        run: cargo test --locked --all-targets --features daemon
       - name: Check models-candle daemon
         if: matrix.test_models_candle
-        run: cargo check --locked -p semafused --all-targets --features models-candle
+        run: cargo check --locked --all-targets --no-default-features --features models-candle
       - name: Test models-candle daemon
         if: matrix.test_models_candle
-        run: cargo test --locked -p semafused --all-targets --features models-candle
+        run: cargo test --locked --all-targets --features models-candle
 
   web:
     name: Web

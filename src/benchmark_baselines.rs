@@ -1,6 +1,7 @@
 //! Deterministic, model-free baselines for message-retrieval benchmarks.
 //!
-//! Gold message and session labels are deliberately absent from [`Message`].
+//! Gold message and session labels are deliberately absent from
+//! [`Message`](crate::benchmark_baselines::Message).
 //! Oracle labels enter only through evaluator-side function arguments, which
 //! prevents them from leaking into BM25 text or another deployable baseline.
 

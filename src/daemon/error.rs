@@ -2,7 +2,7 @@ use std::{io, path::PathBuf};
 
 use thiserror::Error;
 
-use crate::config::ConfigLoadError;
+use crate::daemon::config::ConfigLoadError;
 
 pub type Result<T, E = DaemonError> = std::result::Result<T, E>;
 
