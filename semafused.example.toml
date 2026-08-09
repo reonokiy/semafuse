@@ -8,6 +8,10 @@ shutdown_grace_ms = 5000
 
 [services.models]
 max_concurrent_inferences = 1
+# auto selects a compiled CUDA device first, then Metal on macOS, then CPU.
+# Use cpu, cuda, or metal to require one backend and fail instead of falling back.
+device = "auto"
+device_ordinal = 0
 
 [services.models.embedding]
 model_dir = "/absolute/path/to/Qwen3-Embedding-0.6B"

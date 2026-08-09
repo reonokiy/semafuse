@@ -10,9 +10,12 @@ use fastembed::{Qwen3Config, Qwen3Model, Qwen3TextEmbedding};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use tokenizers::{PaddingDirection, PaddingStrategy, Tokenizer, TruncationParams};
+use tracing::info;
+#[cfg(any(feature = "models-cuda", target_os = "macos"))]
+use tracing::warn;
 
 use crate::daemon::{
-    config::{EmbeddingModelConfig, ModelsConfig, RerankerModelConfig},
+    config::{EmbeddingModelConfig, ModelDevice, ModelsConfig, RerankerModelConfig},
     models::{EmbeddingEngine, ModelEngineError, ModelEngines, RerankerEngine},
 };
 
@@ -21,22 +24,117 @@ const CONFIG_FILE: &str = "config.json";
 const TOKENIZER_FILE: &str = "tokenizer.json";
 
 pub(super) fn load_engines(config: &ModelsConfig) -> Result<ModelEngines, String> {
+    let selected = select_device(config.device, config.device_ordinal)?;
+    info!(
+        requested = ?config.device,
+        selected = %selected.fingerprint_tag,
+        "selected Candle model device"
+    );
     let embedding = config
         .embedding
         .as_ref()
-        .map(QwenEmbeddingEngine::load)
+        .map(|config| QwenEmbeddingEngine::load(config, &selected))
         .transpose()?
         .map(|engine| Arc::new(engine) as Arc<dyn EmbeddingEngine>);
     let reranker = config
         .reranker
         .as_ref()
-        .map(BgeRerankerEngine::load)
+        .map(|config| BgeRerankerEngine::load(config, &selected))
         .transpose()?
         .map(|engine| Arc::new(engine) as Arc<dyn RerankerEngine>);
     Ok(ModelEngines {
         embedding,
         reranker,
     })
+}
+
+#[derive(Debug)]
+struct SelectedDevice {
+    device: Device,
+    fingerprint_tag: String,
+}
+
+fn select_device(requested: ModelDevice, ordinal: usize) -> Result<SelectedDevice, String> {
+    match requested {
+        ModelDevice::Auto => Ok(select_automatic_device(ordinal)),
+        ModelDevice::Cpu => Ok(cpu_device()),
+        ModelDevice::Cuda => cuda_device(ordinal),
+        ModelDevice::Metal => metal_device(ordinal),
+    }
+}
+
+fn select_automatic_device(_ordinal: usize) -> SelectedDevice {
+    #[cfg(feature = "models-cuda")]
+    match Device::new_cuda(_ordinal) {
+        Ok(device) => {
+            return SelectedDevice {
+                device,
+                fingerprint_tag: format!("cuda:{_ordinal}"),
+            };
+        }
+        Err(error) => {
+            warn!(%error, ordinal = _ordinal, "CUDA is unavailable; trying the next Candle backend")
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    match Device::new_metal(_ordinal) {
+        Ok(device) => {
+            return SelectedDevice {
+                device,
+                fingerprint_tag: format!("metal:{_ordinal}"),
+            };
+        }
+        Err(error) => {
+            warn!(%error, ordinal = _ordinal, "Metal is unavailable; falling back to Candle CPU")
+        }
+    }
+
+    cpu_device()
+}
+
+fn cpu_device() -> SelectedDevice {
+    let implementation = if cfg!(feature = "models-mkl") {
+        "cpu:mkl"
+    } else if cfg!(target_os = "macos") {
+        "cpu:accelerate"
+    } else {
+        "cpu"
+    };
+    SelectedDevice {
+        device: Device::Cpu,
+        fingerprint_tag: implementation.to_owned(),
+    }
+}
+
+#[cfg(feature = "models-cuda")]
+fn cuda_device(ordinal: usize) -> Result<SelectedDevice, String> {
+    Device::new_cuda(ordinal)
+        .map(|device| SelectedDevice {
+            device,
+            fingerprint_tag: format!("cuda:{ordinal}"),
+        })
+        .map_err(|error| format!("failed to initialize requested CUDA device {ordinal}: {error}"))
+}
+
+#[cfg(not(feature = "models-cuda"))]
+fn cuda_device(_ordinal: usize) -> Result<SelectedDevice, String> {
+    Err("CUDA was requested, but semafused was built without `models-cuda`".to_owned())
+}
+
+#[cfg(target_os = "macos")]
+fn metal_device(ordinal: usize) -> Result<SelectedDevice, String> {
+    Device::new_metal(ordinal)
+        .map(|device| SelectedDevice {
+            device,
+            fingerprint_tag: format!("metal:{ordinal}"),
+        })
+        .map_err(|error| format!("failed to initialize requested Metal device {ordinal}: {error}"))
+}
+
+#[cfg(not(target_os = "macos"))]
+fn metal_device(_ordinal: usize) -> Result<SelectedDevice, String> {
+    Err("Metal was requested, but semafused was not built for macOS".to_owned())
 }
 
 struct QwenEmbeddingEngine {
@@ -46,7 +144,7 @@ struct QwenEmbeddingEngine {
 }
 
 impl QwenEmbeddingEngine {
-    fn load(config: &EmbeddingModelConfig) -> Result<Self, String> {
+    fn load(config: &EmbeddingModelConfig, selected: &SelectedDevice) -> Result<Self, String> {
         let config_bytes = read_artifact(&config.model_dir, CONFIG_FILE)?;
         let config_value: Value = serde_json::from_slice(&config_bytes)
             .map_err(|error| format!("invalid Qwen config.json: {error}"))?;
@@ -78,13 +176,13 @@ impl QwenEmbeddingEngine {
         let weights = read_artifact(&config.model_dir, MODEL_WEIGHTS_FILE)?;
         let fingerprint = fingerprint(
             "qwen3-fastembed-candle-v1",
+            &selected.fingerprint_tag,
             config.max_length,
             [&config_bytes, &tokenizer_bytes, &weights],
         );
         let model_name = model_name(&config_value, "Qwen/Qwen3-Embedding-0.6B");
         let dimensions = qwen_config.hidden_size;
-        let device = Device::Cpu;
-        let builder = VarBuilder::from_buffered_safetensors(weights, DType::F32, &device)
+        let builder = VarBuilder::from_buffered_safetensors(weights, DType::F32, &selected.device)
             .map_err(|error| format!("failed to load Qwen safetensors: {error}"))?;
         let model = Qwen3Model::new(qwen_config, builder)
             .map_err(|error| format!("failed to construct Qwen3 embedding model: {error}"))?;
@@ -178,7 +276,7 @@ struct BgeRerankerEngine {
 }
 
 impl BgeRerankerEngine {
-    fn load(config: &RerankerModelConfig) -> Result<Self, String> {
+    fn load(config: &RerankerModelConfig, selected: &SelectedDevice) -> Result<Self, String> {
         let config_bytes = read_artifact(&config.model_dir, CONFIG_FILE)?;
         let config_value: Value = serde_json::from_slice(&config_bytes)
             .map_err(|error| format!("invalid BGE config.json: {error}"))?;
@@ -225,11 +323,11 @@ impl BgeRerankerEngine {
         let weights = read_artifact(&config.model_dir, MODEL_WEIGHTS_FILE)?;
         let fingerprint = fingerprint(
             "bge-xlm-roberta-candle-sigmoid-v1",
+            &selected.fingerprint_tag,
             config.max_length,
             [&config_bytes, &tokenizer_bytes, &weights],
         );
-        let device = Device::Cpu;
-        let builder = VarBuilder::from_buffered_safetensors(weights, DType::F32, &device)
+        let builder = VarBuilder::from_buffered_safetensors(weights, DType::F32, &selected.device)
             .map_err(|error| format!("failed to load BGE safetensors: {error}"))?;
         let model = XLMRobertaForSequenceClassification::new(1, &xlm_config, builder)
             .map_err(|error| format!("failed to construct BGE reranker: {error}"))?;
@@ -241,7 +339,7 @@ impl BgeRerankerEngine {
             },
             model,
             tokenizer,
-            device,
+            device: selected.device.clone(),
             batch_size: config.batch_size,
         };
         engine.run_golden_gate()?;
@@ -376,12 +474,15 @@ fn model_name(config: &Value, fallback: &str) -> String {
 
 fn fingerprint<const N: usize>(
     implementation: &str,
+    device: &str,
     max_length: usize,
     parts: [&Vec<u8>; N],
 ) -> String {
     let mut digest = Sha256::new();
-    digest.update(b"semafused-model-fingerprint-v1\0");
+    digest.update(b"semafused-model-fingerprint-v2\0");
     digest.update(implementation.as_bytes());
+    digest.update([0]);
+    digest.update(device.as_bytes());
     digest.update([0]);
     digest.update(max_length.to_be_bytes());
     for part in parts {
@@ -429,4 +530,46 @@ fn cosine(left: &[f32], right: &[f32]) -> Result<f32, String> {
         return Err("cosine similarity was non-finite".to_owned());
     }
     Ok(similarity)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn explicit_cpu_selection_is_stable() {
+        let selected = select_device(ModelDevice::Cpu, 0).unwrap();
+        assert!(selected.device.is_cpu());
+        assert!(selected.fingerprint_tag.starts_with("cpu"));
+    }
+
+    #[cfg(all(not(feature = "models-cuda"), not(target_os = "macos")))]
+    #[test]
+    fn automatic_selection_falls_back_to_cpu_without_accelerator_backends() {
+        let selected = select_device(ModelDevice::Auto, 0).unwrap();
+        assert!(selected.device.is_cpu());
+        assert!(selected.fingerprint_tag.starts_with("cpu"));
+    }
+
+    #[cfg(not(feature = "models-cuda"))]
+    #[test]
+    fn explicit_cuda_requires_the_cuda_build() {
+        let error = select_device(ModelDevice::Cuda, 0).unwrap_err();
+        assert!(error.contains("models-cuda"));
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    #[test]
+    fn explicit_metal_requires_macos() {
+        let error = select_device(ModelDevice::Metal, 0).unwrap_err();
+        assert!(error.contains("macOS"));
+    }
+
+    #[test]
+    fn fingerprints_are_partitioned_by_selected_device() {
+        let bytes = vec![1, 2, 3];
+        let cpu = fingerprint("implementation", "cpu", 128, [&bytes]);
+        let metal = fingerprint("implementation", "metal:0", 128, [&bytes]);
+        assert_ne!(cpu, metal);
+    }
 }

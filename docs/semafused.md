@@ -34,11 +34,24 @@ cargo install --path . --locked --bin semafused --no-default-features --features
 cargo build --release --bin semafused --no-default-features --features models-mkl
 ```
 
-The current model loader runs on CPU; `models-mkl` can accelerate supported
-Intel hosts, but CUDA and Metal devices are not wired yet. Both models remain
-resident in one process, so budget several GiB of RAM. The example keeps one
-inference active at a time, embedding length/batch at `2048/1`, and reranker
-length/batch at `1024/1`; raise those values only after measuring the host.
+On macOS, `models-candle` automatically compiles Candle's Metal GPU backend and
+Accelerate CPU implementation. CUDA requires an explicit build on a host with a
+working CUDA toolchain:
+
+```sh
+cargo build --release --bin semafused --no-default-features --features models-cuda
+```
+
+`services.models.device = "auto"` selects an initialized CUDA device when the
+binary was built with `models-cuda`, then Metal on macOS, and finally CPU. Set
+the value to `cpu`, `cuda`, or `metal` to require that backend; an unavailable
+explicit backend fails startup instead of falling back. `device_ordinal`
+selects the accelerator index and defaults to `0`.
+
+Both models remain resident on the selected device in one process, so budget
+several GiB of memory. The example keeps one inference active at a time,
+embedding length/batch at `2048/1`, and reranker length/batch at `1024/1`;
+raise those values only after measuring the host.
 
 ## Provision model artifacts
 
@@ -63,9 +76,10 @@ file; it does not silently select an ONNX export or a network fallback.
   so the public score is in `[0, 1]`.
 
 Startup validates the model architecture, hashes the exact config, tokenizer,
-weights, maximum length, and implementation version into a `sha256:` identity,
-then runs golden inference checks. A mismatched or incompatible checkpoint
-causes startup to fail instead of serving silently different vectors.
+weights, maximum length, implementation version, and selected compute backend
+into a `sha256:` identity, then runs golden inference checks. A mismatched or
+incompatible checkpoint causes startup to fail instead of serving silently
+different vectors.
 
 Copy [semafused.example.toml](../semafused.example.toml), replace all paths with
 absolute paths, and keep the socket inside a private directory. TOML does not

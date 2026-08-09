@@ -116,6 +116,11 @@ other long-lived services to be added later. It has no daemonization,
 `start`, `stop`, or `restart` command; systemd or another supervisor owns
 its lifecycle.
 
+The model service selects its Candle device automatically: CUDA when compiled
+with `models-cuda`, Metal on macOS, and CPU otherwise. macOS builds include an
+Accelerate CPU fallback; explicit `cpu`, `cuda`, and `metal` configuration is
+also available when startup must fail rather than fall back.
+
 Official `semafused` builds target Linux and macOS. Windows keeps the one-shot
 `semafuse` CLI, but its Unix-socket daemon client returns an unsupported error.
 

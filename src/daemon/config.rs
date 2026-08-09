@@ -9,6 +9,7 @@ use std::{
 pub const DEFAULT_MAX_CONNECTIONS: usize = 64;
 pub const DEFAULT_SHUTDOWN_GRACE_MS: u64 = 5_000;
 pub const DEFAULT_MAX_CONCURRENT_INFERENCES: usize = 1;
+pub const DEFAULT_DEVICE_ORDINAL: usize = 0;
 pub const DEFAULT_EMBEDDING_MAX_LENGTH: usize = 2_048;
 pub const DEFAULT_EMBEDDING_BATCH_SIZE: usize = 1;
 pub const DEFAULT_RERANKER_MAX_LENGTH: usize = 1_024;
@@ -17,6 +18,7 @@ pub const DEFAULT_RERANKER_BATCH_SIZE: usize = 1;
 pub const MAX_CONNECTIONS_LIMIT: usize = 4_096;
 pub const MAX_SHUTDOWN_GRACE_MS_LIMIT: u64 = 300_000;
 pub const MAX_CONCURRENT_INFERENCES_LIMIT: usize = 64;
+pub const MAX_DEVICE_ORDINAL: usize = 15;
 pub const MIN_MODEL_LENGTH: usize = 128;
 pub const MAX_MODEL_LENGTH_LIMIT: usize = 32_768;
 pub const MAX_MODEL_BATCH_SIZE_LIMIT: usize = 64;
@@ -116,6 +118,10 @@ pub struct ModelsConfig {
     #[serde(default = "default_max_concurrent_inferences")]
     pub max_concurrent_inferences: usize,
     #[serde(default)]
+    pub device: ModelDevice,
+    #[serde(default = "default_device_ordinal")]
+    pub device_ordinal: usize,
+    #[serde(default)]
     pub embedding: Option<EmbeddingModelConfig>,
     #[serde(default)]
     pub reranker: Option<RerankerModelConfig>,
@@ -125,6 +131,8 @@ impl Default for ModelsConfig {
     fn default() -> Self {
         Self {
             max_concurrent_inferences: DEFAULT_MAX_CONCURRENT_INFERENCES,
+            device: ModelDevice::Auto,
+            device_ordinal: DEFAULT_DEVICE_ORDINAL,
             embedding: None,
             reranker: None,
         }
@@ -139,6 +147,18 @@ impl ModelsConfig {
             MAX_CONCURRENT_INFERENCES_LIMIT,
             "services.models.max_concurrent_inferences",
         )?;
+        validate_limit(
+            self.device_ordinal,
+            0,
+            MAX_DEVICE_ORDINAL,
+            "services.models.device_ordinal",
+        )?;
+        if self.device == ModelDevice::Cpu && self.device_ordinal != 0 {
+            return Err(ConfigError::new(
+                "services.models.device_ordinal",
+                "must be zero when device is `cpu`",
+            ));
+        }
         if self.embedding.is_none() && self.reranker.is_none() {
             return Err(ConfigError::new(
                 "services.models",
@@ -153,6 +173,16 @@ impl ModelsConfig {
         }
         Ok(())
     }
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ModelDevice {
+    #[default]
+    Auto,
+    Cpu,
+    Cuda,
+    Metal,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -377,6 +407,9 @@ const fn default_shutdown_grace_ms() -> u64 {
 const fn default_max_concurrent_inferences() -> usize {
     DEFAULT_MAX_CONCURRENT_INFERENCES
 }
+const fn default_device_ordinal() -> usize {
+    DEFAULT_DEVICE_ORDINAL
+}
 const fn default_embedding_max_length() -> usize {
     DEFAULT_EMBEDDING_MAX_LENGTH
 }
@@ -407,6 +440,8 @@ mod tests {
             ModelsConfig::default().max_concurrent_inferences,
             DEFAULT_MAX_CONCURRENT_INFERENCES
         );
+        assert_eq!(ModelsConfig::default().device, ModelDevice::Auto);
+        assert_eq!(ModelsConfig::default().device_ordinal, 0);
     }
 
     #[test]
@@ -482,5 +517,34 @@ mod tests {
             ..ModelsConfig::default()
         });
         assert_eq!(config.validate(), Ok(()));
+    }
+
+    #[test]
+    fn model_device_configuration_is_strict_and_bounded() {
+        let parsed: ModelsConfig = serde_json::from_str(
+            r#"{"device":"metal","device_ordinal":1,"embedding":{"model_dir":"/models/qwen"}}"#,
+        )
+        .unwrap();
+        assert_eq!(parsed.device, ModelDevice::Metal);
+        assert_eq!(parsed.device_ordinal, 1);
+
+        assert!(
+            serde_json::from_str::<ModelsConfig>(
+                r#"{"device":"gpu","embedding":{"model_dir":"/models/qwen"}}"#
+            )
+            .is_err()
+        );
+
+        let mut config = Config::default();
+        config.services.models = Some(ModelsConfig {
+            device: ModelDevice::Cpu,
+            device_ordinal: 1,
+            embedding: Some(EmbeddingModelConfig::new("/models/qwen")),
+            ..ModelsConfig::default()
+        });
+        assert_eq!(
+            config.validate().unwrap_err().field(),
+            "services.models.device_ordinal"
+        );
     }
 }
