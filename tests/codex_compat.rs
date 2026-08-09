@@ -409,6 +409,9 @@ fn codex_session_end_spools_before_the_native_deadline_when_sqlite_is_busy() {
             .execute(&mut connection)
             .await
             .unwrap();
+        // Windows SQLite locking is byte-range based; close the connection so
+        // replay observes the database after the simulated contention ends.
+        drop(connection);
 
         assert!(output.status.success(), "{:?}", output.stderr);
         assert!(
