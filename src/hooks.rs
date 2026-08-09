@@ -861,7 +861,7 @@ pub async fn replay_spool(
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
             .as_millis() as i64;
-        let generation_lock = private_open_options()
+        let mut generation_lock = private_open_options()
             .read(true)
             .write(true)
             .open(&generation)
@@ -874,7 +874,9 @@ pub async fn replay_spool(
                     .with_context(|| format!("lock replay generation {}", generation.display()));
             }
         }
-        let text = fs::read_to_string(&generation)
+        let mut text = String::new();
+        generation_lock
+            .read_to_string(&mut text)
             .with_context(|| format!("read replay generation {}", generation.display()))?;
         for line in text.lines().filter(|line| !line.trim().is_empty()) {
             let record: SpoolRecord = serde_json::from_str(line)?;
