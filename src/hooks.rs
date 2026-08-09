@@ -20,7 +20,7 @@ use std::{
     fs::{self, OpenOptions},
     io::{self, Read, Seek, Write},
     path::{Path, PathBuf},
-    time::UNIX_EPOCH,
+    time::{Duration, UNIX_EPOCH},
 };
 
 /// Environment variable set for an isolated LazyMem processor child.
@@ -388,7 +388,7 @@ pub fn append_spool(dir: &Path, agent: AgentKind, event: &str, payload: &Value) 
         .write(true)
         .open(dir.join("hooks.lock"))?;
     secure_open_file(&lock)?;
-    lock.lock_exclusive()?;
+    lock_exclusive_wait(&lock)?;
     let file = dir.join("hooks.jsonl");
     let mut handle = private_open_options()
         .create(true)
@@ -428,7 +428,7 @@ pub fn stage_spool(
         .write(true)
         .open(dir.join("hooks.lock"))?;
     secure_open_file(&append_lock)?;
-    append_lock.lock_exclusive()?;
+    lock_exclusive_wait(&append_lock)?;
     recover_pending_spool_writes(dir)?;
     remove_incomplete_forget_files(dir)?;
     let stem = format!(
@@ -464,7 +464,7 @@ pub fn stage_spool(
     };
     if let Err(error) = (|| -> Result<()> {
         secure_open_file(&file)?;
-        file.lock_exclusive()?;
+        lock_exclusive_wait(&file)?;
         file.write_all(&bytes)?;
         file.sync_data()?;
         fs::rename(&write_path, &path)?;
@@ -539,7 +539,7 @@ fn filter_spool_directory(
         .write(true)
         .open(directory.join("replay.lock"))?;
     secure_open_file(&replay_lock)?;
-    replay_lock.lock_exclusive()?;
+    lock_exclusive_wait(&replay_lock)?;
     let append_lock = private_open_options()
         .create(true)
         .truncate(false)
@@ -547,7 +547,7 @@ fn filter_spool_directory(
         .write(true)
         .open(directory.join("hooks.lock"))?;
     secure_open_file(&append_lock)?;
-    append_lock.lock_exclusive()?;
+    lock_exclusive_wait(&append_lock)?;
 
     report.directories += 1;
     if apply {
@@ -752,7 +752,7 @@ pub async fn replay_spool(
         .write(true)
         .open(dir.join("replay.lock"))?;
     secure_open_file(&replay_lock)?;
-    replay_lock.lock_exclusive()?;
+    lock_exclusive_wait(&replay_lock)?;
     let append_lock = private_open_options()
         .create(true)
         .truncate(false)
@@ -760,7 +760,7 @@ pub async fn replay_spool(
         .write(true)
         .open(dir.join("hooks.lock"))?;
     secure_open_file(&append_lock)?;
-    append_lock.lock_exclusive()?;
+    lock_exclusive_wait(&append_lock)?;
     recover_pending_spool_writes(dir)?;
     remove_incomplete_forget_files(dir)?;
     let live = dir.join("hooks.jsonl");
@@ -1018,7 +1018,22 @@ fn sync_directory(_path: &Path) -> Result<()> {
 
 fn lock_is_contended(error: &io::Error) -> bool {
     let expected = fs2::lock_contended_error();
-    error.raw_os_error().is_some() && error.raw_os_error() == expected.raw_os_error()
+    error.kind() == io::ErrorKind::WouldBlock
+        || (error.raw_os_error().is_some() && error.raw_os_error() == expected.raw_os_error())
+}
+
+/// Preserves blocking lock semantics on platforms where `fs2` can surface a
+/// contention error from its nominally blocking operation.
+fn lock_exclusive_wait(file: &std::fs::File) -> io::Result<()> {
+    loop {
+        match file.lock_exclusive() {
+            Ok(()) => return Ok(()),
+            Err(error) if lock_is_contended(&error) => {
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            Err(error) => return Err(error),
+        }
+    }
 }
 
 #[cfg(unix)]

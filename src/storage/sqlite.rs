@@ -21,7 +21,7 @@ use sqlx::{
 use std::{
     collections::{HashMap, HashSet},
     fs::{File, OpenOptions},
-    io::Write,
+    io::{self, Write},
     path::{Path, PathBuf},
     str::FromStr,
 };
@@ -113,7 +113,7 @@ impl SqliteStore {
             return Ok(LifecycleGuard { file: None });
         };
         let file = open_private_lock(path)?;
-        file.lock_exclusive()
+        lock_exclusive_wait(&file)
             .with_context(|| format!("lock lifecycle file {}", path.display()))?;
         Ok(LifecycleGuard { file: Some(file) })
     }
@@ -126,7 +126,7 @@ impl SqliteStore {
         let file = open_private_lock(path)?;
         match file.try_lock_exclusive() {
             Ok(()) => Ok(Some(LifecycleGuard { file: Some(file) })),
-            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => Ok(None),
+            Err(error) if lock_is_contended(&error) => Ok(None),
             Err(error) => {
                 Err(error).with_context(|| format!("try lifecycle lock {}", path.display()))
             }
@@ -416,6 +416,24 @@ fn open_private_lock(path: &Path) -> Result<File> {
     options
         .open(path)
         .with_context(|| format!("open lifecycle lock {}", path.display()))
+}
+
+fn lock_is_contended(error: &io::Error) -> bool {
+    let expected = fs2::lock_contended_error();
+    error.kind() == io::ErrorKind::WouldBlock
+        || (error.raw_os_error().is_some() && error.raw_os_error() == expected.raw_os_error())
+}
+
+fn lock_exclusive_wait(file: &File) -> io::Result<()> {
+    loop {
+        match file.lock_exclusive() {
+            Ok(()) => return Ok(()),
+            Err(error) if lock_is_contended(&error) => {
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            Err(error) => return Err(error),
+        }
+    }
 }
 
 fn database_location_identity(canonical_database: &Path) -> Result<String> {
