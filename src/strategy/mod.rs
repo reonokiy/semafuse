@@ -7,6 +7,7 @@
 mod history;
 mod lazymem;
 mod recall;
+mod reconstructive;
 mod registry;
 
 pub use recall::RecallItem;

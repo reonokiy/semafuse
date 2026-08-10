@@ -1,4 +1,5 @@
 use super::{
+    JsonContract,
     codex::run_codex_processor,
     openai::{GenerationOptions, OpenAiEndpoint},
 };
@@ -10,8 +11,7 @@ const DEFAULT_CODEX_MAX_OUTPUT_BYTES: usize = 1_048_576;
 const MAX_CODEX_TIMEOUT_SECS: u64 = 3_600;
 const MAX_CODEX_OUTPUT_BYTES: usize = 16 * 1_048_576;
 
-/// A query-time LazyMem processor that consumes the Appendix G.1 prompt and
-/// must return its strict positional JSON decision array.
+/// A query-time prompt processor for provider-enforced structured generation.
 ///
 /// The tagged configuration deliberately exposes only the supported remote
 /// API and Codex CLI transports. The Codex transport owns its argument vector;
@@ -162,14 +162,32 @@ impl PromptProcessorBackend {
         options: GenerationOptions,
         expected_decisions: usize,
     ) -> Result<ProcessorCompletion> {
-        ensure!(
-            expected_decisions > 0,
-            "processor request must expect at least one decision"
-        );
+        self.complete_structured(
+            system,
+            user,
+            options,
+            JsonContract::WindowDecisions {
+                count: expected_decisions,
+            },
+        )
+        .await
+    }
+
+    /// Complete a prompt under a provider-enforced JSON contract. The returned
+    /// content is the contract payload, with any Codex-only transport envelope
+    /// removed, but domain-specific validation remains the caller's job.
+    pub(crate) async fn complete_structured(
+        &self,
+        system: &str,
+        user: &str,
+        options: GenerationOptions,
+        contract: JsonContract,
+    ) -> Result<ProcessorCompletion> {
+        contract.validate()?;
         match self {
             Self::OpenaiCompatible { endpoint } => {
                 let completion = endpoint
-                    .chat_decisions(system, user, options, expected_decisions)
+                    .complete_json_contract(system, user, options, contract)
                     .await
                     .context("OpenAI-compatible processor failed")?;
                 Ok(ProcessorCompletion {
@@ -196,7 +214,7 @@ impl PromptProcessorBackend {
                     model,
                     system,
                     user,
-                    expected_decisions,
+                    contract,
                     *timeout_secs,
                     *max_output_bytes,
                 )

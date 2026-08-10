@@ -408,6 +408,16 @@ semafuse search "ignored for recent" --mode recent --since 2d
 | --- | --- | --- | --- | --- |
 | `history` | None; reads immutable events directly | `event` items | Configurable `hybrid`, `lexical`, or `recent` | Cheap control/baseline |
 | `lazymem` | Paper-v2 query-time MPM construction | One chronological `memory` item with source IDs and a redacted protocol trace | Qwen3 dense + BM25, RRF, BGE cross-encoder, Top-50, radius-2 windows | Full model-backed LazyMem path and paper protocol |
+| `reconstructive` | Query-time source-preserving reconstruction | One chronological verbatim `memory` item plus auditable round traces | Dense + BM25, per-channel seen mask, RRF, reranking, session-local neighbors, optional evidence-gap query refinement | Training-free one-shot, masked, and closed-loop retrieval ablations |
+
+`reconstructive` never replaces source evidence with a model summary. Its
+controller can only decide sufficiency and propose the next retrieval query;
+the final reader receives the selected source events verbatim. The strategy is
+inspired by MemR3 and MemMachine, but is a Semafuse implementation rather than
+an exact reproduction. Typed controller, retrieval, and context settings live
+under `strategies.settings.reconstructive`; reproducible OpenRouter profiles
+and LoCoMo suites are documented in
+[`benchmarks/reconstructive`](benchmarks/reconstructive/README.md).
 
 `lazymem` implements the complete model-backed structure: raw message storage,
 durable event embeddings, parallel dense/BM25 retrieval, RRF, cross-encoder
@@ -553,13 +563,14 @@ semafuse strategy status
 semafuse strategy retry
 semafuse strategy rebuild history
 semafuse strategy rebuild lazymem
+semafuse strategy rebuild reconstructive
 ```
 
 Each import, hook, or spool replay creates persistent deliveries only for newly added raw events. Each strategy
 consumes events in its own checkpoint order and retains a retryable state on failure. `rebuild` reconstructs the target strategy's derived memories
 from the complete raw event history without modifying other strategies or raw events.
 
-Memory strategies are organized as peers under `src/strategy/`. `mod.rs` is the stable façade for dispatch, recall, and rebuild; `registry.rs` contains the ordered module registry; `recall.rs` defines the strategy-neutral `event | memory` output; and each strategy owns its constructor and private typed settings. The model-backed `lazymem` strategy lives in `lazymem.rs`, with retrieval, windowing, processing, profile validation, and prompt construction isolated in `lazymem/` submodules. Model I/O is similarly separated behind the small `inference.rs` façade into HTTP transport, OpenAI-compatible inference, reranking, processor dispatch, and isolated Codex execution. To add a strategy, implement `MemoryStrategy` and add its registration to the registry. Callers remain unchanged.
+Memory strategies are organized as peers under `src/strategy/`. `mod.rs` is the stable façade for dispatch, recall, and rebuild; `registry.rs` contains the ordered module registry; `recall.rs` defines the strategy-neutral `event | memory` output; and each strategy owns its constructor and private typed settings. The model-backed `lazymem` strategy lives in `lazymem.rs`, with retrieval, windowing, processing, profile validation, and prompt construction isolated in `lazymem/` submodules. The source-preserving `reconstructive` strategy similarly isolates its typed configuration, evidence-gap controller, and verbatim renderer under `reconstructive/`, while reusing the shared retrieval primitives. Model I/O is separated behind the small `inference.rs` façade into HTTP transport, OpenAI-compatible inference, reranking, reusable structured-output contracts, processor dispatch, and isolated Codex execution. To add a strategy, implement `MemoryStrategy` and add its registration to the registry. Callers remain unchanged.
 
 ### `session`: Read a Complete Session
 

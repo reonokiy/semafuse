@@ -1,0 +1,69 @@
+# Development ablation on the two-conversation / 314-question paper-v2 track.
+# `stages = []` means only each strategy's actual constructed memory is sent to
+# the common reader; raw retrieval-stage answers can be evaluated separately.
+schema_version = 1
+name = "LoCoMo paper-v2 reconstructive memory ablation"
+baseline_method = "bm25_top50"
+
+[answerer]
+expected_provider = "CoreWeave"
+temperature = 0.0
+top_p = 1.0
+max_tokens = 512
+enable_thinking = false
+
+[answerer.endpoint]
+base_url = "https://openrouter.ai/api/v1"
+model = "qwen/qwen3-30b-a3b-instruct-2507"
+api_key_env = "OPENROUTER_API_KEY"
+thinking_control = "no_control"
+timeout_secs = 180
+max_retries = 2
+
+[answerer.endpoint.extra_body.provider]
+order = ["CoreWeave"]
+allow_fallbacks = false
+require_parameters = true
+data_collection = "deny"
+max_price = { prompt = 0.11, completion = 0.31 }
+
+[pricing]
+input_usd_per_million = 0.11
+output_usd_per_million = 0.31
+# This is a cross-day resumable experiment fuse. The OpenRouter key enforces
+# the separate daily account limit; embedding/reranker usage is monitored at
+# the account boundary because their responses do not expose cost telemetry.
+max_reported_usage_usd = 20.0
+
+[[methods]]
+kind = "bm25"
+id = "bm25_top50"
+limit = 50
+
+[[methods]]
+kind = "semafuse"
+id = "lazymem_prompt_only_no_thinking"
+config = "../../lazymem/configs/semafuse_lazymem.openrouter-full-no-thinking.toml"
+limit = 50
+stages = []
+
+[[methods]]
+kind = "semafuse"
+id = "reconstructive_one_shot_25"
+config = "../../reconstructive/configs/semafuse_reconstructive.one-shot.openrouter.toml"
+limit = 50
+stages = []
+
+[[methods]]
+kind = "semafuse"
+id = "reconstructive_masked_5x5"
+config = "../../reconstructive/configs/semafuse_reconstructive.masked.openrouter.toml"
+limit = 50
+stages = []
+
+[[methods]]
+kind = "semafuse"
+id = "reconstructive_evidence_gap_5x5"
+config = "../../reconstructive/configs/semafuse_reconstructive.evidence-gap.openrouter.toml"
+limit = 50
+stages = []

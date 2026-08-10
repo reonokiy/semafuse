@@ -3,6 +3,7 @@ mod http;
 mod openai;
 mod processor;
 mod reranker;
+mod structured;
 
 use crate::daemon_ipc::ModelServiceClient;
 use anyhow::{Context, Result};
@@ -12,6 +13,7 @@ use std::{path::PathBuf, time::Duration};
 pub(crate) use openai::{EmbeddingBackend, GenerationOptions, OpenAiEndpoint};
 pub(crate) use processor::PromptProcessorBackend;
 pub(crate) use reranker::RerankBackend;
+pub(crate) use structured::JsonContract;
 
 pub(crate) const MAX_PROCESSOR_COMPRESSED_CONTENT_CHARS: usize = 512;
 pub(crate) const MAX_PROCESSOR_REASON_CHARS: usize = 256;

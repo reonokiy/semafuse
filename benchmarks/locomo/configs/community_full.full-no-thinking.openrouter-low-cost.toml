@@ -1,0 +1,46 @@
+# Cost-controlled end-to-end LoCoMo community track. One BM25 baseline and one
+# Semafuse execution produce three answer cohorts: BM25, Semafuse full memory,
+# and the shared Semafuse retrieved context. No credentials are stored here.
+schema_version = 1
+name = "LoCoMo community full BM25 vs prompt-only LazyMem no-thinking"
+track = "community_full"
+baseline_method = "bm25_top50"
+
+[answerer]
+expected_provider = "CoreWeave"
+temperature = 0.0
+top_p = 1.0
+max_tokens = 256
+enable_thinking = false
+
+[answerer.endpoint]
+base_url = "https://openrouter.ai/api/v1"
+model = "qwen/qwen3-30b-a3b-instruct-2507"
+api_key_env = "OPENROUTER_API_KEY"
+thinking_control = "no_control"
+timeout_secs = 180
+max_retries = 2
+
+[answerer.endpoint.extra_body.provider]
+order = ["CoreWeave"]
+allow_fallbacks = false
+require_parameters = true
+data_collection = "deny"
+max_price = { prompt = 0.11, completion = 0.31 }
+
+[pricing]
+input_usd_per_million = 0.11
+output_usd_per_million = 0.31
+max_reported_usage_usd = 4.50
+
+[[methods]]
+kind = "bm25"
+id = "bm25_top50"
+limit = 50
+
+[[methods]]
+kind = "semafuse"
+id = "lazymem_prompt_only_no_thinking"
+config = "../../lazymem/configs/semafuse_lazymem.openrouter-full-no-thinking.toml"
+limit = 50
+stages = ["retrieved"]

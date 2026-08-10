@@ -3,7 +3,7 @@
 mod config;
 mod processor;
 mod prompt;
-mod retrieval;
+pub(in crate::strategy) mod retrieval;
 mod types;
 mod window;
 

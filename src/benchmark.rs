@@ -615,29 +615,21 @@ async fn recall_prepared_question(
     } else {
         recall_result.metadata
     };
-    let (retrieved_event_ids, retrieved_source) = if strategy_name == "lazymem" {
-        retrieval_event_ids(&strategy_metadata, &source_event_ids)
-    } else {
-        (source_event_ids.clone(), "event_items")
-    };
-    let (covered_event_ids, covered_source) = if strategy_name == "lazymem" {
-        covered_event_ids(&strategy_metadata, &source_event_ids)
-    } else {
-        (source_event_ids.clone(), "event_items")
-    };
+    let (retrieved_event_ids, retrieved_source) =
+        retrieval_event_ids(&strategy_metadata, &source_event_ids);
+    let (covered_event_ids, covered_source) =
+        covered_event_ids(&strategy_metadata, &source_event_ids);
     let (retained_event_ids, retained_source) = if execution == BenchmarkExecution::RetrievalOnly {
         (Vec::new(), "retrieval_only_no_memory_construction")
-    } else if strategy_name == "lazymem" {
+    } else {
         strategy_benchmark_trace_ids(&strategy_metadata, "source_event_ids")
             .map(|ids| (ids, "strategy_benchmark_trace.source_event_ids"))
             .unwrap_or_else(|| (source_event_ids.clone(), "memory_source_event_ids_fallback"))
-    } else {
-        (source_event_ids.clone(), "event_items")
     };
     let retrieved_message_ids = map_event_ids(&retrieved_event_ids, &prepared.message_ids_by_event)
-        .context("map LazyMem retrieval IDs back to benchmark messages")?;
+        .context("map strategy retrieval IDs back to benchmark messages")?;
     let covered_message_ids = map_event_ids(&covered_event_ids, &prepared.message_ids_by_event)
-        .context("map LazyMem coverage IDs back to benchmark messages")?;
+        .context("map strategy coverage IDs back to benchmark messages")?;
     let retained_message_ids = map_event_ids(&retained_event_ids, &prepared.message_ids_by_event)
         .context("map retained source IDs back to benchmark messages")?;
     let context_source = if execution == BenchmarkExecution::RetrievalOnly {
@@ -654,21 +646,7 @@ async fn recall_prepared_question(
     )?;
 
     let (retrieval_latency_s, processing_latency_s, strategy_total_latency_s, timing_source) =
-        if strategy_name == "lazymem" && strategy_metadata.get("timing").is_some() {
-            let retrieval = metadata_timing_ms(&strategy_metadata, "retrieval_ms") / 1_000.0;
-            let processing = (metadata_timing_ms(&strategy_metadata, "window_construction_ms")
-                + metadata_timing_ms(&strategy_metadata, "processing_ms"))
-                / 1_000.0;
-            let total = metadata_timing_ms(&strategy_metadata, "total_ms") / 1_000.0;
-            (retrieval, processing, total, "lazymem_metadata_timing")
-        } else {
-            (
-                recall_elapsed.as_secs_f64(),
-                0.0,
-                recall_elapsed.as_secs_f64(),
-                "runner_recall_total_fallback",
-            )
-        };
+        strategy_timing(&strategy_metadata, recall_elapsed.as_secs_f64());
 
     let benchmark_trace = json!({
         "schema_version": BENCHMARK_TRACE_VERSION,
@@ -1066,41 +1044,6 @@ fn extract_strategy_items(
     strategy_name: &str,
     items: Vec<RecallItem>,
 ) -> Result<(String, Map<String, Value>, Vec<String>)> {
-    if strategy_name != "lazymem" {
-        let mut context = String::new();
-        let mut source_event_ids = Vec::with_capacity(items.len());
-        for item in items {
-            match item {
-                RecallItem::Event { event, .. } => {
-                    source_event_ids.push(event.id.clone());
-                    context.push_str(&format!(
-                        "[event_id={} timestamp_ms={}]\n{}\n\n",
-                        event.id,
-                        event.ordering_timestamp_ms(),
-                        event.search_text().trim()
-                    ));
-                }
-                RecallItem::Memory {
-                    namespace,
-                    content,
-                    metadata,
-                    source_event_ids,
-                    ..
-                } => {
-                    ensure!(
-                        namespace == strategy_name,
-                        "benchmark strategy {strategy_name} returned memory namespace {namespace}"
-                    );
-                    ensure!(
-                        context.is_empty(),
-                        "benchmark strategy {strategy_name} mixed event and memory items"
-                    );
-                    return Ok((content, metadata, source_event_ids));
-                }
-            }
-        }
-        return Ok((context.trim_end().to_owned(), Map::new(), source_event_ids));
-    }
     match items.as_slice() {
         [] => Ok((String::new(), Map::new(), Vec::new())),
         [
@@ -1113,15 +1056,37 @@ fn extract_strategy_items(
             },
         ] => {
             ensure!(
-                namespace == "lazymem",
-                "LazyMem benchmark received a memory from unexpected namespace {namespace}"
+                namespace == strategy_name,
+                "benchmark strategy {strategy_name} returned memory namespace {namespace}"
             );
             Ok((content.clone(), metadata.clone(), source_event_ids.clone()))
         }
-        [RecallItem::Event { .. }] => bail!("LazyMem benchmark received an event-backed result"),
+        _ if items
+            .iter()
+            .all(|item| matches!(item, RecallItem::Event { .. })) =>
+        {
+            ensure!(
+                strategy_name != "lazymem",
+                "LazyMem benchmark received an event-backed result"
+            );
+            let mut context = String::new();
+            let mut source_event_ids = Vec::with_capacity(items.len());
+            for item in items {
+                let RecallItem::Event { event, .. } = item else {
+                    unreachable!("event-only result was checked above")
+                };
+                source_event_ids.push(event.id.clone());
+                context.push_str(&format!(
+                    "[event_id={} timestamp_ms={}]\n{}\n\n",
+                    event.id,
+                    event.ordering_timestamp_ms(),
+                    event.search_text().trim()
+                ));
+            }
+            Ok((context.trim_end().to_owned(), Map::new(), source_event_ids))
+        }
         _ => bail!(
-            "LazyMem benchmark expected at most one constructed memory, received {} items",
-            items.len()
+            "benchmark strategy {strategy_name} mixed event and memory items or returned multiple memories"
         ),
     }
 }
@@ -1272,6 +1237,27 @@ fn metadata_timing_ms(metadata: &Map<String, Value>, name: &str) -> f64 {
         .and_then(Value::as_f64)
         .filter(|value| value.is_finite() && *value >= 0.0)
         .unwrap_or(0.0)
+}
+
+fn strategy_timing(
+    metadata: &Map<String, Value>,
+    runner_recall_s: f64,
+) -> (f64, f64, f64, &'static str) {
+    if metadata.get("timing").is_some() {
+        let retrieval = metadata_timing_ms(metadata, "retrieval_ms") / 1_000.0;
+        let processing = (metadata_timing_ms(metadata, "window_construction_ms")
+            + metadata_timing_ms(metadata, "processing_ms"))
+            / 1_000.0;
+        let total = metadata_timing_ms(metadata, "total_ms") / 1_000.0;
+        (retrieval, processing, total, "strategy_metadata_timing")
+    } else {
+        (
+            runner_recall_s,
+            0.0,
+            runner_recall_s,
+            "runner_recall_total_fallback",
+        )
+    }
 }
 
 #[cfg(test)]
@@ -1450,6 +1436,71 @@ mod tests {
         let (ids, source) = retrieval_event_ids(&metadata, &[]);
         assert_eq!(ids, vec!["evt_trace"]);
         assert_eq!(source, "strategy_benchmark_trace.retrieved_event_ids");
+    }
+
+    #[test]
+    fn generic_memory_strategy_uses_stable_trace_timing_and_namespace() {
+        let metadata = Map::from_iter([
+            (
+                "strategy_benchmark_trace".into(),
+                json!({
+                    "retrieved_event_ids": ["retrieved"],
+                    "covered_event_ids": ["covered"],
+                    "source_event_ids": ["retained"],
+                }),
+            ),
+            (
+                "timing".into(),
+                json!({
+                    "retrieval_ms": 125.0,
+                    "window_construction_ms": 25.0,
+                    "processing_ms": 50.0,
+                    "total_ms": 225.0,
+                }),
+            ),
+        ]);
+        let (retrieved, retrieved_source) = retrieval_event_ids(&metadata, &["fallback".into()]);
+        let (covered, covered_source) = covered_event_ids(&metadata, &["fallback".into()]);
+        assert_eq!(retrieved, ["retrieved"]);
+        assert_eq!(
+            retrieved_source,
+            "strategy_benchmark_trace.retrieved_event_ids"
+        );
+        assert_eq!(covered, ["covered"]);
+        assert_eq!(covered_source, "strategy_benchmark_trace.covered_event_ids");
+        assert_eq!(
+            strategy_benchmark_trace_ids(&metadata, "source_event_ids").unwrap(),
+            ["retained"]
+        );
+        assert_eq!(
+            strategy_timing(&metadata, 9.0),
+            (0.125, 0.075, 0.225, "strategy_metadata_timing")
+        );
+
+        let memory = RecallItem::Memory {
+            namespace: "reconstructive".into(),
+            id: "memory".into(),
+            content: "verbatim context".into(),
+            metadata: metadata.clone(),
+            source_event_ids: vec!["retained".into()],
+            score: 1.0,
+        };
+        let (content, extracted_metadata, source_ids) =
+            extract_strategy_items("reconstructive", vec![memory]).unwrap();
+        assert_eq!(content, "verbatim context");
+        assert_eq!(extracted_metadata, metadata);
+        assert_eq!(source_ids, ["retained"]);
+
+        let wrong_namespace = RecallItem::Memory {
+            namespace: "lazymem".into(),
+            id: "memory".into(),
+            content: String::new(),
+            metadata: Map::new(),
+            source_event_ids: Vec::new(),
+            score: 0.0,
+        };
+        let error = extract_strategy_items("reconstructive", vec![wrong_namespace]).unwrap_err();
+        assert!(format!("{error:#}").contains("returned memory namespace lazymem"));
     }
 
     #[tokio::test]

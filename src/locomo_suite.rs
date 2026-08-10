@@ -1,7 +1,7 @@
-//! Retrieval-only LoCoMo paper-v2 comparison suite.
+//! Retrieval-only LoCoMo comparison suite.
 //!
-//! This runner fixes the LazyMem paper-v2 selection (two conversations, 314
-//! category-1--4 QA items, and 312 questions with evidence) while keeping all
+//! The configured track selects either the LazyMem paper-v2 development subset
+//! or the ten-conversation community protocol while keeping all
 //! answer and evidence annotations outside memory-system inputs. It scores
 //! deterministic BM25/recent controls, the production Semafuse retrieval
 //! stages, and process-isolated external memory workers through one evaluator.
@@ -25,8 +25,7 @@ use crate::{
     },
     config::{self as semafuse_config, Config},
     locomo::{
-        DATA_LICENSE, LocomoMode, PAPER_V2_CONVERSATION_IDS, PAPER_V2_QA_COUNT,
-        PAPER_V2_RETRIEVAL_COUNT, PreparedDataset, PreparedQuestion, UPSTREAM_COMMIT,
+        DATA_LICENSE, LocomoTrack, PreparedDataset, PreparedQuestion, UPSTREAM_COMMIT,
         UPSTREAM_DATA_SHA256, load_locomo,
     },
 };
@@ -149,6 +148,8 @@ pub struct LocomoEfficiency {
 pub(crate) struct SuiteConfig {
     pub(crate) schema_version: u32,
     pub(crate) name: String,
+    #[serde(default)]
+    pub(crate) track: LocomoTrack,
     pub(crate) baseline_method: String,
     pub(crate) methods: Vec<MethodConfig>,
 }
@@ -313,7 +314,7 @@ struct MethodOutput {
     metadata: Map<String, Value>,
 }
 
-/// Executes the pinned LoCoMo paper-v2 retrieval protocol.
+/// Executes a pinned LoCoMo retrieval protocol.
 pub async fn run_locomo_retrieval_suite(
     options: &LocomoSuiteRunOptions,
 ) -> Result<LocomoSuiteArtifacts> {
@@ -325,6 +326,7 @@ pub async fn run_locomo_retrieval_suite(
         .with_context(|| format!("read suite {}", options.suite_path.display()))?;
     let suite = load_suite(&options.suite_path)?;
     validate_suite(&suite)?;
+    validate_retrieval_stages(&suite)?;
     let suite_dir = options
         .suite_path
         .parent()
@@ -334,14 +336,14 @@ pub async fn run_locomo_retrieval_suite(
     let dataset_sha256 = sha256_file(&options.dataset_path)?;
     ensure!(
         dataset_sha256 == UPSTREAM_DATA_SHA256,
-        "LoCoMo paper-v2 requires pinned locomo10.json SHA-256 {UPSTREAM_DATA_SHA256}; got {dataset_sha256}"
+        "LoCoMo requires pinned locomo10.json SHA-256 {UPSTREAM_DATA_SHA256}; got {dataset_sha256}"
     );
     let dataset = load_locomo(
         &options.dataset_path,
         options.acknowledge_noncommercial,
-        &LocomoMode::PaperV2,
+        &suite.track.mode(),
     )?;
-    validate_paper_dataset(&dataset)?;
+    validate_track_dataset(&dataset, suite.track)?;
 
     let cargo_lock_sha256 = cargo_lock_sha256();
     let code_sha256 = benchmark_code_sha256();
@@ -431,7 +433,12 @@ pub async fn run_locomo_retrieval_suite(
     }
 
     validate_record_completeness(&records, &dataset, &methods, &run_key)?;
-    let summary = build_locomo_summary_from_records(&suite.baseline_method, &records)?;
+    let summary = build_locomo_summary_from_records(
+        suite.track,
+        &dataset.summary,
+        &suite.baseline_method,
+        &records,
+    )?;
     let method_manifest = method_manifest(&methods);
     let mut limitations = vec![
         "retrieval-only evidence metrics are not LoCoMo answer F1 and must not be compared with published answer scores",
@@ -450,17 +457,17 @@ pub async fn run_locomo_retrieval_suite(
         "schema_version": 1,
         "run_key": run_key,
         "suite": suite.name,
-        "track": "paper-v2-selection/retrieval-only-common-evaluator",
+        "track": format!("{}-selection/retrieval-only-common-evaluator", suite.track.name()),
         "paper_comparable": false,
         "benchmark": {
             "name": "LoCoMo",
             "upstream_commit": UPSTREAM_COMMIT,
             "dataset_sha256": dataset_sha256,
             "selection": {
-                "conversation_ids": PAPER_V2_CONVERSATION_IDS,
+                "conversation_ids": suite.track.conversation_ids(),
                 "categories": [1, 2, 3, 4],
-                "qa_n": PAPER_V2_QA_COUNT,
-                "retrieval_eval_n": PAPER_V2_RETRIEVAL_COUNT,
+                "qa_n": dataset.summary.qa_count,
+                "retrieval_eval_n": dataset.summary.retrieval_count,
             },
         },
         "license": {
@@ -570,7 +577,7 @@ pub(crate) fn validate_suite(suite: &SuiteConfig) -> Result<()> {
                     *limit >= 50,
                     "method {id} must return at least 50 items for fixed @50 scoring"
                 );
-                ensure!(!stages.is_empty(), "method {id} must expose stages");
+                ensure!(output_ids.insert(id.clone()), "duplicate output id {id}");
                 let unique = stages.iter().copied().collect::<BTreeSet<_>>();
                 ensure!(
                     unique.len() == stages.len(),
@@ -629,6 +636,18 @@ pub(crate) fn validate_suite(suite: &SuiteConfig) -> Result<()> {
     Ok(())
 }
 
+fn validate_retrieval_stages(suite: &SuiteConfig) -> Result<()> {
+    for method in &suite.methods {
+        if let MethodConfig::Semafuse { id, stages, .. } = method {
+            ensure!(
+                !stages.is_empty(),
+                "retrieval-only method {id} must expose at least one retrieval stage"
+            );
+        }
+    }
+    Ok(())
+}
+
 pub(crate) fn resolve_methods(
     suite: &SuiteConfig,
     suite_dir: &Path,
@@ -654,21 +673,21 @@ pub(crate) fn resolve_methods(
                 let path = resolve_path(suite_dir, config)?;
                 let config_sha256 = sha256_file(&path)?;
                 let config = semafuse_config::load_from_path(&path)?;
+                let recall_strategy = config.strategies.recall.as_str();
                 ensure!(
-                    config.strategies.recall == "lazymem"
-                        && config
-                            .strategies
-                            .enabled
-                            .iter()
-                            .any(|name| name == "lazymem"),
-                    "LoCoMo Semafuse method {id} requires enabled recall strategy lazymem"
+                    config
+                        .strategies
+                        .enabled
+                        .iter()
+                        .any(|name| name == recall_strategy),
+                    "LoCoMo Semafuse method {id} requires configured recall strategy {recall_strategy} to be enabled"
                 );
                 let resolved_config_sha256 =
                     hex::encode(Sha256::digest(format!("{config:?}").as_bytes()));
                 let embedding_model =
-                    lazymem_setting_string(&config, &["embedding", "endpoint", "model"]);
+                    recall_strategy_setting_string(&config, &["embedding", "endpoint", "model"]);
                 let reranker_model =
-                    lazymem_setting_string(&config, &["reranker", "endpoint", "model"]);
+                    recall_strategy_setting_string(&config, &["reranker", "endpoint", "model"]);
                 Ok(ResolvedMethod::Semafuse {
                     id: id.clone(),
                     config,
@@ -809,8 +828,11 @@ pub(crate) fn resolve_methods(
         .collect()
 }
 
-fn lazymem_setting_string(config: &Config, path: &[&str]) -> Option<String> {
-    let mut value = config.strategies.settings.get("lazymem")?;
+fn recall_strategy_setting_string(config: &Config, path: &[&str]) -> Option<String> {
+    let mut value = config
+        .strategies
+        .settings
+        .get(config.strategies.recall.as_str())?;
     for component in path {
         value = value.get(*component)?;
     }
@@ -1254,18 +1276,21 @@ fn python_tree_sha256(root: &Path) -> Result<String> {
     Ok(hex::encode(digest.finalize()))
 }
 
-pub(crate) fn validate_paper_dataset(dataset: &PreparedDataset) -> Result<()> {
+pub(crate) fn validate_track_dataset(dataset: &PreparedDataset, track: LocomoTrack) -> Result<()> {
     ensure!(
-        dataset.summary.conversation_count == PAPER_V2_CONVERSATION_IDS.len(),
-        "LoCoMo paper-v2 requires exactly two conversations"
+        dataset.summary.conversation_count == track.conversation_ids().len(),
+        "LoCoMo {} conversation denominator mismatch",
+        track.name()
     );
     ensure!(
-        dataset.summary.qa_count == PAPER_V2_QA_COUNT,
-        "LoCoMo paper-v2 QA denominator mismatch"
+        dataset.summary.qa_count == track.qa_count(),
+        "LoCoMo {} QA denominator mismatch",
+        track.name()
     );
     ensure!(
-        dataset.summary.retrieval_count == PAPER_V2_RETRIEVAL_COUNT,
-        "LoCoMo paper-v2 retrieval denominator mismatch"
+        dataset.summary.retrieval_count == track.retrieval_count(),
+        "LoCoMo {} retrieval denominator mismatch",
+        track.name()
     );
     Ok(())
 }
@@ -2088,6 +2113,8 @@ pub(crate) struct ExternalSearchItem {
 
 /// Builds paired accuracy reports from complete persisted records.
 pub fn build_locomo_summary_from_records(
+    track: LocomoTrack,
+    dataset_summary: &crate::locomo::DatasetSummary,
     baseline_method: &str,
     records: &[LocomoQuestionRecord],
 ) -> Result<Value> {
@@ -2139,10 +2166,10 @@ pub fn build_locomo_summary_from_records(
         "schema_version": 1,
         "run_key": run_key,
         "benchmark": "locomo",
-        "protocol": "paper-v2-retrieval-only",
+        "protocol": format!("{}-retrieval-only", track.name()),
         "baseline_method": baseline_method,
-        "qa_n": PAPER_V2_QA_COUNT,
-        "retrieval_eval_n": PAPER_V2_RETRIEVAL_COUNT,
+        "qa_n": dataset_summary.qa_count,
+        "retrieval_eval_n": dataset_summary.retrieval_count,
         "cutoffs": EVIDENCE_CUTOFFS,
         "methods": method_ids,
         "reports": reports,
@@ -2529,6 +2556,7 @@ mod tests {
         let invalid = SuiteConfig {
             schema_version: 1,
             name: "test".into(),
+            track: LocomoTrack::PaperV2,
             baseline_method: "semafuse::retrieved".into(),
             methods: vec![
                 MethodConfig::Bm25 {
@@ -2545,6 +2573,108 @@ mod tests {
         };
         let error = validate_suite(&invalid).unwrap_err();
         assert!(format!("{error:#}").contains("at least 50"));
+    }
+
+    #[test]
+    fn empty_semafuse_stages_are_full_answer_compatible_but_not_retrieval_runnable() {
+        let suite = SuiteConfig {
+            schema_version: 1,
+            name: "full-answer-only".into(),
+            track: LocomoTrack::PaperV2,
+            baseline_method: "bm25".into(),
+            methods: vec![
+                MethodConfig::Bm25 {
+                    id: "bm25".into(),
+                    limit: 50,
+                },
+                MethodConfig::Semafuse {
+                    id: "reconstructive".into(),
+                    config: "unused".into(),
+                    limit: 50,
+                    stages: Vec::new(),
+                },
+            ],
+        };
+        validate_suite(&suite).unwrap();
+        let error = validate_retrieval_stages(&suite).unwrap_err();
+        assert!(format!("{error:#}").contains("must expose at least one retrieval stage"));
+    }
+
+    #[test]
+    fn semafuse_main_output_id_participates_in_duplicate_validation() {
+        let suite = SuiteConfig {
+            schema_version: 1,
+            name: "duplicate-main-output".into(),
+            track: LocomoTrack::PaperV2,
+            baseline_method: "same".into(),
+            methods: vec![
+                MethodConfig::Bm25 {
+                    id: "same".into(),
+                    limit: 50,
+                },
+                MethodConfig::Semafuse {
+                    id: "same".into(),
+                    config: "unused".into(),
+                    limit: 50,
+                    stages: Vec::new(),
+                },
+            ],
+        };
+        let error = validate_suite(&suite).unwrap_err();
+        assert!(format!("{error:#}").contains("duplicate output id same"));
+    }
+
+    #[test]
+    fn resolve_methods_uses_the_configured_recall_strategy_models() {
+        let directory = tempdir().unwrap();
+        let strategy_config = directory.path().join("reconstructive.toml");
+        fs::write(
+            &strategy_config,
+            r#"
+[strategies]
+enabled = ["reconstructive"]
+recall = "reconstructive"
+
+[strategies.settings.reconstructive.embedding.endpoint]
+model = "test-embedding"
+
+[strategies.settings.reconstructive.reranker.endpoint]
+model = "test-reranker"
+"#,
+        )
+        .unwrap();
+        let suite = SuiteConfig {
+            schema_version: 1,
+            name: "generic-strategy".into(),
+            track: LocomoTrack::PaperV2,
+            baseline_method: "bm25".into(),
+            methods: vec![
+                MethodConfig::Bm25 {
+                    id: "bm25".into(),
+                    limit: 50,
+                },
+                MethodConfig::Semafuse {
+                    id: "reconstructive".into(),
+                    config: strategy_config,
+                    limit: 50,
+                    stages: Vec::new(),
+                },
+            ],
+        };
+        validate_suite(&suite).unwrap();
+        let methods = resolve_methods(&suite, directory.path()).unwrap();
+        let ResolvedMethod::Semafuse {
+            config,
+            embedding_model,
+            reranker_model,
+            ..
+        } = &methods[1]
+        else {
+            unreachable!()
+        };
+        assert_eq!(config.strategies.recall, "reconstructive");
+        assert_eq!(embedding_model.as_deref(), Some("test-embedding"));
+        assert_eq!(reranker_model.as_deref(), Some("test-reranker"));
     }
 
     #[test]
@@ -2572,7 +2702,23 @@ mod tests {
             record("bm25", "q2", "single-hop", 1.0),
             record("candidate", "q2", "single-hop", 1.0),
         ];
-        let summary = build_locomo_summary_from_records("bm25", &records).unwrap();
+        let summary = build_locomo_summary_from_records(
+            LocomoTrack::PaperV2,
+            &crate::locomo::DatasetSummary {
+                conversation_count: 1,
+                qa_count: 2,
+                retrieval_count: 2,
+                category_counts: BTreeMap::from([
+                    (crate::locomo::LocomoCategory::MultiHop, 1),
+                    (crate::locomo::LocomoCategory::SingleHop, 1),
+                ]),
+            },
+            "bm25",
+            &records,
+        )
+        .unwrap();
+        assert_eq!(summary["qa_n"], 2);
+        assert_eq!(summary["retrieval_eval_n"], 2);
         assert_eq!(summary["cutoffs"], json!([1, 5, 10, 50]));
         assert_eq!(summary["reports"].as_object().unwrap().len(), 24);
         let report = &summary["reports"]["evidence_recall_all@10"];
@@ -2689,6 +2835,7 @@ mod tests {
         let suite = SuiteConfig {
             schema_version: 1,
             name: "identity-test".into(),
+            track: LocomoTrack::PaperV2,
             baseline_method: "bm25".into(),
             methods: vec![
                 MethodConfig::Bm25 {

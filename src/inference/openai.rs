@@ -1,6 +1,6 @@
+use super::JsonContract;
 use super::SemafusedEndpointConfig;
 use super::http::{default_retries, default_timeout_secs, post_json, validate_transport};
-use super::{MAX_PROCESSOR_COMPRESSED_CONTENT_CHARS, MAX_PROCESSOR_REASON_CHARS};
 use anyhow::{Context, Result, ensure};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
@@ -230,28 +230,22 @@ impl OpenAiEndpoint {
             .collect()
     }
 
-    /// Request the strict positional decision array used by LazyMem's memory
-    /// processor. The array bounds are generated per evidence window so a
-    /// compatible provider can reject missing or surplus decisions before the
-    /// response reaches Semafuse's semantic validator.
-    pub(crate) async fn chat_decisions(
+    /// Request a provider-enforced JSON response. Domain-specific validation
+    /// remains with the workflow that owns the selected contract.
+    pub(crate) async fn complete_json_contract(
         &self,
         system: &str,
         user: &str,
         options: GenerationOptions,
-        expected_decisions: usize,
+        contract: JsonContract,
     ) -> Result<ChatCompletion> {
-        ensure!(
-            expected_decisions > 0,
-            "processor request must expect at least one decision"
-        );
         self.chat_messages(
             json!([
                 {"role": "system", "content": system},
                 {"role": "user", "content": user}
             ]),
             options,
-            Some(decision_response_format(expected_decisions)),
+            Some(contract.openai_response_format()?),
         )
         .await
     }
@@ -498,45 +492,6 @@ fn reasoning_enabled(value: &Value) -> Result<bool> {
         .context("reasoning extra_body must set enabled or effort")
 }
 
-fn decision_response_format(expected_decisions: usize) -> Value {
-    json!({
-        "type": "json_schema",
-        "json_schema": {
-            "name": "lazymem_window_decisions",
-            "strict": true,
-            "schema": {
-                "type": "array",
-                "minItems": expected_decisions,
-                "maxItems": expected_decisions,
-                "items": {
-                    "oneOf": [
-                        {
-                            "type": "object",
-                            "additionalProperties": false,
-                            "required": ["op", "compressed_content", "reason"],
-                            "properties": {
-                                "op": {"type": "string", "const": "KEEP"},
-                                "compressed_content": {"type": "string", "minLength": 1, "maxLength": MAX_PROCESSOR_COMPRESSED_CONTENT_CHARS},
-                                "reason": {"type": "string", "minLength": 1, "maxLength": MAX_PROCESSOR_REASON_CHARS}
-                            }
-                        },
-                        {
-                            "type": "object",
-                            "additionalProperties": false,
-                            "required": ["op", "compressed_content", "reason"],
-                            "properties": {
-                                "op": {"type": "string", "const": "DROP"},
-                                "compressed_content": {"type": "string", "const": ""},
-                                "reason": {"type": "string", "minLength": 1, "maxLength": MAX_PROCESSOR_REASON_CHARS}
-                            }
-                        }
-                    ]
-                }
-            }
-        }
-    })
-}
-
 impl EmbeddingBackend {
     pub(crate) fn validate(&self, label: &str) -> Result<()> {
         match self {
@@ -570,33 +525,6 @@ impl EmbeddingBackend {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn decision_schema_requires_the_exact_window_length() {
-        let format = decision_response_format(8);
-        let schema = &format["json_schema"]["schema"];
-        assert_eq!(schema["type"], "array");
-        assert_eq!(schema["minItems"], 8);
-        assert_eq!(schema["maxItems"], 8);
-        let variants = schema["items"]["oneOf"].as_array().unwrap();
-        assert_eq!(variants.len(), 2);
-        assert!(variants.iter().all(|variant| {
-            variant["required"] == json!(["op", "compressed_content", "reason"])
-                && variant["additionalProperties"] == false
-                && variant["properties"]["reason"]["maxLength"] == MAX_PROCESSOR_REASON_CHARS
-        }));
-        assert_eq!(variants[0]["properties"]["op"]["const"], "KEEP");
-        assert_eq!(
-            variants[0]["properties"]["compressed_content"]["minLength"],
-            1
-        );
-        assert_eq!(
-            variants[0]["properties"]["compressed_content"]["maxLength"],
-            MAX_PROCESSOR_COMPRESSED_CONTENT_CHARS
-        );
-        assert_eq!(variants[1]["properties"]["op"]["const"], "DROP");
-        assert_eq!(variants[1]["properties"]["compressed_content"]["const"], "");
-    }
 
     #[test]
     fn standardized_reasoning_control_is_unambiguous() {

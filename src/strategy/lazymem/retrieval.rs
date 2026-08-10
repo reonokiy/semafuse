@@ -15,7 +15,7 @@ const BM25_EPSILON: f64 = 0.25;
 /// LazyMem's public retrieval artifact tokenizes with
 /// `[A-Za-z0-9_\\-]+`, lowercases ASCII, and uses the `rank_bm25` defaults.
 /// Equal scores retain the input corpus order, matching Python's stable sort.
-pub(super) fn okapi_bm25_ranked_ids(
+pub(in crate::strategy) fn okapi_bm25_ranked_ids(
     query: &str,
     corpus: &[CanonicalEvent],
     limit: usize,
@@ -98,7 +98,7 @@ pub(super) fn okapi_bm25_ranked_ids(
 }
 
 /// Role-aware text used by the paper for dense, sparse, and reranker inputs.
-pub(super) fn paper_retrieval_text(event: &CanonicalEvent) -> String {
+pub(in crate::strategy) fn paper_retrieval_text(event: &CanonicalEvent) -> String {
     let content = event.search_text();
     let label = match &event.data {
         EventData::Message { role, .. } => match role {
@@ -135,7 +135,7 @@ fn bm25_tokens(text: &str) -> Vec<String> {
 /// Ranked message identifiers produced independently by dense and sparse search.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub(super) struct RrfInput {
+pub(in crate::strategy) struct RrfInput {
     pub dense_ranked_ids: Vec<String>,
     pub sparse_ranked_ids: Vec<String>,
     /// Stable, label-agnostic corpus order used only after score and rank ties.
@@ -145,7 +145,7 @@ pub(super) struct RrfInput {
 /// One candidate in the deterministic RRF order.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub(super) struct RrfCandidate {
+pub(in crate::strategy) struct RrfCandidate {
     pub message_id: String,
     /// One-based rank in the dense channel, if retrieved there.
     pub dense_rank: Option<usize>,
@@ -157,7 +157,7 @@ pub(super) struct RrfCandidate {
 /// Audit data for duplicate suppression and the resulting fused order.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub(super) struct RrfTrace {
+pub(in crate::strategy) struct RrfTrace {
     pub k: u32,
     pub dense_input_count: usize,
     pub sparse_input_count: usize,
@@ -169,7 +169,7 @@ pub(super) struct RrfTrace {
 /// Typed output of the reciprocal-rank-fusion stage.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub(super) struct RrfOutput {
+pub(in crate::strategy) struct RrfOutput {
     pub candidates: Vec<RrfCandidate>,
     pub trace: RrfTrace,
 }
@@ -177,7 +177,7 @@ pub(super) struct RrfOutput {
 /// Cross-encoder score for one fused candidate.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub(super) struct RerankScore {
+pub(in crate::strategy) struct RerankScore {
     pub message_id: String,
     pub score: f64,
 }
@@ -185,7 +185,7 @@ pub(super) struct RerankScore {
 /// Fused candidates plus exactly one cross-encoder score for each candidate.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub(super) struct RerankInput {
+pub(in crate::strategy) struct RerankInput {
     pub fused_candidates: Vec<RrfCandidate>,
     pub scores: Vec<RerankScore>,
     pub top_n: usize,
@@ -194,7 +194,7 @@ pub(super) struct RerankInput {
 /// One candidate after cross-encoder reranking.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub(super) struct RerankedCandidate {
+pub(in crate::strategy) struct RerankedCandidate {
     pub message_id: String,
     pub dense_rank: Option<usize>,
     pub sparse_rank: Option<usize>,
@@ -205,7 +205,7 @@ pub(super) struct RerankedCandidate {
 /// Audit data for the reranking stage.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub(super) struct RerankTrace {
+pub(in crate::strategy) struct RerankTrace {
     pub input_count: usize,
     pub requested_top_n: usize,
     pub output_order: Vec<String>,
@@ -214,7 +214,7 @@ pub(super) struct RerankTrace {
 /// Typed output of the cross-encoder reranking stage.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub(super) struct RerankOutput {
+pub(in crate::strategy) struct RerankOutput {
     pub candidates: Vec<RerankedCandidate>,
     pub trace: RerankTrace,
 }
@@ -233,7 +233,7 @@ struct PartialCandidate {
 /// malformed retriever harmless without silently improving the duplicate's
 /// rank. Empty identifiers are rejected because they cannot be traced back to
 /// stored messages.
-pub(super) fn reciprocal_rank_fusion(input: &RrfInput) -> Result<RrfOutput> {
+pub(in crate::strategy) fn reciprocal_rank_fusion(input: &RrfInput) -> Result<RrfOutput> {
     let mut corpus_order = HashMap::with_capacity(input.tie_break_ranked_ids.len());
     for (index, message_id) in input.tie_break_ranked_ids.iter().enumerate() {
         ensure!(
@@ -347,7 +347,7 @@ fn best_rank(candidate: &RrfCandidate) -> usize {
 /// Scores are intentionally not blended with RRF: the paper uses RRF to form
 /// the broad pool, then lets the cross-encoder define the final ranking. RRF
 /// order is only a deterministic tie-break for equal reranker scores.
-pub(super) fn apply_reranker(input: &RerankInput) -> Result<RerankOutput> {
+pub(in crate::strategy) fn apply_reranker(input: &RerankInput) -> Result<RerankOutput> {
     let mut candidate_ids = HashSet::new();
     for candidate in &input.fused_candidates {
         ensure!(
