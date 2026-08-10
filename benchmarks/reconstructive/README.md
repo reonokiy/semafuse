@@ -7,6 +7,12 @@ from [MemR3](https://arxiv.org/abs/2512.20237) and
 per-channel seen mask, evidence-gap query refinement, and local source-context
 expansion. It is not an exact reproduction of either paper.
 
+The optional dense-first union ablation follows the retrieval merge reported
+by [Omni-SimpleMem](https://arxiv.org/abs/2604.01007): retain dense results in
+their original order, then append only BM25-exclusive results. Merge policy
+and final ranking are independent settings, so the union can be evaluated with
+or without a cross-encoder rather than changing two hidden variables at once.
+
 The controller never writes the answer and never rewrites stored evidence. It
 can stop retrieval or emit a bounded next query. The returned memory contains
 only original source events, with session, role, timestamp, anchor rank, and
@@ -31,8 +37,20 @@ end-to-end memory comparison rather than an equal-context experiment.
 Configuration files:
 
 - `configs/semafuse_reconstructive.one-shot.openrouter.toml`
+- `configs/semafuse_reconstructive.one-shot.evidence-packet50.openrouter.toml`
+- `configs/semafuse_reconstructive.one-shot.dense-bm25-union.openrouter.toml`
 - `configs/semafuse_reconstructive.masked.openrouter.toml`
 - `configs/semafuse_reconstructive.evidence-gap.openrouter.toml`
+
+The dense-BM25-union profile sets `merge = "dense_bm25_union"` and
+`final_ranker = "none"`; it therefore has no reranker backend or reranker
+calls. Existing profiles omit both fields and retain the default
+`rrf` + `cross_encoder` behavior.
+
+The evidence-packet profile keeps the same 25 anchors and retrieval stack as
+the original one-shot profile, but caps the final verbatim context at 50 source
+events. Since anchors outrank neighbors in the deterministic renderer, this
+keeps every anchor and admits only the highest-priority local context.
 
 Secrets are referenced only through `OPENROUTER_API_KEY`; no key is stored in
 these files.

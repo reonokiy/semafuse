@@ -10,7 +10,7 @@ mod controller;
 mod render;
 
 use self::{
-    config::{ControllerConfig, ReconstructiveConfig},
+    config::{ControllerConfig, FinalRanker, ReconstructiveConfig, RetrievalMerge},
     controller::{
         CONTROLLER_PROMPT_VERSION, CONTROLLER_SYSTEM_PROMPT, ControllerCallTrace,
         ControllerFallback, ControllerFallbackKind, ControllerModelDecisionTrace,
@@ -22,9 +22,9 @@ use self::{
 };
 use super::{
     MemoryStrategy, RecallItem, RecallRequest, RecallResult, StrategyContext, StrategyEvent,
+    hybrid_retrieval::dense_bm25_union,
     lazymem::retrieval::{
-        RerankInput, RerankScore, RerankedCandidate, RrfInput, apply_reranker,
-        okapi_bm25_ranked_ids, paper_retrieval_text, reciprocal_rank_fusion,
+        RrfInput, okapi_bm25_ranked_ids, paper_retrieval_text, reciprocal_rank_fusion,
     },
     registry::StrategyRegistration,
 };
@@ -50,8 +50,9 @@ const NAMESPACE: &str = "reconstructive";
 const BENCHMARK_TRACE_SCHEMA_VERSION: &str = "semafuse.reconstructive-recall/v1";
 
 fn build(settings: Option<&Value>) -> Result<Box<dyn MemoryStrategy>> {
-    let settings = settings
-        .context("reconstructive requires explicit embedding, reranker, and controller settings")?;
+    let settings = settings.context(
+        "reconstructive requires explicit embedding and controller settings; cross-encoder ranking also requires reranker settings",
+    )?;
     let config: ReconstructiveConfig =
         serde_json::from_value(settings.clone()).context("deserialize reconstructive settings")?;
     config.validate()?;
@@ -208,7 +209,7 @@ impl ReconstructiveStrategy {
                     message_id: candidate.message_id,
                     round,
                     rank: rank + 1,
-                    rerank_score: candidate.rerank_score,
+                    rerank_score: candidate.final_score,
                 });
             }
             let previously_selected = round_traces
@@ -379,7 +380,21 @@ impl ReconstructiveStrategy {
             ),
             (
                 "reranker_model".into(),
-                json!(self.config.reranker.model_identity()),
+                json!(
+                    self.config
+                        .reranker
+                        .as_ref()
+                        .filter(|_| self.config.retrieval.final_ranker == FinalRanker::CrossEncoder)
+                        .and_then(|reranker| reranker.model_identity())
+                ),
+            ),
+            (
+                "retrieval_merge".into(),
+                json!(self.config.retrieval.merge.as_str()),
+            ),
+            (
+                "final_ranker".into(),
+                json!(self.config.retrieval.final_ranker.as_str()),
             ),
             ("processing".into(), processing),
             ("retrieval_usage".into(), retrieval_usage),
@@ -506,26 +521,59 @@ impl ReconstructiveStrategy {
             .collect::<Vec<_>>();
         let dense_candidate_count = dense_ids.len();
         let sparse_candidate_count = sparse_ids.len();
-        let rrf = reciprocal_rank_fusion(&RrfInput {
-            dense_ranked_ids: dense_ids,
-            sparse_ranked_ids: sparse_ids,
-            tie_break_ranked_ids: corpus
-                .iter()
-                .filter(|event| !excluded.contains(&event.id))
-                .map(|event| event.id.clone())
-                .collect(),
-        })?;
-        let fused = rrf
+        let fused = match self.config.retrieval.merge {
+            RetrievalMerge::Rrf => reciprocal_rank_fusion(&RrfInput {
+                dense_ranked_ids: dense_ids,
+                sparse_ranked_ids: sparse_ids,
+                tie_break_ranked_ids: corpus
+                    .iter()
+                    .filter(|event| !excluded.contains(&event.id))
+                    .map(|event| event.id.clone())
+                    .collect(),
+            })?
             .candidates
-            .iter()
-            .filter(|candidate| !excluded.contains(&candidate.message_id))
+            .into_iter()
             .take(self.config.retrieval.fused_limit)
-            .cloned()
-            .collect::<Vec<_>>();
+            .map(|candidate| FusedRoundCandidate {
+                message_id: candidate.message_id,
+                merge_score: candidate.rrf_score,
+            })
+            .collect::<Vec<_>>(),
+            RetrievalMerge::DenseBm25Union => {
+                dense_bm25_union(&dense_ids, &sparse_ids, self.config.retrieval.fused_limit)?
+                    .into_iter()
+                    .enumerate()
+                    .map(|(index, candidate)| FusedRoundCandidate {
+                        message_id: candidate.message_id,
+                        // With no final ranker this provides a monotonic score for
+                        // the already-decided dense-first union order.
+                        merge_score: 1.0 / (index + 1) as f64,
+                    })
+                    .collect()
+            }
+        };
         let fused_candidate_count = fused.len();
         if fused.is_empty() {
             return Ok(RetrievalRoundOutput {
                 candidates: Vec::new(),
+                dense_candidate_count,
+                sparse_candidate_count,
+                fused_candidate_count,
+                reranked_candidate_count: 0,
+                query_embedding_calls: 1,
+                reranker_calls: 0,
+            });
+        }
+        if self.config.retrieval.final_ranker == FinalRanker::None {
+            return Ok(RetrievalRoundOutput {
+                candidates: fused
+                    .into_iter()
+                    .take(hits)
+                    .map(|candidate| RetrievalCandidate {
+                        message_id: candidate.message_id,
+                        final_score: candidate.merge_score,
+                    })
+                    .collect(),
                 dense_candidate_count,
                 sparse_candidate_count,
                 fused_candidate_count,
@@ -547,21 +595,46 @@ impl ReconstructiveStrategy {
                     .map(|event| paper_retrieval_text(event))
             })
             .collect::<Result<Vec<_>>>()?;
-        let scores = self.config.reranker.rerank(query_text, &documents).await?;
-        let fully_reranked = apply_reranker(&RerankInput {
-            scores: fused
-                .iter()
-                .zip(scores)
-                .map(|(candidate, score)| RerankScore {
-                    message_id: candidate.message_id.clone(),
-                    score,
-                })
-                .collect(),
-            fused_candidates: fused,
-            top_n: self.config.retrieval.fused_limit.min(documents.len()),
-        })?;
-        let reranked_candidate_count = fully_reranked.candidates.len();
-        let candidates = fully_reranked.candidates.into_iter().take(hits).collect();
+        let reranker = self
+            .config
+            .reranker
+            .as_ref()
+            .context("validated cross-encoder configuration omitted reranker settings")?;
+        let scores = reranker.rerank(query_text, &documents).await?;
+        ensure!(
+            scores.len() == fused.len(),
+            "reranker returned {} scores for {} fused candidates",
+            scores.len(),
+            fused.len()
+        );
+        let mut reranked = fused
+            .into_iter()
+            .zip(scores)
+            .enumerate()
+            .map(|(merge_index, (candidate, score))| {
+                ensure!(score.is_finite(), "reranker returned a non-finite score");
+                Ok((
+                    merge_index,
+                    RetrievalCandidate {
+                        message_id: candidate.message_id,
+                        final_score: score,
+                    },
+                ))
+            })
+            .collect::<Result<Vec<_>>>()?;
+        reranked.sort_by(|left, right| {
+            right
+                .1
+                .final_score
+                .total_cmp(&left.1.final_score)
+                .then_with(|| left.0.cmp(&right.0))
+        });
+        let reranked_candidate_count = reranked.len();
+        let candidates = reranked
+            .into_iter()
+            .map(|(_, candidate)| candidate)
+            .take(hits)
+            .collect();
         Ok(RetrievalRoundOutput {
             candidates,
             dense_candidate_count,
@@ -682,13 +755,23 @@ impl ReconstructiveStrategy {
 }
 
 struct RetrievalRoundOutput {
-    candidates: Vec<RerankedCandidate>,
+    candidates: Vec<RetrievalCandidate>,
     dense_candidate_count: usize,
     sparse_candidate_count: usize,
     fused_candidate_count: usize,
     reranked_candidate_count: usize,
     query_embedding_calls: usize,
     reranker_calls: usize,
+}
+
+struct FusedRoundCandidate {
+    message_id: String,
+    merge_score: f64,
+}
+
+struct RetrievalCandidate {
+    message_id: String,
+    final_score: f64,
 }
 
 fn controller_kind(config: &ControllerConfig) -> &'static str {
@@ -1058,6 +1141,129 @@ mod tests {
         assert_eq!(metadata["controller_fallbacks"]["total"], 2);
         assert_eq!(metadata["controller_fallbacks"]["repeated_query"], 1);
         assert_eq!(metadata["controller_fallbacks"]["validation_exhausted"], 1);
+    }
+
+    #[tokio::test]
+    async fn dense_bm25_union_without_final_ranker_makes_no_reranker_call() {
+        let listener = match TcpListener::bind("127.0.0.1:0").await {
+            Ok(listener) => listener,
+            Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied => return,
+            Err(error) => panic!("bind mock inference server: {error}"),
+        };
+        let address = listener.local_addr().unwrap();
+        let embedding_calls = Arc::new(AtomicUsize::new(0));
+        let server_embedding_calls = Arc::clone(&embedding_calls);
+        let server = tokio::spawn(async move {
+            // One batched history-index call and one query-embedding call. Any
+            // attempted reranker call is left without a listener and fails.
+            for _ in 0..2 {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                let (request_line, body) = read_json_request(&mut stream).await;
+                assert!(request_line.contains("/embeddings"));
+                server_embedding_calls.fetch_add(1, Ordering::SeqCst);
+                let input = body["input"].as_array().unwrap();
+                let data = input
+                    .iter()
+                    .enumerate()
+                    .map(|(index, value)| {
+                        let text = value.as_str().unwrap().to_ascii_lowercase();
+                        let embedding = if text.contains("alpha") {
+                            vec![1.0, 0.0]
+                        } else {
+                            vec![0.0, 1.0]
+                        };
+                        json!({"index": index, "embedding": embedding})
+                    })
+                    .collect::<Vec<_>>();
+                write_json_response(&mut stream, &json!({"data": data})).await;
+            }
+        });
+
+        let endpoint = format!("http://{address}/v1");
+        let strategy = build(Some(&json!({
+            "embedding": {
+                "backend": "openai_compatible",
+                "endpoint": {"base_url": endpoint, "model": "embed"}
+            },
+            "controller": {"kind": "one_shot", "hits": 2},
+            "retrieval": {
+                "dense_limit": 3,
+                "sparse_limit": 3,
+                "fused_limit": 3,
+                "require_dense_index": true,
+                "merge": "dense_bm25_union",
+                "final_ranker": "none"
+            },
+            "context": {
+                "neighbor_before": 0,
+                "neighbor_after": 0,
+                "max_events": 3,
+                "max_context_chars": 4096,
+                "max_controller_chars": 4096
+            }
+        })))
+        .unwrap();
+        let store = SqliteStore::open_memory().await.unwrap();
+        let events = ["alpha fact", "beta fact", "gamma fact"]
+            .into_iter()
+            .enumerate()
+            .map(|(index, content)| {
+                CanonicalEvent::message_from_text(
+                    EventSource::new(
+                        AgentKind::Codex,
+                        "session",
+                        None,
+                        None,
+                        "message",
+                        None,
+                        Some("/repo".into()),
+                    ),
+                    MessageRole::Assistant,
+                    content,
+                    Some(index as i64 + 1),
+                )
+            })
+            .collect::<Vec<_>>();
+        let stats = store.ingest(&events).await.unwrap();
+        let sequence = stats.domain_event_seq.unwrap();
+        let mutations = strategy
+            .on_event(
+                &store,
+                &StrategyEvent {
+                    sequence,
+                    events: events.clone(),
+                },
+            )
+            .await
+            .unwrap();
+        store
+            .apply_strategy_event(NAMESPACE, sequence, &mutations)
+            .await
+            .unwrap();
+
+        let result = strategy
+            .recall(
+                &store,
+                &RecallRequest {
+                    query: SearchQuery {
+                        text: "alpha".into(),
+                        repository: Some("/repo".into()),
+                        limit: 50,
+                        ..SearchQuery::default()
+                    },
+                    query_time_ms: 10,
+                },
+            )
+            .await
+            .unwrap();
+        server.await.unwrap();
+
+        assert_eq!(embedding_calls.load(Ordering::SeqCst), 2);
+        assert_eq!(result.metadata["retrieval_usage"]["reranker_calls"], 0);
+        assert_eq!(result.metadata["retrieval_usage"]["reranked_candidates"], 0);
+        assert_eq!(result.metadata["retrieval_merge"], "dense_bm25_union");
+        assert_eq!(result.metadata["final_ranker"], "none");
+        assert!(result.metadata["reranker_model"].is_null());
     }
 
     #[tokio::test]

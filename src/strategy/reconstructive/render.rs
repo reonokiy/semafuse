@@ -86,8 +86,13 @@ pub(super) fn render_verbatim_context(
         let last = anchor_scope_order
             .saturating_add(config.neighbor_after)
             .min(scope_positions.len() - 1);
-        for scope_order in first..=last {
-            let index = scope_positions[scope_order];
+        for (scope_order, index) in scope_positions
+            .iter()
+            .enumerate()
+            .take(last + 1)
+            .skip(first)
+        {
+            let index = *index;
             let distance = scope_order.abs_diff(anchor_scope_order);
             let candidate = Priority {
                 neighbor: distance != 0,
@@ -238,8 +243,10 @@ mod tests {
             event("y", "s2", 4_000, "s2 after"),
             event("c", "s1", 5_000, "s1 after"),
         ];
-        let mut config = ContextConfig::default();
-        config.neighbor_after = 1;
+        let config = ContextConfig {
+            neighbor_after: 1,
+            ..ContextConfig::default()
+        };
         let rendered = render_verbatim_context(
             &corpus,
             &[AnchorHit {

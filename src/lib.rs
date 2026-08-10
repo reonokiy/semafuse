@@ -36,6 +36,7 @@ pub mod importer;
 mod inference;
 /// Label-isolated native loader for the pinned LoCoMo release.
 pub mod locomo;
+mod locomo_answer_protocol;
 /// End-to-end LoCoMo memory construction, common answering, and official F1.
 pub mod locomo_answer_suite;
 /// Frozen official category-aware LoCoMo token-F1 evaluator.

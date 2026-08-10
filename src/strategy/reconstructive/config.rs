@@ -8,7 +8,8 @@ use serde::Deserialize;
 #[serde(deny_unknown_fields)]
 pub(super) struct ReconstructiveConfig {
     pub(super) embedding: EmbeddingBackend,
-    pub(super) reranker: RerankBackend,
+    #[serde(default)]
+    pub(super) reranker: Option<RerankBackend>,
     pub(super) controller: ControllerConfig,
     #[serde(default)]
     pub(super) retrieval: RetrievalConfig,
@@ -50,6 +51,8 @@ pub(super) struct RetrievalConfig {
     pub(super) sparse_limit: usize,
     pub(super) fused_limit: usize,
     pub(super) require_dense_index: bool,
+    pub(super) merge: RetrievalMerge,
+    pub(super) final_ranker: FinalRanker,
 }
 
 impl Default for RetrievalConfig {
@@ -59,6 +62,42 @@ impl Default for RetrievalConfig {
             sparse_limit: 100,
             fused_limit: 100,
             require_dense_index: true,
+            merge: RetrievalMerge::Rrf,
+            final_ranker: FinalRanker::CrossEncoder,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub(super) enum RetrievalMerge {
+    #[default]
+    Rrf,
+    DenseBm25Union,
+}
+
+impl RetrievalMerge {
+    pub(super) fn as_str(self) -> &'static str {
+        match self {
+            Self::Rrf => "rrf",
+            Self::DenseBm25Union => "dense_bm25_union",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub(super) enum FinalRanker {
+    #[default]
+    CrossEncoder,
+    None,
+}
+
+impl FinalRanker {
+    pub(super) fn as_str(self) -> &'static str {
+        match self {
+            Self::CrossEncoder => "cross_encoder",
+            Self::None => "none",
         }
     }
 }
@@ -110,7 +149,13 @@ impl Default for ControllerGenerationConfig {
 impl ReconstructiveConfig {
     pub(super) fn validate(&self) -> Result<()> {
         self.embedding.validate("embedding")?;
-        self.reranker.validate("reranker")?;
+        if let Some(reranker) = &self.reranker {
+            reranker.validate("reranker")?;
+        }
+        ensure!(
+            self.retrieval.final_ranker != FinalRanker::CrossEncoder || self.reranker.is_some(),
+            "reranker settings are required when retrieval.final_ranker = cross_encoder"
+        );
         ensure!(
             (1..=1_024).contains(&self.embedding_batch_size),
             "embedding_batch_size must be between 1 and 1024"
@@ -274,5 +319,78 @@ mod tests {
         config.validate().unwrap();
         assert_eq!(config.hits_per_round(), 5);
         assert_eq!(config.max_rounds(), 5);
+        assert_eq!(config.retrieval.merge, RetrievalMerge::Rrf);
+        assert_eq!(config.retrieval.final_ranker, FinalRanker::CrossEncoder);
+    }
+
+    #[test]
+    fn dense_bm25_union_without_a_reranker_is_valid() {
+        let config: ReconstructiveConfig = serde_json::from_value(json!({
+            "embedding": {
+                "backend": "openai_compatible",
+                "endpoint": {
+                    "base_url": "https://example.test/v1",
+                    "model": "embed",
+                    "api_key_env": "TEST_KEY"
+                }
+            },
+            "controller": {"kind": "one_shot", "hits": 25},
+            "retrieval": {
+                "merge": "dense_bm25_union",
+                "final_ranker": "none"
+            }
+        }))
+        .unwrap();
+
+        config.validate().unwrap();
+        assert!(config.reranker.is_none());
+        assert_eq!(config.retrieval.merge, RetrievalMerge::DenseBm25Union);
+        assert_eq!(config.retrieval.final_ranker, FinalRanker::None);
+    }
+
+    #[test]
+    fn default_cross_encoder_requires_reranker_settings() {
+        let config: ReconstructiveConfig = serde_json::from_value(json!({
+            "embedding": {
+                "backend": "openai_compatible",
+                "endpoint": {
+                    "base_url": "https://example.test/v1",
+                    "model": "embed",
+                    "api_key_env": "TEST_KEY"
+                }
+            },
+            "controller": {"kind": "one_shot", "hits": 25}
+        }))
+        .unwrap();
+
+        let error = config.validate().unwrap_err();
+        assert!(error.to_string().contains("reranker settings are required"));
+    }
+
+    #[test]
+    fn merge_and_final_ranker_switches_are_orthogonal() {
+        for merge in ["rrf", "dense_bm25_union"] {
+            for final_ranker in ["cross_encoder", "none"] {
+                let mut value = json!({
+                    "embedding": {
+                        "backend": "openai_compatible",
+                        "endpoint": {"base_url": "https://example.test/v1", "model": "embed"}
+                    },
+                    "controller": {"kind": "one_shot", "hits": 25},
+                    "retrieval": {"merge": merge, "final_ranker": final_ranker}
+                });
+                if final_ranker == "cross_encoder" {
+                    value.as_object_mut().unwrap().insert(
+                        "reranker".into(),
+                        json!({
+                            "backend": "openai_compatible",
+                            "endpoint": {"base_url": "https://example.test/v1", "model": "rerank"}
+                        }),
+                    );
+                }
+                let config: ReconstructiveConfig = serde_json::from_value(value).unwrap();
+                config.validate().unwrap();
+            }
+        }
     }
 }

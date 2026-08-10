@@ -1,0 +1,43 @@
+# Training-free Omni-SimpleMem-style retrieval ablation: preserve dense order,
+# append only BM25-exclusive hits, and skip cross-encoder reranking. Source
+# messages and the existing bounded neighbor expansion remain unchanged.
+[strategies]
+enabled = ["reconstructive"]
+recall = "reconstructive"
+
+[strategies.settings.reconstructive]
+embedding_batch_size = 256
+
+[strategies.settings.reconstructive.embedding]
+backend = "openai_compatible"
+
+[strategies.settings.reconstructive.embedding.endpoint]
+base_url = "https://openrouter.ai/api/v1"
+model = "perplexity/pplx-embed-v1-0.6b"
+api_key_env = "OPENROUTER_API_KEY"
+timeout_secs = 180
+max_retries = 2
+
+[strategies.settings.reconstructive.embedding.endpoint.extra_body.provider]
+only = ["perplexity"]
+allow_fallbacks = false
+data_collection = "deny"
+
+[strategies.settings.reconstructive.controller]
+kind = "one_shot"
+hits = 25
+
+[strategies.settings.reconstructive.retrieval]
+dense_limit = 100
+sparse_limit = 100
+fused_limit = 100
+require_dense_index = true
+merge = "dense_bm25_union"
+final_ranker = "none"
+
+[strategies.settings.reconstructive.context]
+neighbor_before = 1
+neighbor_after = 2
+max_events = 100
+max_context_chars = 32768
+max_controller_chars = 24576

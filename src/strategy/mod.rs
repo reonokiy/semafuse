@@ -5,6 +5,7 @@
 //! construct replacement state off to the side before an atomic swap.
 
 mod history;
+mod hybrid_retrieval;
 mod lazymem;
 mod recall;
 mod reconstructive;

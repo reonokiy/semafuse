@@ -554,9 +554,24 @@ pub(crate) fn validate_suite(suite: &SuiteConfig) -> Result<()> {
         suite.methods.len() >= 2,
         "LoCoMo comparison requires at least two configured methods"
     );
+    validate_method_configs(&suite.methods)?;
+    ensure!(
+        suite.methods.iter().any(|method| matches!(
+            method,
+            MethodConfig::Bm25 { id, .. } | MethodConfig::Recent { id, .. }
+                if id == &suite.baseline_method
+        )),
+        "baseline_method must name a configured BM25 or recent control"
+    );
+    Ok(())
+}
+
+/// Validates method-local invariants without imposing a comparison cohort or
+/// requiring the baseline to be one of these methods. Answer suites use this
+/// when additional outputs come from pinned memory-context journals.
+pub(crate) fn validate_method_configs(methods: &[MethodConfig]) -> Result<()> {
     let mut output_ids = HashSet::new();
-    let mut direct_baselines = HashSet::new();
-    for method in &suite.methods {
+    for method in methods {
         ensure!(
             !method.id().trim().is_empty() && !method.id().contains("::"),
             "method IDs must be non-empty and must not contain ::"
@@ -568,7 +583,6 @@ pub(crate) fn validate_suite(suite: &SuiteConfig) -> Result<()> {
                     "method {id} must return at least 50 items for fixed @50 scoring"
                 );
                 ensure!(output_ids.insert(id.clone()), "duplicate output id {id}");
-                direct_baselines.insert(id.clone());
             }
             MethodConfig::Semafuse {
                 id, limit, stages, ..
@@ -629,10 +643,6 @@ pub(crate) fn validate_suite(suite: &SuiteConfig) -> Result<()> {
             }
         }
     }
-    ensure!(
-        direct_baselines.contains(&suite.baseline_method),
-        "baseline_method must name a configured BM25 or recent control"
-    );
     Ok(())
 }
 

@@ -12,6 +12,7 @@ use serde_json::{Value, json};
 pub(crate) enum JsonContract {
     WindowDecisions { count: usize },
     EvidenceGap,
+    ConciseAnswer,
 }
 
 impl JsonContract {
@@ -39,7 +40,8 @@ impl JsonContract {
 
     /// Codex currently requires an object at the output-schema root. Window
     /// decisions therefore retain their established transport envelope, while
-    /// the already-object-shaped evidence-gap contract can be emitted directly.
+    /// the already-object-shaped evidence-gap and concise-answer contracts can
+    /// be emitted directly.
     pub(super) fn codex_output_schema(self) -> Result<Value> {
         self.validate()?;
         Ok(match self {
@@ -51,7 +53,7 @@ impl JsonContract {
                     "decisions": self.payload_schema()
                 }
             }),
-            Self::EvidenceGap => self.payload_schema(),
+            Self::EvidenceGap | Self::ConciseAnswer => self.payload_schema(),
         })
     }
 
@@ -62,6 +64,9 @@ impl JsonContract {
             }
             Self::EvidenceGap => {
                 "Return the required evidence-gap JSON object directly. Include exactly `is_sufficient`, `evidence_indices`, `gaps`, `new_query`, and `confidence_score`; do not add any other fields."
+            }
+            Self::ConciseAnswer => {
+                "Return the required concise-answer JSON object directly. Include exactly the string fields `reasoning` and `answer`; do not add any other fields."
             }
         }
     }
@@ -86,6 +91,11 @@ impl JsonContract {
                     .context("Codex processor response is not a JSON evidence-gap object")?;
                 serde_json::to_string(&value).context("normalize Codex evidence-gap response")
             }
+            Self::ConciseAnswer => {
+                let value: Value = serde_json::from_str(response)
+                    .context("Codex response is not a JSON concise-answer object")?;
+                serde_json::to_string(&value).context("normalize Codex concise-answer response")
+            }
         }
     }
 
@@ -93,6 +103,7 @@ impl JsonContract {
         match self {
             Self::WindowDecisions { .. } => "lazymem_window_decisions",
             Self::EvidenceGap => "evidence_gap",
+            Self::ConciseAnswer => "concise_answer",
         }
     }
 
@@ -100,6 +111,7 @@ impl JsonContract {
         match self {
             Self::WindowDecisions { count } => window_decisions_schema(count),
             Self::EvidenceGap => evidence_gap_schema(),
+            Self::ConciseAnswer => concise_answer_schema(),
         }
     }
 }
@@ -159,6 +171,18 @@ fn evidence_gap_schema() -> Value {
             },
             "new_query": {"type": "string"},
             "confidence_score": {"type": "number", "minimum": 0, "maximum": 1}
+        }
+    })
+}
+
+fn concise_answer_schema() -> Value {
+    json!({
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["reasoning", "answer"],
+        "properties": {
+            "reasoning": {"type": "string", "minLength": 1},
+            "answer": {"type": "string", "minLength": 1}
         }
     })
 }
@@ -229,6 +253,29 @@ mod tests {
         );
         assert_eq!(schema["properties"]["confidence_score"]["minimum"], 0);
         assert_eq!(schema["properties"]["confidence_score"]["maximum"], 1);
+    }
+
+    #[test]
+    fn concise_answer_contract_is_strict_for_both_transports() {
+        let contract = JsonContract::ConciseAnswer;
+        let openai = contract.openai_response_format().unwrap();
+        let codex = contract.codex_output_schema().unwrap();
+        let schema = &openai["json_schema"]["schema"];
+        assert_eq!(openai["json_schema"]["name"], "concise_answer");
+        assert_eq!(openai["json_schema"]["strict"], true);
+        assert_eq!(schema, &codex);
+        assert_eq!(schema["type"], "object");
+        assert_eq!(schema["additionalProperties"], false);
+        assert_eq!(schema["required"], json!(["reasoning", "answer"]));
+        assert_eq!(schema["properties"].as_object().unwrap().len(), 2);
+        assert_eq!(
+            schema["properties"]["reasoning"],
+            json!({"type": "string", "minLength": 1})
+        );
+        assert_eq!(
+            schema["properties"]["answer"],
+            json!({"type": "string", "minLength": 1})
+        );
     }
 
     #[test]
