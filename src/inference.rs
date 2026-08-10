@@ -13,6 +13,8 @@ pub(crate) use openai::{EmbeddingBackend, GenerationOptions, OpenAiEndpoint};
 pub(crate) use processor::PromptProcessorBackend;
 pub(crate) use reranker::RerankBackend;
 
+pub(crate) const MAX_PROCESSOR_COMPRESSED_CONTENT_CHARS: usize = 512;
+pub(crate) const MAX_PROCESSOR_REASON_CHARS: usize = 256;
 const DEFAULT_SEMAFUSED_CONNECT_TIMEOUT_MS: u64 = 1_000;
 const DEFAULT_SEMAFUSED_REQUEST_TIMEOUT_MS: u64 = 120_000;
 

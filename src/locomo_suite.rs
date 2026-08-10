@@ -146,16 +146,16 @@ pub struct LocomoEfficiency {
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct SuiteConfig {
-    schema_version: u32,
-    name: String,
-    baseline_method: String,
-    methods: Vec<MethodConfig>,
+pub(crate) struct SuiteConfig {
+    pub(crate) schema_version: u32,
+    pub(crate) name: String,
+    pub(crate) baseline_method: String,
+    pub(crate) methods: Vec<MethodConfig>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
-enum MethodConfig {
+pub(crate) enum MethodConfig {
     Bm25 {
         id: String,
         #[serde(default = "default_limit")]
@@ -195,7 +195,7 @@ enum MethodConfig {
 }
 
 impl MethodConfig {
-    fn id(&self) -> &str {
+    pub(crate) fn id(&self) -> &str {
         match self {
             Self::Bm25 { id, .. }
             | Self::Recent { id, .. }
@@ -207,7 +207,7 @@ impl MethodConfig {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-enum SemafuseStage {
+pub(crate) enum SemafuseStage {
     Dense,
     Bm25,
     Rrf,
@@ -215,7 +215,7 @@ enum SemafuseStage {
 }
 
 impl SemafuseStage {
-    const fn as_str(self) -> &'static str {
+    pub(crate) const fn as_str(self) -> &'static str {
         match self {
             Self::Dense => "dense",
             Self::Bm25 => "bm25",
@@ -238,7 +238,7 @@ fn default_timeout_seconds() -> u64 {
 }
 
 #[derive(Debug)]
-enum ResolvedMethod {
+pub(crate) enum ResolvedMethod {
     Bm25 {
         id: String,
         limit: usize,
@@ -261,14 +261,14 @@ enum ResolvedMethod {
 }
 
 impl ResolvedMethod {
-    fn id(&self) -> &str {
+    pub(crate) fn id(&self) -> &str {
         match self {
             Self::Bm25 { id, .. } | Self::Recent { id, .. } | Self::Semafuse { id, .. } => id,
             Self::ExternalJsonl(method) => &method.id,
         }
     }
 
-    fn output_ids(&self) -> Vec<String> {
+    pub(crate) fn output_ids(&self) -> Vec<String> {
         match self {
             Self::Semafuse { id, stages, .. } => stages
                 .iter()
@@ -280,29 +280,29 @@ impl ResolvedMethod {
 }
 
 #[derive(Debug)]
-struct ResolvedExternalMethod {
-    id: String,
-    worker_config: PathBuf,
-    worker_config_sha256: String,
-    adapter_kind: String,
-    track: String,
-    upstream_revision: Option<String>,
-    model_revisions: BTreeMap<String, String>,
-    reader_tokenizer_model: Option<String>,
-    reader_tokenizer_revision: Option<String>,
-    command: Vec<String>,
-    command_sha256: String,
-    executable_invocation: PathBuf,
-    executable_sha256: String,
-    working_directory: Option<PathBuf>,
-    python_path: Option<PathBuf>,
-    python_tree_sha256: Option<String>,
-    dependency_lock_sha256: Option<String>,
-    python_environment_sha256: Option<String>,
-    dependency_pins_verified: bool,
-    top_k: usize,
-    max_context_tokens: usize,
-    timeout: Duration,
+pub(crate) struct ResolvedExternalMethod {
+    pub(crate) id: String,
+    pub(crate) worker_config: PathBuf,
+    pub(crate) worker_config_sha256: String,
+    pub(crate) adapter_kind: String,
+    pub(crate) track: String,
+    pub(crate) upstream_revision: Option<String>,
+    pub(crate) model_revisions: BTreeMap<String, String>,
+    pub(crate) reader_tokenizer_model: Option<String>,
+    pub(crate) reader_tokenizer_revision: Option<String>,
+    pub(crate) command: Vec<String>,
+    pub(crate) command_sha256: String,
+    pub(crate) executable_invocation: PathBuf,
+    pub(crate) executable_sha256: String,
+    pub(crate) working_directory: Option<PathBuf>,
+    pub(crate) python_path: Option<PathBuf>,
+    pub(crate) python_tree_sha256: Option<String>,
+    pub(crate) dependency_lock_sha256: Option<String>,
+    pub(crate) python_environment_sha256: Option<String>,
+    pub(crate) dependency_pins_verified: bool,
+    pub(crate) top_k: usize,
+    pub(crate) max_context_tokens: usize,
+    pub(crate) timeout: Duration,
 }
 
 #[derive(Debug)]
@@ -529,7 +529,7 @@ fn load_suite(path: &Path) -> Result<SuiteConfig> {
         .with_context(|| format!("deserialize LoCoMo suite TOML {}", path.display()))
 }
 
-fn validate_suite(suite: &SuiteConfig) -> Result<()> {
+pub(crate) fn validate_suite(suite: &SuiteConfig) -> Result<()> {
     ensure!(
         suite.schema_version == SUITE_SCHEMA_VERSION,
         "unsupported LoCoMo suite schema_version {}",
@@ -629,7 +629,10 @@ fn validate_suite(suite: &SuiteConfig) -> Result<()> {
     Ok(())
 }
 
-fn resolve_methods(suite: &SuiteConfig, suite_dir: &Path) -> Result<Vec<ResolvedMethod>> {
+pub(crate) fn resolve_methods(
+    suite: &SuiteConfig,
+    suite_dir: &Path,
+) -> Result<Vec<ResolvedMethod>> {
     suite
         .methods
         .iter()
@@ -1251,7 +1254,7 @@ fn python_tree_sha256(root: &Path) -> Result<String> {
     Ok(hex::encode(digest.finalize()))
 }
 
-fn validate_paper_dataset(dataset: &PreparedDataset) -> Result<()> {
+pub(crate) fn validate_paper_dataset(dataset: &PreparedDataset) -> Result<()> {
     ensure!(
         dataset.summary.conversation_count == PAPER_V2_CONVERSATION_IDS.len(),
         "LoCoMo paper-v2 requires exactly two conversations"
@@ -1267,7 +1270,7 @@ fn validate_paper_dataset(dataset: &PreparedDataset) -> Result<()> {
     Ok(())
 }
 
-fn projected_corpus(question: &PreparedQuestion) -> Vec<BaselineMessage> {
+pub(crate) fn projected_corpus(question: &PreparedQuestion) -> Vec<BaselineMessage> {
     question
         .input
         .messages
@@ -1456,7 +1459,7 @@ fn baseline_output(id: &str, kind: &str, ranking: Vec<String>, elapsed: Duration
     }
 }
 
-fn runner_question(question: &PreparedQuestion) -> RunnerQuestion {
+pub(crate) fn runner_question(question: &PreparedQuestion) -> RunnerQuestion {
     RunnerQuestion {
         id: question.input.id.clone(),
         dataset: question.input.dataset.clone(),
@@ -1710,7 +1713,7 @@ fn validate_shared_conversation(
     Ok(())
 }
 
-fn project_external_source_ids(
+pub(crate) fn project_external_source_ids(
     items: &[ExternalSearchItem],
     corpus: &[BaselineMessage],
     limit: usize,
@@ -1742,7 +1745,7 @@ fn project_external_source_ids(
     Ok(ranking)
 }
 
-struct ExternalWorker {
+pub(crate) struct ExternalWorker {
     child: Child,
     stdin: ChildStdin,
     stdout: BufReader<ChildStdout>,
@@ -1752,7 +1755,7 @@ struct ExternalWorker {
 }
 
 impl ExternalWorker {
-    async fn spawn(method: &ResolvedExternalMethod) -> Result<Self> {
+    pub(crate) async fn spawn(method: &ResolvedExternalMethod) -> Result<Self> {
         let mut command = Command::new(&method.executable_invocation);
         command
             .args(&method.command[1..])
@@ -1786,7 +1789,7 @@ impl ExternalWorker {
         })
     }
 
-    async fn reset(&mut self) -> Result<()> {
+    pub(crate) async fn reset(&mut self) -> Result<()> {
         let result = self.rpc("reset", Map::new()).await?;
         let result: ExternalResetResult =
             serde_json::from_value(result).context("external reset result violates protocol")?;
@@ -1794,7 +1797,7 @@ impl ExternalWorker {
         Ok(())
     }
 
-    async fn add_history(
+    pub(crate) async fn add_history(
         &mut self,
         messages: &[crate::longmemeval::BenchmarkMessage],
     ) -> Result<()> {
@@ -1866,7 +1869,7 @@ impl ExternalWorker {
         Ok(())
     }
 
-    async fn search(
+    pub(crate) async fn search(
         &mut self,
         query: &str,
         top_k: usize,
@@ -1934,7 +1937,7 @@ impl ExternalWorker {
         Ok(result)
     }
 
-    async fn close(mut self) -> Result<()> {
+    pub(crate) async fn close(mut self) -> Result<()> {
         let result = self.rpc("close", Map::new()).await?;
         let result: ExternalCloseResult =
             serde_json::from_value(result).context("external close result violates protocol")?;
@@ -2064,23 +2067,23 @@ struct ExternalCloseResult {
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct ExternalSearchResult {
-    items: Vec<ExternalSearchItem>,
-    context: String,
-    context_tokens: usize,
-    truncated: bool,
+pub(crate) struct ExternalSearchResult {
+    pub(crate) items: Vec<ExternalSearchItem>,
+    pub(crate) context: String,
+    pub(crate) context_tokens: usize,
+    pub(crate) truncated: bool,
 }
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct ExternalSearchItem {
-    id: String,
-    text: String,
-    score: Option<f64>,
-    source_ids: Vec<String>,
-    session: Option<String>,
-    timestamp: Option<String>,
-    token_count: usize,
+pub(crate) struct ExternalSearchItem {
+    pub(crate) id: String,
+    pub(crate) text: String,
+    pub(crate) score: Option<f64>,
+    pub(crate) source_ids: Vec<String>,
+    pub(crate) session: Option<String>,
+    pub(crate) timestamp: Option<String>,
+    pub(crate) token_count: usize,
 }
 
 /// Builds paired accuracy reports from complete persisted records.
@@ -2307,7 +2310,7 @@ fn qa_category_counts(dataset: &PreparedDataset) -> BTreeMap<String, usize> {
         .collect()
 }
 
-fn method_manifest(methods: &[ResolvedMethod]) -> Vec<Value> {
+pub(crate) fn method_manifest(methods: &[ResolvedMethod]) -> Vec<Value> {
     let mut manifest = Vec::new();
     for method in methods {
         match method {

@@ -3,7 +3,7 @@
 //! The types in this module deliberately mirror the normalized JSONL records
 //! emitted by `benchmarks/lazymem`. Benchmark histories are never mixed with a
 //! user's durable store: one-shot calls get a fresh in-memory SQLite store,
-//! while [`StrategyRetrievalSession`] owns one isolated store per explicitly
+//! while [`StrategyBenchmarkSession`] owns one isolated store per explicitly
 //! identity-checked shared history. Both paths use ordinary ingestion, strategy
 //! dispatch, and timed recall APIs.
 
@@ -126,21 +126,32 @@ pub struct BenchmarkConstructionMetrics {
     pub event_batches_indexed: usize,
 }
 
-/// Production LazyMem retrieval over one isolated, persistent benchmark
+/// Production strategy execution over one isolated, persistent benchmark
 /// history.
 ///
 /// Construction ingests and indexes exactly once. Every query is checked
 /// against the constructor's SHA-256 history identity before recall, so a
 /// caller cannot accidentally reuse memory across datasets, users, roles,
 /// messages, sessions, or timestamps. Question IDs, query text, query time,
-/// and evaluator-only category may vary between queries.
-pub struct StrategyRetrievalSession {
+/// and evaluator-only category may vary between queries. Session queries see
+/// the complete supplied history, which matches benchmarks such as LoCoMo
+/// where questions are asked after the full conversation.
+pub struct StrategyBenchmarkSession {
     config: Config,
     store: SqliteStore,
     prepared: PreparedQuestion,
     history_identity_sha256: String,
     construction: BenchmarkConstructionMetrics,
     completed_queries: usize,
+}
+
+/// Backwards-compatible retrieval-only view over a persistent benchmark
+/// session.
+///
+/// New benchmark code that also needs query-conditioned memory construction
+/// should use [`StrategyBenchmarkSession`] directly.
+pub struct StrategyRetrievalSession {
+    inner: StrategyBenchmarkSession,
 }
 
 #[derive(Clone, Copy)]
@@ -154,6 +165,35 @@ struct ParsedTimestamp {
 enum BenchmarkExecution {
     Full,
     RetrievalOnly,
+}
+
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum BenchmarkHistoryVisibility {
+    AtQueryTime,
+    AllProvidedMessages,
+}
+
+impl BenchmarkHistoryVisibility {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::AtQueryTime => "at_query_time",
+            Self::AllProvidedMessages => "all_provided_messages",
+        }
+    }
+
+    fn strategy_reference_time_ms(self, query_time_ms: i64, prepared: &PreparedQuestion) -> i64 {
+        match self {
+            Self::AtQueryTime => query_time_ms,
+            Self::AllProvidedMessages => prepared
+                .events
+                .iter()
+                .map(CanonicalEvent::ordering_timestamp_ms)
+                .max()
+                .map_or(query_time_ms, |history_max| {
+                    query_time_ms.max(history_max.saturating_add(1))
+                }),
+        }
+    }
 }
 
 impl BenchmarkExecution {
@@ -225,10 +265,14 @@ pub async fn run_strategy_retrieval_question(
     session.query(question, limit).await
 }
 
-impl StrategyRetrievalSession {
-    /// Constructs an isolated production LazyMem index for one shared history.
+impl StrategyBenchmarkSession {
+    /// Constructs one isolated production strategy index for a shared history.
+    ///
+    /// The store is populated and strategy indexing is dispatched during this
+    /// call only. Both [`Self::query_retrieval`] and [`Self::query_full`] reuse
+    /// that construction for every identity-compatible question.
     pub async fn new(config: &Config, exemplar: &BenchmarkQuestion) -> Result<Self> {
-        validate_strategy_configuration(config, BenchmarkExecution::RetrievalOnly)?;
+        validate_strategy_configuration(config, BenchmarkExecution::Full)?;
         validate_benchmark_question(exemplar)?;
         let history_identity_sha256 = benchmark_history_identity(exemplar)?;
         let prepared = prepare_shared_history(exemplar, &history_identity_sha256)?;
@@ -264,14 +308,45 @@ impl StrategyRetrievalSession {
         &self.construction
     }
 
-    /// Queries the already-constructed production index.
+    /// Runs retrieval and evidence-window expansion without invoking the
+    /// query-conditioned memory processor.
     ///
     /// The complete history must match the constructor's identity. Validation
     /// happens before recall and a mismatch never mutates the session.
-    pub async fn query(
+    pub async fn query_retrieval(
         &mut self,
         question: BenchmarkQuestion,
         limit: usize,
+    ) -> Result<BenchmarkResponse> {
+        validate_strategy_configuration(&self.config, BenchmarkExecution::RetrievalOnly)?;
+        self.query_with_execution(question, limit, BenchmarkExecution::RetrievalOnly)
+            .await
+    }
+
+    /// Runs the configured production strategy including query-conditioned
+    /// memory construction over the already-constructed index.
+    ///
+    /// Full session queries deliberately make every supplied message visible,
+    /// even when the dataset's query-time string parses earlier than the last
+    /// message. This is the LoCoMo lifecycle: the question is asked after the
+    /// complete conversation, and `query_time` remains evaluator metadata
+    /// rather than a corpus cutoff. The returned benchmark trace records
+    /// `history_visibility = "all_provided_messages"` and both timestamps.
+    pub async fn query_full(
+        &mut self,
+        question: BenchmarkQuestion,
+        limit: usize,
+    ) -> Result<BenchmarkResponse> {
+        validate_strategy_configuration(&self.config, BenchmarkExecution::Full)?;
+        self.query_with_execution(question, limit, BenchmarkExecution::Full)
+            .await
+    }
+
+    async fn query_with_execution(
+        &mut self,
+        question: BenchmarkQuestion,
+        limit: usize,
+        execution: BenchmarkExecution,
     ) -> Result<BenchmarkResponse> {
         ensure!(limit > 0, "benchmark retrieval limit must be positive");
         validate_benchmark_question(&question)?;
@@ -284,7 +359,8 @@ impl StrategyRetrievalSession {
             &self.prepared,
             &question,
             limit,
-            BenchmarkExecution::RetrievalOnly,
+            execution,
+            BenchmarkHistoryVisibility::AllProvidedMessages,
             query_time_ms,
             query_time_source,
             &self.construction,
@@ -295,6 +371,36 @@ impl StrategyRetrievalSession {
         .await?;
         self.completed_queries += 1;
         Ok(response)
+    }
+}
+
+impl StrategyRetrievalSession {
+    /// Constructs a retrieval-only session over one shared LazyMem history.
+    pub async fn new(config: &Config, exemplar: &BenchmarkQuestion) -> Result<Self> {
+        validate_strategy_configuration(config, BenchmarkExecution::RetrievalOnly)?;
+        Ok(Self {
+            inner: StrategyBenchmarkSession::new(config, exemplar).await?,
+        })
+    }
+
+    /// Returns the stable identity of the exact history owned by this session.
+    pub fn history_identity_sha256(&self) -> &str {
+        self.inner.history_identity_sha256()
+    }
+
+    /// Returns once-per-history construction measurements.
+    pub fn construction_metrics(&self) -> &BenchmarkConstructionMetrics {
+        self.inner.construction_metrics()
+    }
+
+    /// Queries the already-constructed LazyMem index without invoking its
+    /// memory processor.
+    pub async fn query(
+        &mut self,
+        question: BenchmarkQuestion,
+        limit: usize,
+    ) -> Result<BenchmarkResponse> {
+        self.inner.query_retrieval(question, limit).await
     }
 }
 
@@ -339,6 +445,7 @@ async fn run_strategy_question_with_execution(
         &question,
         limit,
         execution,
+        BenchmarkHistoryVisibility::AtQueryTime,
         prepared.query_time_ms,
         prepared.query_time_source,
         &construction,
@@ -459,6 +566,7 @@ async fn recall_prepared_question(
     question: &BenchmarkQuestion,
     limit: usize,
     execution: BenchmarkExecution,
+    history_visibility: BenchmarkHistoryVisibility,
     query_time_ms: i64,
     query_time_source: &'static str,
     construction: &BenchmarkConstructionMetrics,
@@ -467,22 +575,8 @@ async fn recall_prepared_question(
     session_query_index: Option<usize>,
 ) -> Result<BenchmarkResponse> {
     let strategy_name = config.strategies.recall.as_str();
-    // LongMemEval retrieval evaluates the complete supplied haystack. Some
-    // temporal-reasoning fixtures deliberately contain evidence timestamps
-    // later than `question_date`, so retrieval-only execution must not treat
-    // that field as a corpus cutoff. Full memory execution keeps the ordinary
-    // point-in-time product semantics.
-    let strategy_reference_time_ms = match execution {
-        BenchmarkExecution::Full => query_time_ms,
-        BenchmarkExecution::RetrievalOnly => prepared
-            .events
-            .iter()
-            .map(CanonicalEvent::ordering_timestamp_ms)
-            .max()
-            .map_or(query_time_ms, |history_max| {
-                query_time_ms.max(history_max.saturating_add(1))
-            }),
-    };
+    let strategy_reference_time_ms =
+        history_visibility.strategy_reference_time_ms(query_time_ms, prepared);
     let recall_started = Instant::now();
     let query = SearchQuery {
         text: question.query.clone(),
@@ -591,10 +685,7 @@ async fn recall_prepared_question(
         "query_time_ms": query_time_ms,
         "query_time_source": query_time_source,
         "strategy_reference_time_ms": strategy_reference_time_ms,
-        "history_visibility": match execution {
-            BenchmarkExecution::Full => "at_query_time",
-            BenchmarkExecution::RetrievalOnly => "all_provided_messages",
-        },
+        "history_visibility": history_visibility.as_str(),
         "input_message_count": question.messages.len(),
         "indexed_message_count": prepared.events.len(),
         "skipped_empty_message_ids": prepared.skipped_empty_message_ids,
@@ -1187,6 +1278,10 @@ fn metadata_timing_ms(metadata: &Map<String, Value>, name: &str) -> f64 {
 mod tests {
     use super::*;
     use crate::config::{BlobConfig, StrategyConfig};
+    use std::sync::{
+        Arc, Mutex,
+        atomic::{AtomicUsize, Ordering},
+    };
     use tokio::{
         io::{AsyncReadExt, AsyncWriteExt},
         net::TcpListener,
@@ -1400,19 +1495,22 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn retrieval_only_runner_skips_an_unreachable_processor() {
+    async fn persistent_session_reuses_index_and_processes_every_full_query() {
         let listener = match TcpListener::bind("127.0.0.1:0").await {
             Ok(listener) => listener,
             Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied => return,
             Err(error) => panic!("bind mock inference server: {error}"),
         };
         let address = listener.local_addr().unwrap();
-        let embedding_batch_sizes = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let embedding_batch_sizes = Arc::new(Mutex::new(Vec::new()));
+        let processor_calls = Arc::new(AtomicUsize::new(0));
         let server_embedding_batch_sizes = embedding_batch_sizes.clone();
+        let server_processor_calls = processor_calls.clone();
         let server = tokio::spawn(async move {
             loop {
                 let (mut stream, _) = listener.accept().await.unwrap();
                 let embedding_batch_sizes = server_embedding_batch_sizes.clone();
+                let processor_calls = server_processor_calls.clone();
                 tokio::spawn(async move {
                     let mut request = Vec::new();
                     let mut buffer = [0_u8; 4_096];
@@ -1468,8 +1566,29 @@ mod tests {
                                 .map(|(index, _)| json!({"index": index, "score": 1.0 - index as f64 / 100.0}))
                                 .collect(),
                         )
+                    } else if request_line.contains("/chat/completions") {
+                        processor_calls.fetch_add(1, Ordering::SeqCst);
+                        let prompt = body["messages"][1]["content"].as_str().unwrap();
+                        let (_, raw_window) = prompt.split_once("# History Window\n").unwrap();
+                        let window: Value = serde_json::from_str(raw_window).unwrap();
+                        let decisions = ["previous_bridge", "core_messages", "next_bridge"]
+                            .into_iter()
+                            .flat_map(|section| window[section].as_array().unwrap())
+                            .map(|message| {
+                                json!({
+                                    "op": "KEEP",
+                                    "compressed_content": message["content"],
+                                    "reason": "relevant test evidence"
+                                })
+                            })
+                            .collect::<Vec<_>>();
+                        json!({
+                            "choices": [{"finish_reason": "stop", "message": {"content": serde_json::to_string(&decisions).unwrap()}}]
+                        })
                     } else {
-                        panic!("retrieval-only runner made an unexpected request: {request_line}");
+                        panic!(
+                            "persistent benchmark session made an unexpected request: {request_line}"
+                        );
                     };
                     let encoded = serde_json::to_vec(&response).unwrap();
                     let header = format!(
@@ -1493,9 +1612,10 @@ mod tests {
                         "protocol": "custom",
                         "embedding": {"backend": "openai_compatible", "endpoint": {"base_url": format!("{endpoint}/v1"), "model": "embed"}},
                         "reranker": {"backend": "openai_compatible", "endpoint": {"base_url": endpoint, "model": "reranker"}},
-                        "processor": {"backend": "openai_compatible", "endpoint": {"base_url": "http://127.0.0.1:1/v1", "model": "unreachable-processor"}},
+                        "processor": {"backend": "openai_compatible", "endpoint": {"base_url": format!("{endpoint}/v1"), "model": "processor"}},
                         "retrieval": {"dense_limit": 3, "sparse_limit": 3, "fused_limit": 3, "rerank_top_n": 2},
-                        "window": {"radius": 1, "merge_rule": "repository_contiguous", "max_messages": 3, "stride": 2}
+                        "window": {"radius": 1, "merge_rule": "repository_contiguous", "max_messages": 3, "stride": 2},
+                        "generation": {"temperature": 0.0, "top_p": 1.0, "max_tokens": 512, "max_concurrency": 1, "enable_thinking": false}
                     }),
                 )]),
             },
@@ -1514,11 +1634,11 @@ mod tests {
         }))
         .unwrap();
 
-        let mut session = StrategyRetrievalSession::new(&config, &question)
+        let mut session = StrategyBenchmarkSession::new(&config, &question)
             .await
             .unwrap();
         assert_eq!(session.construction_metrics().events_inserted, 3);
-        let response = session.query(question.clone(), 2).await.unwrap();
+        let response = session.query_retrieval(question.clone(), 2).await.unwrap();
         assert!(response.retained_message_ids.is_empty());
         assert!(!response.retrieved_message_ids.is_empty());
         assert!(!response.covered_message_ids.is_empty());
@@ -1529,6 +1649,7 @@ mod tests {
                 .contains("has not been filtered, compressed")
         );
         assert_eq!(response.metadata["strategy"]["processor_invoked"], false);
+        assert_eq!(processor_calls.load(Ordering::SeqCst), 0);
         assert_eq!(
             response.metadata["benchmark_trace"]["history_visibility"],
             "all_provided_messages"
@@ -1566,18 +1687,47 @@ mod tests {
             response.metadata["benchmark_trace"]["session_query_index"],
             0
         );
-        let mut second = question;
-        second.id = "retrieval-only-case-two".into();
-        second.query = "completed".into();
-        let second_response = session.query(second, 2).await.unwrap();
+        let mut first_full_question = question.clone();
+        first_full_question.id = "full-case-one".into();
+        first_full_question.query = "completed".into();
+        let first_full = session.query_full(first_full_question, 2).await.unwrap();
         assert_eq!(
-            second_response.metadata["benchmark_trace"]["session_query_index"],
+            first_full.metadata["benchmark_trace"]["session_query_index"],
             1
         );
         assert_eq!(
             response.metadata["benchmark_trace"]["history_identity_sha256"],
-            second_response.metadata["benchmark_trace"]["history_identity_sha256"]
+            first_full.metadata["benchmark_trace"]["history_identity_sha256"]
         );
+        assert_eq!(
+            first_full.metadata["benchmark_trace"]["execution_mode"],
+            "full"
+        );
+        assert_eq!(
+            first_full.metadata["benchmark_trace"]["history_visibility"],
+            "all_provided_messages"
+        );
+        assert!(
+            first_full.metadata["benchmark_trace"]["strategy_reference_time_ms"]
+                .as_i64()
+                .unwrap()
+                > first_full.metadata["benchmark_trace"]["query_time_ms"]
+                    .as_i64()
+                    .unwrap(),
+            "full session execution must not cut off supplied history after a parsed query time"
+        );
+        assert_eq!(first_full.retained_message_ids, vec!["m1", "m2", "m3"]);
+        assert!(first_full.context.contains("migration completed"));
+
+        let mut second_full_question = question;
+        second_full_question.id = "full-case-two".into();
+        second_full_question.query = "planning".into();
+        let second_full = session.query_full(second_full_question, 2).await.unwrap();
+        assert_eq!(
+            second_full.metadata["benchmark_trace"]["session_query_index"],
+            2
+        );
+        assert_eq!(processor_calls.load(Ordering::SeqCst), 2);
         let embedding_batch_sizes = embedding_batch_sizes.lock().unwrap().clone();
         assert_eq!(
             embedding_batch_sizes
@@ -1592,7 +1742,7 @@ mod tests {
                 .iter()
                 .filter(|batch_size| **batch_size == 1)
                 .count(),
-            2,
+            3,
             "each query should make one query-embedding request"
         );
         server.abort();

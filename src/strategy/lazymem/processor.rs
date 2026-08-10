@@ -4,6 +4,7 @@ use super::{
     types::{ScopeKey, StoredMessage},
     window::EvidenceWindow,
 };
+use crate::inference::{MAX_PROCESSOR_COMPRESSED_CONTENT_CHARS, MAX_PROCESSOR_REASON_CHARS};
 use anyhow::{Context, Result, ensure};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
@@ -144,13 +145,30 @@ pub(super) fn process_window_response(
                 window.window_order,
                 message.message_id
             );
+            ensure!(
+                decision.reason.chars().count() <= MAX_PROCESSOR_REASON_CHARS,
+                "window {} decision for {} has a reason longer than {} characters",
+                window.window_order,
+                message.message_id,
+                MAX_PROCESSOR_REASON_CHARS
+            );
             match decision.op {
-                DecisionOp::Keep => ensure!(
-                    !decision.compressed_content.trim().is_empty(),
-                    "window {} KEEP decision for {} has empty compressed_content",
-                    window.window_order,
-                    message.message_id
-                ),
+                DecisionOp::Keep => {
+                    ensure!(
+                        !decision.compressed_content.trim().is_empty(),
+                        "window {} KEEP decision for {} has empty compressed_content",
+                        window.window_order,
+                        message.message_id
+                    );
+                    ensure!(
+                        decision.compressed_content.chars().count()
+                            <= MAX_PROCESSOR_COMPRESSED_CONTENT_CHARS,
+                        "window {} KEEP decision for {} has compressed_content longer than {} characters",
+                        window.window_order,
+                        message.message_id,
+                        MAX_PROCESSOR_COMPRESSED_CONTENT_CHARS
+                    );
+                }
                 DecisionOp::Drop => ensure!(
                     decision.compressed_content.is_empty(),
                     "window {} DROP decision for {} must have empty compressed_content",
@@ -549,6 +567,46 @@ mod tests {
             let error = process_window_response(&evidence, json).unwrap_err();
             assert!(error.to_string().contains(expected), "{error:#}");
         }
+    }
+
+    #[test]
+    fn reason_limit_counts_unicode_characters() {
+        let evidence = window(0, vec![message("a", 0, 0)]);
+        let accepted = serde_json::to_string(&vec![serde_json::json!({
+            "op": "DROP",
+            "compressed_content": "",
+            "reason": "界".repeat(MAX_PROCESSOR_REASON_CHARS),
+        })])
+        .unwrap();
+        process_window_response(&evidence, &accepted).unwrap();
+
+        let rejected = serde_json::to_string(&vec![serde_json::json!({
+            "op": "DROP",
+            "compressed_content": "",
+            "reason": "界".repeat(MAX_PROCESSOR_REASON_CHARS + 1),
+        })])
+        .unwrap();
+        assert!(process_window_response(&evidence, &rejected).is_err());
+    }
+
+    #[test]
+    fn compressed_content_limit_counts_unicode_characters() {
+        let evidence = window(0, vec![message("a", 0, 0)]);
+        let accepted = serde_json::to_string(&vec![serde_json::json!({
+            "op": "KEEP",
+            "compressed_content": "界".repeat(MAX_PROCESSOR_COMPRESSED_CONTENT_CHARS),
+            "reason": "relevant",
+        })])
+        .unwrap();
+        process_window_response(&evidence, &accepted).unwrap();
+
+        let rejected = serde_json::to_string(&vec![serde_json::json!({
+            "op": "KEEP",
+            "compressed_content": "界".repeat(MAX_PROCESSOR_COMPRESSED_CONTENT_CHARS + 1),
+            "reason": "relevant",
+        })])
+        .unwrap();
+        assert!(process_window_response(&evidence, &rejected).is_err());
     }
 
     #[test]

@@ -96,6 +96,12 @@ impl SqliteStore {
             .pragma("secure_delete", "ON");
         let pool = SqlitePoolOptions::new()
             .max_connections(1)
+            .min_connections(1)
+            // An anonymous SQLite database belongs to one connection.  If the
+            // pool retires that connection during a long benchmark, its
+            // replacement is a fresh, unmigrated database.
+            .max_lifetime(None)
+            .idle_timeout(None)
             .connect_with(options)
             .await?;
         MIGRATOR.run(&pool).await?;
@@ -2564,6 +2570,16 @@ mod tests {
     use super::*;
     use crate::model::{AgentKind, AttachmentRef, EventSource, MessageRole};
     use serde_json::json;
+
+    #[tokio::test]
+    async fn anonymous_memory_pool_never_retires_its_only_connection() {
+        let store = SqliteStore::open_memory().await.unwrap();
+        let options = store.pool.options();
+        assert_eq!(options.get_max_connections(), 1);
+        assert_eq!(options.get_min_connections(), 1);
+        assert_eq!(options.get_max_lifetime(), None);
+        assert_eq!(options.get_idle_timeout(), None);
+    }
 
     fn message(
         session: &str,

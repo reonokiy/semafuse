@@ -41,6 +41,23 @@ pub(crate) struct ProcessorBackendIdentity<'a> {
     pub(crate) model: &'a str,
 }
 
+/// One processor invocation and the provider telemetry needed to account for
+/// retries. The response text remains private to the validation pipeline and
+/// is never copied into LazyMem metadata.
+#[derive(Debug, Clone)]
+pub(crate) struct ProcessorCompletion {
+    pub(crate) content: String,
+    pub(crate) model: String,
+    pub(crate) provider: Option<String>,
+    pub(crate) finish_reason: Option<String>,
+    pub(crate) requires_stop_finish_reason: bool,
+    pub(crate) prompt_tokens: Option<u64>,
+    pub(crate) completion_tokens: Option<u64>,
+    pub(crate) reasoning_tokens: Option<u64>,
+    pub(crate) reasoning_present: bool,
+    pub(crate) cost: Option<f64>,
+}
+
 fn default_codex_command() -> String {
     "codex".into()
 }
@@ -84,6 +101,17 @@ impl PromptProcessorBackend {
         }
     }
 
+    pub(crate) fn validate_generation(
+        &self,
+        label: &str,
+        options: &GenerationOptions,
+    ) -> Result<()> {
+        match self {
+            Self::OpenaiCompatible { endpoint } => endpoint.validate_generation(label, options),
+            Self::CodexCli { .. } => Ok(()),
+        }
+    }
+
     pub(crate) fn identity(&self) -> ProcessorBackendIdentity<'_> {
         match self {
             Self::OpenaiCompatible { endpoint } => ProcessorBackendIdentity {
@@ -113,6 +141,7 @@ impl PromptProcessorBackend {
         }
     }
 
+    #[cfg(test)]
     pub(crate) async fn chat_json(
         &self,
         system: &str,
@@ -120,22 +149,49 @@ impl PromptProcessorBackend {
         options: GenerationOptions,
         expected_decisions: usize,
     ) -> Result<String> {
+        Ok(self
+            .complete_json(system, user, options, expected_decisions)
+            .await?
+            .content)
+    }
+
+    pub(crate) async fn complete_json(
+        &self,
+        system: &str,
+        user: &str,
+        options: GenerationOptions,
+        expected_decisions: usize,
+    ) -> Result<ProcessorCompletion> {
         ensure!(
             expected_decisions > 0,
             "processor request must expect at least one decision"
         );
         match self {
-            Self::OpenaiCompatible { endpoint } => endpoint
-                .chat_json(system, user, options)
-                .await
-                .context("OpenAI-compatible processor failed"),
+            Self::OpenaiCompatible { endpoint } => {
+                let completion = endpoint
+                    .chat_decisions(system, user, options, expected_decisions)
+                    .await
+                    .context("OpenAI-compatible processor failed")?;
+                Ok(ProcessorCompletion {
+                    content: completion.content,
+                    model: completion.model.unwrap_or_else(|| endpoint.model.clone()),
+                    provider: completion.provider,
+                    finish_reason: completion.finish_reason,
+                    requires_stop_finish_reason: true,
+                    prompt_tokens: completion.prompt_tokens,
+                    completion_tokens: completion.completion_tokens,
+                    reasoning_tokens: completion.reasoning_tokens,
+                    reasoning_present: completion.reasoning_present,
+                    cost: completion.cost,
+                })
+            }
             Self::CodexCli {
                 model,
                 command,
                 timeout_secs,
                 max_output_bytes,
             } => {
-                run_codex_processor(
+                let content = run_codex_processor(
                     command,
                     model,
                     system,
@@ -144,7 +200,19 @@ impl PromptProcessorBackend {
                     *timeout_secs,
                     *max_output_bytes,
                 )
-                .await
+                .await?;
+                Ok(ProcessorCompletion {
+                    content,
+                    model: model.clone(),
+                    provider: None,
+                    finish_reason: None,
+                    requires_stop_finish_reason: false,
+                    prompt_tokens: None,
+                    completion_tokens: None,
+                    reasoning_tokens: None,
+                    reasoning_present: false,
+                    cost: None,
+                })
             }
         }
     }
