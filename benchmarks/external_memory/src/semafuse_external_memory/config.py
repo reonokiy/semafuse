@@ -6,8 +6,10 @@ import json
 import os
 import re
 from dataclasses import dataclass
+from ipaddress import ip_address
 from pathlib import Path
 from typing import Any, Mapping
+from urllib.parse import urlsplit
 
 from .errors import ConfigurationError
 
@@ -16,6 +18,7 @@ _GIT_SHA = re.compile(r"^[0-9a-f]{40}$")
 _SENSITIVE_PARTS = ("api_key", "password", "secret", "token", "authorization", "credential", "private_key")
 _UPSTREAM_REVISIONS = {
     "amem": "ceffb860f0712bbae97b184d440df62bc910ca8d",
+    "amem_paper": "0c8039f28fdcc08189a23c07a3437d9d2482f9c2",
     "mem0_oss": "4debc58a83377b18be81ae1e5969a300736b2fac",
 }
 _PROTECTED_TRACKS = {"common-policy-v1", "paper-reproduction", "paper-reproduction-substituted"}
@@ -27,8 +30,48 @@ _MODEL_ROLES = {"memory_llm", "embedding", "reader_tokenizer"}
 # transitive lock is registered here.  Development runs remain available.
 _TRANSITIVE_LOCK_SHA256: dict[str, str | None] = {
     "amem": None,
+    "amem_paper": None,
     "mem0_oss": None,
 }
+
+
+def validate_secret_bearing_base_url(value: str, path: str) -> None:
+    """Reject URLs that could send provider credentials over cleartext."""
+
+    if not isinstance(value, str) or not value.strip():
+        raise ConfigurationError(f"{path} must be a non-empty URL")
+    if any(ord(character) <= 0x20 or ord(character) == 0x7F for character in value):
+        raise ConfigurationError(f"{path} must not contain whitespace or control characters")
+    try:
+        parsed = urlsplit(value)
+        hostname = parsed.hostname
+        # Accessing port performs validation that urlsplit deliberately defers.
+        parsed.port
+    except ValueError as exc:
+        raise ConfigurationError(f"{path} is not a valid URL") from exc
+    if (
+        parsed.scheme not in {"http", "https"}
+        or not parsed.netloc
+        or not hostname
+        or parsed.username is not None
+        or parsed.password is not None
+        or "?" in value
+        or "#" in value
+    ):
+        raise ConfigurationError(
+            f"{path} must be an http(s) URL without credentials, query, or fragment"
+        )
+    if parsed.scheme == "http":
+        loopback = hostname.lower() == "localhost"
+        if not loopback:
+            try:
+                loopback = ip_address(hostname).is_loopback
+            except ValueError:
+                loopback = False
+        if not loopback:
+            raise ConfigurationError(
+                f"{path} must use HTTPS unless its host is an explicit loopback"
+            )
 
 
 @dataclass(frozen=True)
@@ -73,9 +116,26 @@ def _validate_run_policy(
     if not isinstance(raw, dict) or "track" not in raw or not isinstance(raw["track"], str):
         raise ConfigurationError("run_policy must contain a string track")
     track = raw["track"]
-    if track in {"development", "contract-test"}:
+    if track == "contract-test":
         if set(raw) != {"track"}:
-            raise ConfigurationError(f"{track} run_policy must contain only track")
+            raise ConfigurationError("contract-test run_policy must contain only track")
+        return
+    if track == "development":
+        if set(raw) == {"track"}:
+            return
+        if set(raw) != {"track", "upstream"}:
+            raise ConfigurationError(
+                "development run_policy may additionally contain only an audited upstream lock"
+            )
+        if adapter_kind not in _UPSTREAM_REVISIONS:
+            raise ConfigurationError(
+                f"adapter {adapter_kind!r} has no registered development upstream lock"
+            )
+        _validate_lock(
+            raw["upstream"],
+            "run_policy.upstream",
+            expected=_UPSTREAM_REVISIONS[adapter_kind],
+        )
         return
     if track not in _PROTECTED_TRACKS:
         raise ConfigurationError(f"unsupported run_policy track: {track!r}")
@@ -160,6 +220,27 @@ def _validate_model_identities(
             )
         expected["memory_llm"] = (backend, llm_model)
         expected["embedding"] = ("sentence-transformers", embedding_model)
+    elif adapter_kind == "amem_paper":
+        llm = adapter_config.get("llm")
+        embedding = adapter_config.get("embedding")
+        if not isinstance(llm, dict) or not isinstance(embedding, dict):
+            raise ConfigurationError(
+                "protected A-MEM paper tracks require explicit llm and embedding objects"
+            )
+        backend = llm.get("backend")
+        llm_model = llm.get("model")
+        embedding_model = embedding.get("model")
+        embedding_revision = embedding.get("revision")
+        if not all(
+            isinstance(value, str) and value.strip()
+            for value in (backend, llm_model, embedding_model, embedding_revision)
+        ):
+            raise ConfigurationError(
+                "protected A-MEM paper tracks require explicit llm.backend, llm.model, "
+                "embedding.model, and embedding.revision"
+            )
+        expected["memory_llm"] = (backend, llm_model)
+        expected["embedding"] = ("sentence-transformers", embedding_model)
     elif adapter_kind == "mem0_oss":
         memory_config = adapter_config.get("memory_config")
         if not isinstance(memory_config, dict):
@@ -207,6 +288,12 @@ def _validate_model_identities(
     if adapter_kind == "amem" and models["embedding"]["revision"] != adapter_config["model_revision"]:
         raise ConfigurationError(
             "run_policy.models.embedding revision does not match the configured A-MEM model_revision"
+        )
+    if adapter_kind == "amem_paper" and (
+        models["embedding"]["revision"] != adapter_config["embedding"]["revision"]
+    ):
+        raise ConfigurationError(
+            "run_policy.models.embedding revision does not match the configured A-MEM paper revision"
         )
 
 

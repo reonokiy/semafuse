@@ -17,6 +17,10 @@ def build_adapter(kind: str, config: Mapping[str, Any]) -> ExternalMemoryAdapter
         from .adapters.amem import AMemAdapter
 
         return AMemAdapter(config)
+    if kind == "amem_paper":
+        from .adapters.amem_paper import AMemPaperAdapter
+
+        return AMemPaperAdapter(config)
     if kind == "mem0_oss":
         from .adapters.mem0_oss import Mem0OssAdapter
 

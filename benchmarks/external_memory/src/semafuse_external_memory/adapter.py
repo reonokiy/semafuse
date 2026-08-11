@@ -32,7 +32,7 @@ class ExternalMemoryAdapter(ABC):
 
     @abstractmethod
     def search(self, query: str, top_k: int) -> Sequence[MemoryItem]:
-        """Return at most top_k native-ranked memories."""
+        """Return native-ranked candidates; the worker applies the final top-k cap."""
 
     def close(self) -> None:
         """Release resources when the upstream package exposes no close method."""

@@ -2,9 +2,19 @@ use super::window::EvidenceWindow;
 use crate::{model::MessageRole, strategy::RecallRequest};
 use anyhow::{Context, Result, ensure};
 use serde::Serialize;
+use std::borrow::Cow;
 use std::collections::HashSet;
 
-pub(super) const PROCESSOR_PROMPT_VERSION: &str = "lazymem-appendix-g.1-v2";
+pub(super) const PROCESSOR_PROMPT_VERSION: &str = "lazymem-appendix-g.1-v5";
+
+const PROCESSOR_RETRY_CORRECTION: &str = r#"
+
+# Retry Correction
+The previous output was truncated or invalid. Return only valid JSON.
+Emit exactly one decision for every non-empty role message, in original order.
+For this retry, keep compressed_content at most 160 Unicode characters and reason at most 32 Unicode characters.
+Prefer DROP for irrelevant messages; DROP compressed_content must be an empty string.
+Do not include markdown, prose, or extra text; output only the JSON array."#;
 
 pub(super) const PROCESSOR_SYSTEM_PROMPT: &str = r#"You are a local memory editing model.
 
@@ -52,8 +62,10 @@ Return only a JSON array with the following structure:
 9. If the whole window is irrelevant, still output one decision for every non-empty role message, and set every op to DROP.
 10. When op is DROP, compressed_content must be an empty string.
 11. If a message may contain answer evidence, user facts, temporal updates, or content related to the query entity/attribute, prefer KEEP even when relevance is uncertain.
-12. Return only the JSON array. Do not output markdown, comments, or extra text.
-13. The output must be directly parseable by json.loads().
+12. Keep each compressed_content no longer than 512 Unicode characters; faithfully compress longer source messages.
+13. Keep each reason brief and no longer than 256 Unicode characters.
+14. Return only the JSON array. Do not output markdown, comments, or extra text.
+15. The output must be directly parseable by json.loads().
 
 # Query
 Query Time: "#;
@@ -141,7 +153,38 @@ pub(super) fn processor_prompt(request: &RecallRequest, window: &EvidenceWindow)
     Ok(prompt)
 }
 
+pub(super) fn processor_prompt_for_attempt(base_prompt: &str, attempt: usize) -> Cow<'_, str> {
+    if attempt <= 1 || base_prompt.ends_with(PROCESSOR_RETRY_CORRECTION) {
+        Cow::Borrowed(base_prompt)
+    } else {
+        Cow::Owned(format!("{base_prompt}{PROCESSOR_RETRY_CORRECTION}"))
+    }
+}
+
 fn timestamp_utc(timestamp_ms: i64) -> Option<String> {
     chrono::DateTime::<chrono::Utc>::from_timestamp_millis(timestamp_ms)
         .map(|value| value.to_rfc3339())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn retry_correction_is_absent_initially_and_appended_once_on_retries() {
+        let base = "paper prompt";
+        let initial = processor_prompt_for_attempt(base, 1);
+        assert_eq!(initial, base);
+        assert!(!initial.contains("# Retry Correction"));
+
+        let retry = processor_prompt_for_attempt(base, 2);
+        assert!(retry.contains("# Retry Correction"));
+        assert!(retry.contains("compressed_content at most 160 Unicode characters"));
+        assert!(retry.contains("reason at most 32 Unicode characters"));
+        assert_eq!(retry.matches("# Retry Correction").count(), 1);
+
+        let later_retry = processor_prompt_for_attempt(&retry, 3);
+        assert_eq!(later_retry, retry);
+        assert_eq!(later_retry.matches("# Retry Correction").count(), 1);
+    }
 }

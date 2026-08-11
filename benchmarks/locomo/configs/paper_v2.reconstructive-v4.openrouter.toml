@@ -1,0 +1,60 @@
+# Training-free v4 ablation on the pinned two-conversation / 314-question
+# paper-v2 track. Every memory context is evaluated by the same structured,
+# concise reader. Category labels and reference answers remain evaluator-only.
+schema_version = 1
+name = "LoCoMo paper-v2 reconstructive v4 structured-answer ablation"
+baseline_method = "bm25_top50"
+
+[answerer]
+expected_provider = "CoreWeave"
+protocol = "concise_json_v2"
+temperature = 0.0
+top_p = 1.0
+max_tokens = 96
+enable_thinking = false
+
+[answerer.endpoint]
+base_url = "https://openrouter.ai/api/v1"
+model = "qwen/qwen3-30b-a3b-instruct-2507"
+api_key_env = "OPENROUTER_API_KEY"
+thinking_control = "no_control"
+timeout_secs = 180
+max_retries = 2
+
+[answerer.endpoint.extra_body.provider]
+order = ["CoreWeave"]
+allow_fallbacks = false
+require_parameters = true
+data_collection = "deny"
+max_price = { prompt = 0.11, completion = 0.31 }
+
+[pricing]
+input_usd_per_million = 0.11
+output_usd_per_million = 0.31
+max_reported_usage_usd = 20.0
+
+[[methods]]
+kind = "bm25"
+id = "bm25_top50"
+limit = 50
+
+[[methods]]
+kind = "semafuse"
+id = "reconstructive_rrf_rerank_full_context"
+config = "../../reconstructive/configs/semafuse_reconstructive.one-shot.openrouter.toml"
+limit = 50
+stages = []
+
+[[methods]]
+kind = "semafuse"
+id = "reconstructive_rrf_rerank_packet50"
+config = "../../reconstructive/configs/semafuse_reconstructive.one-shot.evidence-packet50.openrouter.toml"
+limit = 50
+stages = []
+
+[[methods]]
+kind = "semafuse"
+id = "reconstructive_dense_bm25_union"
+config = "../../reconstructive/configs/semafuse_reconstructive.one-shot.dense-bm25-union.openrouter.toml"
+limit = 50
+stages = []

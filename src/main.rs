@@ -1189,7 +1189,7 @@ async fn run(cli: Cli) -> Result<()> {
             }
         }
         #[cfg(feature = "benchmarks")]
-        Commands::Bench { command } => benchmark_cli::run(command).await?,
+        Commands::Bench { command } => benchmark_cli::run(command, json_output).await?,
         Commands::Daemon {
             command:
                 DaemonCommands::Status {

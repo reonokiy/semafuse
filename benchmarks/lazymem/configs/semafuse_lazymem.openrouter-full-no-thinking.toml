@@ -1,0 +1,86 @@
+# Cost-controlled prompt-only LazyMem ablation. The retrieval, neighborhood,
+# overlapping-window, KEEP/DROP/compression, and deterministic merge structure
+# is identical to the full public reproduction profile. Disabling thinking and
+# changing the execution concurrency make this `custom`, not a paper score.
+
+[strategies]
+enabled = ["lazymem"]
+recall = "lazymem"
+
+[strategies.settings.lazymem]
+protocol = "custom"
+embedding_batch_size = 256
+
+[strategies.settings.lazymem.embedding]
+backend = "openai_compatible"
+
+[strategies.settings.lazymem.embedding.endpoint]
+base_url = "https://openrouter.ai/api/v1"
+model = "perplexity/pplx-embed-v1-0.6b"
+api_key_env = "OPENROUTER_API_KEY"
+timeout_secs = 180
+max_retries = 2
+
+[strategies.settings.lazymem.embedding.endpoint.extra_body.provider]
+only = ["perplexity"]
+allow_fallbacks = false
+data_collection = "deny"
+
+[strategies.settings.lazymem.reranker]
+backend = "openai_compatible"
+
+[strategies.settings.lazymem.reranker.endpoint]
+base_url = "https://openrouter.ai/api/v1"
+model = "voyageai/rerank-2.5"
+api_key_env = "OPENROUTER_API_KEY"
+protocol = "openrouter"
+timeout_secs = 180
+max_retries = 2
+
+[strategies.settings.lazymem.reranker.endpoint.extra_body.provider]
+allow_fallbacks = false
+data_collection = "deny"
+
+[strategies.settings.lazymem.processor]
+backend = "openai_compatible"
+
+[strategies.settings.lazymem.processor.endpoint]
+base_url = "https://openrouter.ai/api/v1"
+model = "qwen/qwen3-32b"
+api_key_env = "OPENROUTER_API_KEY"
+thinking_control = "qwen_soft_switch"
+timeout_secs = 180
+max_retries = 2
+
+[strategies.settings.lazymem.processor.endpoint.extra_body.reasoning]
+enabled = false
+
+[strategies.settings.lazymem.processor.endpoint.extra_body.provider]
+order = ["DeepInfra"]
+allow_fallbacks = false
+require_parameters = true
+data_collection = "deny"
+max_price = { prompt = 0.11, completion = 0.31 }
+
+[strategies.settings.lazymem.retrieval]
+dense_limit = 100
+sparse_limit = 100
+fused_limit = 100
+rerank_top_n = 50
+require_dense_index = true
+
+[strategies.settings.lazymem.window]
+radius = 2
+merge_rule = "repository_contiguous"
+max_messages = 8
+stride = 7
+
+[strategies.settings.lazymem.generation]
+temperature = 0.1
+top_p = 0.95
+max_tokens = 3072
+# This profile is pinned to DeepInfra, whose structured-output endpoint passed
+# the 32-window gate used by the full LoCoMo run.
+max_concurrency = 32
+enable_thinking = false
+validation_retries = 2

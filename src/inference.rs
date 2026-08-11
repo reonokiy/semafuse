@@ -3,16 +3,22 @@ mod http;
 mod openai;
 mod processor;
 mod reranker;
+mod structured;
 
 use crate::daemon_ipc::ModelServiceClient;
 use anyhow::{Context, Result};
 use serde::Deserialize;
 use std::{path::PathBuf, time::Duration};
 
-pub(crate) use openai::{EmbeddingBackend, GenerationOptions, OpenAiEndpoint};
+#[cfg(feature = "benchmarks")]
+pub(crate) use openai::OpenAiEndpoint;
+pub(crate) use openai::{EmbeddingBackend, GenerationOptions};
 pub(crate) use processor::PromptProcessorBackend;
 pub(crate) use reranker::RerankBackend;
+pub(crate) use structured::JsonContract;
 
+pub(crate) const MAX_PROCESSOR_COMPRESSED_CONTENT_CHARS: usize = 512;
+pub(crate) const MAX_PROCESSOR_REASON_CHARS: usize = 256;
 const DEFAULT_SEMAFUSED_CONNECT_TIMEOUT_MS: u64 = 1_000;
 const DEFAULT_SEMAFUSED_REQUEST_TIMEOUT_MS: u64 = 120_000;
 

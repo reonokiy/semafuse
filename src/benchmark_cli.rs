@@ -10,6 +10,7 @@ use semafuse::{
         build_summary_from_records, run_longmemeval_suite,
     },
     config,
+    locomo_answer_suite::{LocomoAnswerSuiteRunOptions, run_locomo_answer_suite},
     locomo_suite::{LocomoSuiteRunOptions, run_locomo_retrieval_suite},
 };
 use serde_json::{Value, json};
@@ -62,6 +63,15 @@ impl From<CliMode> for BenchmarkMode {
     }
 }
 
+impl CliMode {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Retrieval => "retrieval",
+            Self::Full => "full",
+        }
+    }
+}
+
 #[derive(Debug, Args)]
 pub(crate) struct LongMemEvalArgs {
     /// Modular benchmark suite TOML.
@@ -98,9 +108,24 @@ pub(crate) struct LocomoArgs {
     /// Confirm that this CC-BY-NC-4.0 run is permitted non-commercial use.
     #[arg(long)]
     acknowledge_noncommercial: bool,
-    /// Crash-safe output directory (`per-question.jsonl`, `summary.json`).
+    /// Retrieval-only evidence metrics or complete memory -> answer -> F1.
+    #[arg(long, value_enum, default_value = "retrieval")]
+    mode: CliMode,
+    /// Crash-safe output directory for the selected mode.
     #[arg(long)]
     output_dir: PathBuf,
+    /// Full mode only: deterministic stratified pilot size.
+    #[arg(long)]
+    question_limit: Option<usize>,
+    /// Full mode only: exact opaque evaluator question ID; repeatable.
+    #[arg(long = "question-id")]
+    question_ids: Vec<String>,
+    /// Full mode only: source method to schedule; repeatable.
+    #[arg(long = "method")]
+    methods: Vec<String>,
+    /// Full mode only: validate inputs and run identities without model calls.
+    #[arg(long)]
+    validate_only: bool,
     /// Do not load an optional `.env` from the current directory.
     #[arg(long)]
     no_dotenv: bool,
@@ -116,12 +141,12 @@ pub(crate) struct ReportArgs {
     output: Option<PathBuf>,
 }
 
-pub(crate) async fn run(command: BenchmarkCommand) -> Result<()> {
+pub(crate) async fn run(command: BenchmarkCommand, json_output: bool) -> Result<()> {
     match command {
         BenchmarkCommand::Jsonl(args) => run_jsonl(args).await,
-        BenchmarkCommand::LongMemEval(args) => run_longmemeval(args).await,
-        BenchmarkCommand::Locomo(args) => run_locomo(args).await,
-        BenchmarkCommand::Report(args) => run_report(args),
+        BenchmarkCommand::LongMemEval(args) => run_longmemeval(args, json_output).await,
+        BenchmarkCommand::Locomo(args) => run_locomo(args, json_output).await,
+        BenchmarkCommand::Report(args) => run_report(args, json_output),
     }
 }
 
@@ -156,7 +181,7 @@ async fn run_jsonl(args: JsonlArgs) -> Result<()> {
     Ok(())
 }
 
-async fn run_longmemeval(args: LongMemEvalArgs) -> Result<()> {
+async fn run_longmemeval(args: LongMemEvalArgs, json_output: bool) -> Result<()> {
     if !args.no_dotenv {
         let _ = dotenvy::dotenv();
     }
@@ -169,36 +194,114 @@ async fn run_longmemeval(args: LongMemEvalArgs) -> Result<()> {
         output_dir: Some(args.output_dir.clone()),
     })
     .await?;
-    println!(
-        "completed run {}: {} records; summary: {}",
-        artifacts.manifest["run_key"].as_str().unwrap_or("unknown"),
-        artifacts.records.len(),
-        args.output_dir.join("summary.json").display()
-    );
+    let run_key = artifacts.manifest["run_key"].as_str().unwrap_or("unknown");
+    let summary_path = args.output_dir.join("summary.json");
+    if json_output {
+        super::print_json(&json!({
+            "ok": true,
+            "command": "bench.longmemeval",
+            "mode": args.mode.as_str(),
+            "run_key": run_key,
+            "records": artifacts.records.len(),
+            "summary": summary_path,
+        }))?;
+    } else {
+        println!(
+            "completed run {run_key}: {} records; summary: {}",
+            artifacts.records.len(),
+            summary_path.display()
+        );
+    }
     Ok(())
 }
 
-async fn run_locomo(args: LocomoArgs) -> Result<()> {
+async fn run_locomo(args: LocomoArgs, json_output: bool) -> Result<()> {
     if !args.no_dotenv {
         let _ = dotenvy::dotenv();
     }
-    let artifacts = run_locomo_retrieval_suite(&LocomoSuiteRunOptions {
-        suite_path: args.suite,
-        dataset_path: args.dataset,
-        acknowledge_noncommercial: args.acknowledge_noncommercial,
-        output_dir: Some(args.output_dir.clone()),
-    })
-    .await?;
-    println!(
-        "completed LoCoMo run {}: {} records; summary: {}",
-        artifacts.manifest["run_key"].as_str().unwrap_or("unknown"),
-        artifacts.records.len(),
-        args.output_dir.join("summary.json").display()
-    );
+    match args.mode {
+        CliMode::Retrieval => {
+            ensure!(
+                !args.validate_only
+                    && args.question_limit.is_none()
+                    && args.question_ids.is_empty()
+                    && args.methods.is_empty(),
+                "--validate-only, --question-limit, --question-id, and --method require --mode full"
+            );
+            let artifacts = run_locomo_retrieval_suite(&LocomoSuiteRunOptions {
+                suite_path: args.suite,
+                dataset_path: args.dataset,
+                acknowledge_noncommercial: args.acknowledge_noncommercial,
+                output_dir: Some(args.output_dir.clone()),
+            })
+            .await?;
+            let run_key = artifacts.manifest["run_key"].as_str().unwrap_or("unknown");
+            let summary_path = args.output_dir.join("summary.json");
+            if json_output {
+                super::print_json(&json!({
+                    "ok": true,
+                    "command": "bench.locomo",
+                    "mode": "retrieval",
+                    "run_key": run_key,
+                    "records": artifacts.records.len(),
+                    "complete": true,
+                    "summary": summary_path,
+                }))?;
+            } else {
+                println!(
+                    "completed LoCoMo retrieval run {run_key}: {} records; summary: {}",
+                    artifacts.records.len(),
+                    summary_path.display()
+                );
+            }
+        }
+        CliMode::Full => {
+            let artifacts = run_locomo_answer_suite(&LocomoAnswerSuiteRunOptions {
+                suite_path: args.suite,
+                dataset_path: args.dataset,
+                acknowledge_noncommercial: args.acknowledge_noncommercial,
+                output_dir: Some(args.output_dir.clone()),
+                question_limit: args.question_limit,
+                question_ids: args.question_ids.into_iter().collect(),
+                methods: args.methods.into_iter().collect(),
+                validate_only: args.validate_only,
+            })
+            .await?;
+            let run_key = artifacts.manifest["run_key"].as_str().unwrap_or("unknown");
+            let artifact_kind = if args.validate_only {
+                "validation"
+            } else {
+                "summary"
+            };
+            let artifact_path = args.output_dir.join(format!("{artifact_kind}.json"));
+            if json_output {
+                super::print_json(&json!({
+                    "ok": true,
+                    "command": "bench.locomo",
+                    "mode": "full",
+                    "validate_only": args.validate_only,
+                    "run_key": run_key,
+                    "memory_records": artifacts.memory_records.len(),
+                    "answer_records": artifacts.answer_records.len(),
+                    "complete": artifacts.complete,
+                    "artifact_kind": artifact_kind,
+                    "artifact": artifact_path,
+                }))?;
+            } else {
+                println!(
+                    "completed LoCoMo full run {run_key}: {} memories, {} answers, complete={}; {artifact_kind}: {}",
+                    artifacts.memory_records.len(),
+                    artifacts.answer_records.len(),
+                    artifacts.complete,
+                    artifact_path.display()
+                );
+            }
+        }
+    }
     Ok(())
 }
 
-fn run_report(args: ReportArgs) -> Result<()> {
+fn run_report(args: ReportArgs, json_output: bool) -> Result<()> {
     let source_summary_path = args.run_dir.join("summary.json");
     let journal_path = args.run_dir.join("per-question.jsonl");
     let output_path = args
@@ -347,7 +450,7 @@ fn run_report(args: ReportArgs) -> Result<()> {
             },
             "report_implementation": {
                 "crate_version": env!("CARGO_PKG_VERSION"),
-                "code_sha256": report_code_sha256(),
+                "code_sha256": semafuse::benchmark_identity::source_sha256(),
             },
             "manifest": manifest,
             "comparison": comparison,
@@ -355,40 +458,26 @@ fn run_report(args: ReportArgs) -> Result<()> {
     };
     write_summary_atomic(&output_path, &report)
         .with_context(|| format!("write {}", output_path.display()))?;
-    println!(
-        "rebuilt curated comparison for run {} from {} records: {}",
-        report.run_key,
-        records.len(),
-        output_path.display()
-    );
+    if json_output {
+        super::print_json(&json!({
+            "ok": true,
+            "command": "bench.report",
+            "run_key": report.run_key,
+            "records": records.len(),
+            "output": output_path,
+        }))?;
+    } else {
+        println!(
+            "rebuilt curated comparison for run {} from {} records: {}",
+            report.run_key,
+            records.len(),
+            output_path.display()
+        );
+    }
     Ok(())
 }
 
 fn sha256_file(path: &Path) -> Result<String> {
     let bytes = fs::read(path).with_context(|| format!("hash {}", path.display()))?;
     Ok(hex::encode(Sha256::digest(bytes)))
-}
-
-fn report_code_sha256() -> String {
-    let mut digest = Sha256::new();
-    for (path, bytes) in [
-        (
-            "src/benchmark_cli.rs",
-            include_bytes!("benchmark_cli.rs").as_slice(),
-        ),
-        (
-            "src/benchmark_suite.rs",
-            include_bytes!("benchmark_suite.rs").as_slice(),
-        ),
-        (
-            "src/benchmark_report.rs",
-            include_bytes!("benchmark_report.rs").as_slice(),
-        ),
-    ] {
-        digest.update((path.len() as u64).to_be_bytes());
-        digest.update(path.as_bytes());
-        digest.update((bytes.len() as u64).to_be_bytes());
-        digest.update(bytes);
-    }
-    hex::encode(digest.finalize())
 }

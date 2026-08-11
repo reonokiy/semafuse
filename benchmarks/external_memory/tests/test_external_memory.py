@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import os
@@ -12,6 +13,7 @@ from unittest.mock import patch
 
 from semafuse_external_memory.adapter import MemoryItem, TokenCounter, enforce_limits
 from semafuse_external_memory.adapters.amem import AMemAdapter
+from semafuse_external_memory.adapters.amem_paper import AMemPaperAdapter
 from semafuse_external_memory.adapters.mem0_oss import Mem0OssAdapter
 from semafuse_external_memory.config import WorkerConfig, redact
 from semafuse_external_memory.driver import ExternalMemoryDriver
@@ -44,6 +46,31 @@ class ExternalMemoryContractTests(unittest.TestCase):
             encoding="utf-8",
         )
         return path
+
+    @staticmethod
+    def amem_paper_config(*, base_k: int = 2) -> dict:
+        return {
+            "upstream_revision": "0c8039f28fdcc08189a23c07a3437d9d2482f9c2",
+            "embedding": {
+                "model": "sentence-transformers/all-MiniLM-L6-v2",
+                "revision": "1" * 40,
+            },
+            "llm": {
+                "backend": "openai",
+                "model": "test/model",
+                "api_key_env": "TEST_API_KEY",
+                "base_url": "https://openrouter.ai/api/v1",
+                "max_attempts": 3,
+                "request_timeout_seconds": 90,
+                "require_parameters": True,
+            },
+            "memory": {"evo_threshold": 1},
+            "retrieval": {
+                "base_k": base_k,
+                "query_rewrite": "paper_keywords",
+                "link_expansion": "paper_interleaved",
+            },
+        }
 
     def test_fake_enforces_label_isolation_top_k_and_token_cap(self) -> None:
         with ExternalMemoryDriver(self.config(), timeout_seconds=2) as driver:
@@ -267,6 +294,20 @@ class ExternalMemoryContractTests(unittest.TestCase):
         with patch.dict(os.environ, {"TEST_API_KEY": "not-a-real-secret"}):
             with self.assertRaisesRegex(ConfigurationError, "openai_base_url"):
                 AMemAdapter(base)
+            for insecure_url in (
+                "http://api.example.com/v1",
+                "http://192.168.1.2:8000/v1",
+            ):
+                with self.subTest(insecure_url=insecure_url):
+                    with self.assertRaisesRegex(ConfigurationError, "HTTPS unless"):
+                        AMemAdapter({**base, "openai_base_url": insecure_url})
+            for loopback_url in (
+                "http://localhost:8000/v1",
+                "http://127.0.0.1:8000/v1",
+                "http://[::1]:8000/v1",
+            ):
+                with self.subTest(loopback_url=loopback_url):
+                    AMemAdapter({**base, "openai_base_url": loopback_url})
             adapter = AMemAdapter(
                 {**base, "openai_base_url": "https://openrouter.ai/api/v1"}
             )
@@ -415,6 +456,329 @@ class ExternalMemoryContractTests(unittest.TestCase):
         self.assertEqual(adapter._memory.llm_controller.llm.calls, 2)
         self.assertEqual(adapter._llm_retry_count, 1)
         adapter.close()
+
+    def test_amem_paper_verifies_source_and_injects_only_missing_re(self) -> None:
+        with patch.dict(os.environ, {"TEST_API_KEY": "not-a-real-secret"}):
+            adapter = AMemPaperAdapter(self.amem_paper_config())
+        source = (
+            Path(__file__).parents[1]
+            / "src/semafuse_external_memory/upstreams/amem_paper/memory_layer.py"
+        )
+        self.assertEqual(
+            hashlib.sha256(source.read_bytes()).hexdigest(),
+            "7829e3c068ea8b50344970a9704bd17a7a4ff8252c46547927ae4334b705bcfe",
+        )
+        system_type = object()
+        retriever_type = object()
+
+        def execute_verified_source(_: object, namespace: dict[str, object]) -> None:
+            namespace["AgenticMemorySystem"] = system_type
+            namespace["SimpleEmbeddingRetriever"] = retriever_type
+
+        with patch("builtins.exec", side_effect=execute_verified_source) as execute:
+            with patch.dict(os.environ, {"LITELLM_LOCAL_MODEL_COST_MAP": "original"}):
+                system, retriever = adapter._load_upstream()
+                self.assertEqual(os.environ["LITELLM_LOCAL_MODEL_COST_MAP"], "original")
+        execute.assert_called_once()
+        self.assertIs(system, system_type)
+        self.assertIs(retriever, retriever_type)
+        loaded = sys.modules[
+            "semafuse_external_memory.upstreams.amem_paper.memory_layer"
+        ]
+        self.assertEqual(loaded.re.sub("x", "y", "x"), "y")
+
+        with patch.object(Path, "read_bytes", return_value=b"print('not audited')\n"):
+            with patch("builtins.exec") as execute:
+                with self.assertRaisesRegex(RuntimeError, "audited lock"):
+                    adapter._load_upstream()
+                execute.assert_not_called()
+
+    def test_amem_paper_rejects_non_loopback_plain_http_base_url(self) -> None:
+        with patch.dict(os.environ, {"TEST_API_KEY": "not-a-real-secret"}):
+            for insecure_url in (
+                "http://api.example.com/v1",
+                "http://10.0.0.1:8000/v1",
+            ):
+                config = self.amem_paper_config()
+                config["llm"]["base_url"] = insecure_url
+                with self.subTest(insecure_url=insecure_url):
+                    with self.assertRaisesRegex(ConfigurationError, "HTTPS unless"):
+                        AMemPaperAdapter(config)
+
+            for loopback_url in (
+                "http://localhost:8000/v1",
+                "http://127.0.0.1:8000/v1",
+                "http://[::1]:8000/v1",
+            ):
+                config = self.amem_paper_config()
+                config["llm"]["base_url"] = loopback_url
+                with self.subTest(loopback_url=loopback_url):
+                    AMemPaperAdapter(config)
+
+    def test_amem_paper_reset_scopes_provider_and_pins_consolidation(self) -> None:
+        observed: list[tuple[str | None, str]] = []
+        routed: list[dict] = []
+
+        class CompletionsStub:
+            def create(self, **kwargs: object) -> object:
+                routed.append(dict(kwargs))
+                return object()
+
+        class ClientStub:
+            def __init__(self) -> None:
+                self.options: list[dict[str, object]] = []
+                self.chat = types.SimpleNamespace(completions=CompletionsStub())
+
+            def with_options(self, **kwargs: object) -> object:
+                self.options.append(dict(kwargs))
+                return self
+
+        class LLMStub:
+            def __init__(self) -> None:
+                self.client = ClientStub()
+
+            def get_completion(self, *_: object, **__: object) -> str:
+                return '{"value":"ok"}'
+
+        class RetrieverStub:
+            model_names: list[str] = []
+
+            def __init__(self, model_name: str) -> None:
+                self.model_names.append(model_name)
+                self.documents: list[str] = []
+
+            def add_documents(self, documents: list[str]) -> None:
+                self.documents.extend(documents)
+
+        class SystemStub:
+            def __init__(self, model_name: str, **_: object) -> None:
+                observed.append((os.environ.get("OPENAI_BASE_URL"), model_name))
+                self.llm_controller = types.SimpleNamespace(llm=LLMStub())
+                self.retriever = RetrieverStub(model_name)
+                self.memories: dict[str, object] = {}
+                self.process_calls = 0
+
+            def process_memory(self, note: object) -> tuple[bool, object]:
+                self.process_calls += 1
+                return True, note
+
+        hub_module = types.ModuleType("huggingface_hub")
+        hub_module.snapshot_download = lambda **_: "/exact/minilm"
+        with patch.dict(os.environ, {"TEST_API_KEY": "not-a-real-secret"}):
+            adapter = AMemPaperAdapter(self.amem_paper_config())
+        with patch.dict(sys.modules, {"huggingface_hub": hub_module}):
+            with patch.object(adapter, "_load_upstream", return_value=(SystemStub, RetrieverStub)):
+                with patch.dict(os.environ, {"OPENAI_BASE_URL": "https://original.example/v1"}):
+                    adapter.reset()
+                    self.assertEqual(os.environ["OPENAI_BASE_URL"], "https://original.example/v1")
+
+        note = types.SimpleNamespace(
+            id="n0", content="fact", context="context", keywords=["key"], tags=["tag"]
+        )
+        self.assertEqual(adapter._memory.process_memory(note), (False, note))
+        self.assertEqual(adapter._memory.process_calls, 0)
+        adapter._memory.memories["n0"] = note
+        self.assertEqual(adapter._memory.process_memory(note), (True, note))
+        self.assertEqual(adapter._memory.process_calls, 1)
+        adapter._memory.consolidate_memories()
+        adapter._memory.consolidate_memories()
+        self.assertEqual(RetrieverStub.model_names, ["/exact/minilm"] * 3)
+        self.assertEqual(
+            adapter._memory.retriever.documents,
+            ["fact , context key tag"],
+        )
+        adapter._memory.llm_controller.llm.client.chat.completions.create(model="test")
+        self.assertEqual(
+            routed[0]["extra_body"], {"provider": {"require_parameters": True}}
+        )
+        self.assertEqual(
+            adapter._memory.llm_controller.llm.client.options,
+            [{"timeout": 90.0, "max_retries": 0}],
+        )
+        self.assertEqual(observed, [("https://openrouter.ai/api/v1", "/exact/minilm")])
+
+    def test_amem_paper_query_rewrite_base_k_and_link_provenance(self) -> None:
+        class RetrieverStub:
+            def __init__(self) -> None:
+                self.searches: list[tuple[str, int]] = []
+
+            def search(self, query: str, k: int) -> list[int]:
+                self.searches.append((query, k))
+                return [1, 0]
+
+        class LLMStub:
+            def get_completion(self, *_: object, **__: object) -> str:
+                return '{"keywords":"rewritten keywords"}'
+
+        notes = [
+            types.SimpleNamespace(
+                id="n0", content="zero", context="c0", keywords=["k0"], tags=["t0"],
+                timestamp="d0", links=[]
+            ),
+            types.SimpleNamespace(
+                id="n1", content="one", context="c1", keywords=["k1"], tags=["t1"],
+                timestamp="d1", links=[0, 2]
+            ),
+            types.SimpleNamespace(
+                id="n2", content="two", context="c2", keywords=["k2"], tags=["t2"],
+                timestamp="d2", links=[]
+            ),
+        ]
+        memory = types.SimpleNamespace(
+            memories={note.id: note for note in notes},
+            retriever=RetrieverStub(),
+            llm_controller=types.SimpleNamespace(llm=LLMStub()),
+        )
+        with patch.dict(os.environ, {"TEST_API_KEY": "not-a-real-secret"}):
+            adapter = AMemPaperAdapter(self.amem_paper_config(base_k=2))
+        adapter._memory = memory
+        adapter._provenance = {
+            f"n{i}": ((f"s{i}",), f"session-{i}", f"d{i}") for i in range(3)
+        }
+
+        # Protocol top_k is deliberately smaller than paper base_k. The worker,
+        # not the adapter, applies the final native-item cap.
+        items = adapter.search("original question", top_k=1)
+        self.assertEqual(memory.retriever.searches, [("rewritten keywords", 2)])
+        self.assertEqual([item.id for item in items], ["n1", "n0"])
+        self.assertEqual(items[0].source_ids, ("s1", "s0", "s2"))
+        self.assertEqual(items[1].source_ids, ("s0",))
+        self.assertIn("memory content: one", items[0].text)
+        self.assertIn("memory content: zero", items[0].text)
+        self.assertIn("memory content: two", items[0].text)
+
+    def test_amem_paper_retries_schema_valid_but_degraded_metadata(self) -> None:
+        class CompletionStub:
+            def __init__(self) -> None:
+                self.responses = iter(
+                    [
+                        '{"keywords":[],"context":"General","tags":[]}',
+                        '{"keywords":["fact"],"context":"specific context","tags":["tag"]}',
+                    ]
+                )
+
+            def get_completion(self, *_: object, **__: object) -> str:
+                return next(self.responses)
+
+        with patch.dict(os.environ, {"TEST_API_KEY": "not-a-real-secret"}):
+            adapter = AMemPaperAdapter(self.amem_paper_config())
+        adapter._memory = types.SimpleNamespace(
+            llm_controller=types.SimpleNamespace(llm=CompletionStub())
+        )
+        with patch("semafuse_external_memory.adapters.amem_paper.time.sleep"):
+            adapter._install_llm_retry_wrapper()
+            result = adapter._memory.llm_controller.llm.get_completion(
+                "Generate a structured analysis of the following content",
+                response_format={
+                    "type": "json_schema",
+                    "json_schema": {
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "keywords": {"type": "array"},
+                                "context": {"type": "string"},
+                                "tags": {"type": "array"},
+                            },
+                            "required": ["keywords", "context", "tags"],
+                        }
+                    },
+                },
+            )
+        self.assertEqual(json.loads(result)["context"], "specific context")
+        self.assertEqual(adapter._llm_retry_count, 1)
+
+    def test_amem_paper_ignores_action_payload_when_evolution_is_false(self) -> None:
+        class CompletionStub:
+            def __init__(self) -> None:
+                self.calls = 0
+
+            def get_completion(self, *_: object, **__: object) -> str:
+                self.calls += 1
+                return json.dumps(
+                    {
+                        "should_evolve": False,
+                        "actions": ["provider-placeholder"],
+                        "suggested_connections": [999],
+                        "tags_to_update": [],
+                        "new_context_neighborhood": [],
+                        "new_tags_neighborhood": [],
+                    }
+                )
+
+        with patch.dict(os.environ, {"TEST_API_KEY": "not-a-real-secret"}):
+            adapter = AMemPaperAdapter(self.amem_paper_config())
+        completion = CompletionStub()
+        adapter._memory = types.SimpleNamespace(
+            llm_controller=types.SimpleNamespace(llm=completion)
+        )
+        adapter._install_llm_retry_wrapper()
+        response = completion.get_completion(
+            "You are an AI memory evolution agent",
+            response_format={
+                "type": "json_schema",
+                "json_schema": {
+                    "schema": {
+                        "type": "object",
+                        "properties": {
+                            "should_evolve": {"type": "boolean"},
+                            "actions": {"type": "array"},
+                            "suggested_connections": {"type": "array"},
+                            "tags_to_update": {"type": "array"},
+                            "new_context_neighborhood": {"type": "array"},
+                            "new_tags_neighborhood": {"type": "array"},
+                        },
+                        "required": [
+                            "should_evolve",
+                            "actions",
+                            "suggested_connections",
+                            "tags_to_update",
+                            "new_context_neighborhood",
+                            "new_tags_neighborhood",
+                        ],
+                    }
+                },
+            },
+        )
+        self.assertFalse(json.loads(response)["should_evolve"])
+        self.assertEqual(completion.calls, 1)
+        self.assertEqual(adapter._llm_retry_count, 0)
+
+    def test_amem_paper_rejects_silent_metadata_fallback_and_self_links(self) -> None:
+        fallback = types.SimpleNamespace(
+            id="n0", content="fact", context="General", keywords=[], tags=[], links=[]
+        )
+
+        class MemoryStub:
+            def __init__(self) -> None:
+                self.memories = {"n0": fallback}
+
+            def add_note(self, *_: object, **__: object) -> str:
+                return "n0"
+
+        with patch.dict(os.environ, {"TEST_API_KEY": "not-a-real-secret"}):
+            adapter = AMemPaperAdapter(self.amem_paper_config())
+        adapter._memory = MemoryStub()
+        with self.assertRaisesRegex(RuntimeError, "silently degraded"):
+            adapter.add([Message("user", "fact", "s0")], "session", None)
+
+        fallback.context = "rich context"
+        fallback.keywords = ["fact"]
+        fallback.tags = ["tag"]
+        fallback.links = [0]
+        with self.assertRaisesRegex(RuntimeError, "self-link"):
+            adapter._validate_links()
+
+    def test_amem_paper_worker_config_records_audited_upstream(self) -> None:
+        path = (
+            Path(__file__).parents[1]
+            / "configs/amem_paper_original.locomo314.openrouter.development.json"
+        )
+        config = WorkerConfig.load(path)
+        self.assertEqual(config.adapter_kind, "amem_paper")
+        self.assertEqual(
+            config.run_policy["upstream"]["revision"],
+            "0c8039f28fdcc08189a23c07a3437d9d2482f9c2",
+        )
 
     def test_joined_context_is_counted_exactly(self) -> None:
         class NonAdditiveCounter(TokenCounter):

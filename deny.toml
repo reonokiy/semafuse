@@ -1,0 +1,43 @@
+[graph]
+targets = [
+    "x86_64-unknown-linux-gnu",
+    "aarch64-unknown-linux-gnu",
+    "x86_64-apple-darwin",
+    "aarch64-apple-darwin",
+    "x86_64-pc-windows-msvc",
+]
+features = ["models-candle"]
+exclude-dev = true
+
+[advisories]
+# Advisories, unsoundness reports, and unmaintained dependencies fail by
+# default. Add an ignore only with a recorded, dependency-specific reason.
+ignore = [
+    { id = "RUSTSEC-2024-0436", reason = "paste 1.0.15 is a transitive dependency of the latest candle-core 0.11.0 through gemm 0.19; this is a maintenance-status advisory with no safe upgrade, not a vulnerability" },
+]
+unused-ignored-advisory = "deny"
+
+[licenses]
+include-build = true
+include-dev = false
+confidence-threshold = 0.93
+unused-allowed-license = "deny"
+allow = [
+    "Apache-2.0",
+    "MIT",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Zlib",
+    "Unicode-3.0",
+]
+exceptions = [
+    { crate = "option-ext", allow = ["MPL-2.0"] },
+    { crate = "webpki-roots", allow = ["CDLA-Permissive-2.0"] },
+]
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+unused-allowed-source = "deny"

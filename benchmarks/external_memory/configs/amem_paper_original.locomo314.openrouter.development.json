@@ -1,0 +1,41 @@
+{
+  "adapter": {
+    "kind": "amem_paper",
+    "config": {
+      "upstream_revision": "0c8039f28fdcc08189a23c07a3437d9d2482f9c2",
+      "embedding": {
+        "model": "sentence-transformers/all-MiniLM-L6-v2",
+        "revision": "1110a243fdf4706b3f48f1d95db1a4f5529b4d41"
+      },
+      "llm": {
+        "backend": "openai",
+        "model": "openai/gpt-4o-mini",
+        "api_key_env": "OPENROUTER_API_KEY",
+        "base_url": "https://openrouter.ai/api/v1",
+        "max_attempts": 3,
+        "request_timeout_seconds": 90,
+        "require_parameters": true
+      },
+      "memory": {
+        "evo_threshold": 100
+      },
+      "retrieval": {
+        "base_k": 50,
+        "query_rewrite": "paper_keywords",
+        "link_expansion": "paper_interleaved"
+      }
+    }
+  },
+  "tokenizer": {
+    "kind": "huggingface",
+    "model": "Qwen/Qwen3-32B",
+    "revision": "9216db5781bf21249d130ec9da846c4624c16137"
+  },
+  "run_policy": {
+    "track": "development",
+    "upstream": {
+      "revision": "0c8039f28fdcc08189a23c07a3437d9d2482f9c2",
+      "lock_status": "verified"
+    }
+  }
+}

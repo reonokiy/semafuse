@@ -88,3 +88,32 @@ fn bench_jsonl_is_a_feature_gated_semafuse_subcommand() {
         }
     ));
 }
+
+#[cfg(feature = "benchmarks")]
+#[test]
+fn bench_locomo_exposes_the_full_answer_validation_workflow() {
+    let cli = super::Cli::try_parse_from([
+        "semafuse",
+        "bench",
+        "locomo",
+        "--suite",
+        "/tmp/suite.toml",
+        "--dataset",
+        "/tmp/locomo10.json",
+        "--acknowledge-noncommercial",
+        "--mode",
+        "full",
+        "--validate-only",
+        "--method",
+        "reconstructive_v4",
+        "--output-dir",
+        "/tmp/validation",
+    ])
+    .unwrap();
+    assert!(matches!(
+        cli.command,
+        super::Commands::Bench {
+            command: super::benchmark_cli::BenchmarkCommand::Locomo(_)
+        }
+    ));
+}

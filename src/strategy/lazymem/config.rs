@@ -91,6 +91,9 @@ struct ProcessorGenerationConfig {
     max_tokens: usize,
     max_concurrency: Option<usize>,
     enable_thinking: bool,
+    /// Additional calls allowed when a model response fails strict local
+    /// validation. Transport retries remain owned by the endpoint config.
+    validation_retries: usize,
 }
 
 impl Default for ProcessorGenerationConfig {
@@ -101,6 +104,7 @@ impl Default for ProcessorGenerationConfig {
             max_tokens: 3_072,
             max_concurrency: None,
             enable_thinking: true,
+            validation_retries: 2,
         }
     }
 }
@@ -159,6 +163,12 @@ impl LazyMemConfig {
             self.processor.max_concurrency_limit(),
             self.processor.identity().backend
         );
+        ensure!(
+            self.generation.validation_retries <= 5,
+            "generation.validation_retries must be between 0 and 5"
+        );
+        self.processor
+            .validate_generation("processor", &self.generation_options())?;
         ensure!(
             (1..=1_024).contains(&self.embedding_batch_size),
             "embedding_batch_size must be between 1 and 1024"
@@ -230,6 +240,10 @@ impl LazyMemConfig {
             .unwrap_or_else(|| self.processor.default_max_concurrency())
     }
 
+    pub(super) fn validation_retries(&self) -> usize {
+        self.generation.validation_retries
+    }
+
     pub(super) fn generation_metadata(&self) -> Value {
         json!({
             "requested_sampling": {
@@ -239,6 +253,7 @@ impl LazyMemConfig {
                 "enable_thinking": self.generation.enable_thinking,
             },
             "effective_max_concurrency": self.effective_max_concurrency(),
+            "validation_retries": self.generation.validation_retries,
             "sampling_controls_applied": matches!(&self.processor, PromptProcessorBackend::OpenaiCompatible { .. }),
         })
     }

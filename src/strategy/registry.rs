@@ -1,4 +1,4 @@
-use super::{MemoryStrategy, history, lazymem};
+use super::{MemoryStrategy, history, lazymem, reconstructive};
 use anyhow::{Context, Result, ensure};
 use serde_json::Value;
 use std::collections::HashMap;
@@ -18,7 +18,11 @@ impl StrategyRegistration {
     }
 }
 
-const REGISTRY: &[StrategyRegistration] = &[history::REGISTRATION, lazymem::REGISTRATION];
+const REGISTRY: &[StrategyRegistration] = &[
+    history::REGISTRATION,
+    lazymem::REGISTRATION,
+    reconstructive::REGISTRATION,
+];
 
 fn registration(name: &str) -> Result<&'static StrategyRegistration> {
     REGISTRY

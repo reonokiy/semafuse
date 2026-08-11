@@ -62,25 +62,37 @@ pub struct SpoolForgetReport {
 /// Dropping an unfinished record releases its advisory lock and leaves the
 /// payload available to [`replay_spool`].
 pub struct PendingSpool {
-    file: std::fs::File,
+    file: Option<std::fs::File>,
     path: PathBuf,
 }
 
 impl PendingSpool {
     /// Marks the staged payload complete and removes it from the replay queue.
-    pub fn complete(self) -> Result<()> {
+    pub fn complete(mut self) -> Result<()> {
         // Truncate and sync while the advisory lock is still held. If another
         // process observes the file between unlock and removal, it can only see
         // an empty, successfully completed generation.
-        self.file.set_len(0)?;
-        self.file.sync_data()?;
-        self.file.unlock()?;
-        drop(self.file);
+        let file = self
+            .file
+            .as_ref()
+            .expect("pending spool always owns its file until completion");
+        file.set_len(0)?;
+        file.sync_data()?;
+        file.unlock()?;
+        drop(self.file.take());
         match fs::remove_file(&self.path) {
             Ok(()) => Ok(()),
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
             Err(error) => Err(error)
                 .with_context(|| format!("remove completed spool {}", self.path.display())),
+        }
+    }
+}
+
+impl Drop for PendingSpool {
+    fn drop(&mut self) {
+        if let Some(file) = &self.file {
+            let _ = file.unlock();
         }
     }
 }
@@ -477,7 +489,10 @@ pub fn stage_spool(
         return Err(error);
     }
     append_lock.unlock()?;
-    Ok(PendingSpool { file, path })
+    Ok(PendingSpool {
+        file: Some(file),
+        path,
+    })
 }
 
 /// Counts hook-spool records selected by a bounded forget filter without rewriting files.
@@ -803,11 +818,16 @@ pub async fn replay_spool(
         })
         .collect::<Vec<_>>();
     for path in pending {
-        let file = private_open_options()
-            .read(true)
-            .write(true)
-            .open(&path)
-            .with_context(|| format!("open pending spool {}", path.display()))?;
+        // Completion removes a pending generation without taking the append
+        // lock, so a path collected above may disappear before open or rename.
+        let file = match private_open_options().read(true).write(true).open(&path) {
+            Ok(file) => file,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(error) => {
+                return Err(error)
+                    .with_context(|| format!("open pending spool {}", path.display()));
+            }
+        };
         match file.try_lock_exclusive() {
             Ok(()) => {
                 let name = path
@@ -818,13 +838,19 @@ pub async fn replay_spool(
                 file.unlock()
                     .with_context(|| format!("unlock pending spool {}", path.display()))?;
                 drop(file);
-                fs::rename(&path, &claimed).with_context(|| {
-                    format!(
-                        "claim pending spool {} as {}",
-                        path.display(),
-                        claimed.display()
-                    )
-                })?;
+                match fs::rename(&path, &claimed) {
+                    Ok(()) => {}
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+                    Err(error) => {
+                        return Err(error).with_context(|| {
+                            format!(
+                                "claim pending spool {} as {}",
+                                path.display(),
+                                claimed.display()
+                            )
+                        });
+                    }
+                }
             }
             Err(error) if lock_is_contended(&error) => {}
             Err(error) => {

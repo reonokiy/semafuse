@@ -3,6 +3,9 @@
 Semafuse is a local, coding-agent-agnostic storage and retrieval layer for conversational memory. It currently supports
 Amp, Codex, Claude Code, and OpenCode, and explicitly distinguishes between two ingestion paths:
 
+The current release candidate is `0.1.0-beta.1`; its supported scope and known
+experimental boundaries are recorded in the [changelog](CHANGELOG.md).
+
 - One-time history import: reads existing sessions, normalizes them, and writes them idempotently; repeated imports do not produce duplicate events.
 - Real-time capture: agent lifecycle hooks write JSON events to Semafuse; when the database is temporarily unavailable, events are written to a local spool and replayed later.
 
@@ -49,21 +52,32 @@ cargo doc --no-deps --open
 Install a prebuilt release with mise after a matching GitHub release has been published:
 
 ```bash
-# Latest release
-mise use -g github:reonokiy/semafuse
+# Current beta (mise 2026.7.5 or newer)
+mise use -g "github:reonokiy/semafuse[prerelease=true]@0.1.0-beta.1"
 
-# A specific release
-mise use -g github:reonokiy/semafuse@0.1.0
+# Track the newest beta
+mise use -g "github:reonokiy/semafuse[prerelease=true]"
 ```
 
 Because this repository is private, authenticate mise through the GitHub CLI or set
 `MISE_GITHUB_TOKEN` to a token with read access to the repository. The release workflow
-accepts only a `v<version>` tag matching the Rust package, reruns the same Rust and Web
-quality checks used for pushes and pull requests, and smoke-tests every supported binary.
+starts after a pull request with an unpublished Cargo version merges into `main`. It reruns
+the same Rust, Python, and Web quality checks used for pushes and pull requests, builds and
+smoke-tests every supported binary, then creates the matching `v<version>` tag and GitHub
+release. A later merge with the same version skips publishing instead of replacing assets;
+increment the prerelease number for another candidate.
+
+Repository administrators must protect `main` by requiring pull requests and the CI
+workflow's checks. That repository rule prevents direct pushes; the checked-in release
+workflow deliberately gates only on a successful `main` push and an unpublished version.
+
 Each Linux/macOS archive contains `semafuse`, a models-candle-enabled `semafused`, the
-daemon example config, and the license; the Windows archive contains `semafuse.exe` and
-the license because the daemon transport is Unix-only. Mise exposes the executables found
-in the selected archive and verifies it using the published `SHA256SUMS.txt`.
+daemon example config, changelog, project license, and dependency notices; the Windows
+archive contains `semafuse.exe`, changelog, the project license, and dependency
+notices because the daemon transport is Unix-only.
+
+Mise exposes the executables found in the selected archive and verifies it using the
+published `SHA256SUMS.txt`.
 
 To build and install from source instead:
 
@@ -82,12 +96,15 @@ mise install
 
 cargo fmt --all -- --check
 cargo clippy --locked --all-targets -- -D warnings
+cargo clippy --locked --all-targets --features benchmarks -- -D warnings
 cargo clippy --locked --all-targets --no-default-features --features daemon -- -D warnings
 cargo clippy --locked --all-targets --no-default-features --features models-candle -- -D warnings
 cargo test --locked --all-targets
+cargo test --locked --all-targets --features benchmarks
 cargo test --locked --all-targets --features daemon
-cargo test --locked --all-targets --features models-candle
+cargo test --locked --lib --features models-candle
 RUSTDOCFLAGS="-D warnings" cargo doc --locked --no-deps
+RUSTDOCFLAGS="-D warnings" cargo doc --locked --no-deps --features benchmarks
 RUSTDOCFLAGS="-D warnings" cargo doc --locked --no-deps --no-default-features --features models-candle
 
 pnpm --dir web install --frozen-lockfile
@@ -119,7 +136,9 @@ its lifecycle.
 Benchmark tooling is exposed through the optional `semafuse bench` command
 (`--features benchmarks`). Its `jsonl`, `longmemeval`, `locomo`, and `report`
 subcommands select benchmark workflows; memory strategies themselves remain
-runtime configuration and never create strategy-specific binaries.
+runtime configuration and never create strategy-specific binaries. This is a
+source-built developer harness and is intentionally excluded from the beta
+release archives.
 
 The model service selects its Candle device automatically: CUDA when compiled
 with `models-cuda`, Metal on macOS, and CPU otherwise. macOS builds include an
@@ -148,7 +167,8 @@ semafuse daemon status --socket "$XDG_RUNTIME_DIR/semafuse/semafused.sock"
 
 ## License
 
-Semafuse is available under the [MIT License](LICENSE).
+Semafuse is available under the [MIT License](LICENSE). Binary distributions
+also include [third-party dependency notices](THIRD_PARTY_NOTICES.html).
 
 ## Default Paths and Environment Variables
 
@@ -420,6 +440,16 @@ semafuse search "ignored for recent" --mode recent --since 2d
 | --- | --- | --- | --- | --- |
 | `history` | None; reads immutable events directly | `event` items | Configurable `hybrid`, `lexical`, or `recent` | Cheap control/baseline |
 | `lazymem` | Paper-v2 query-time MPM construction | One chronological `memory` item with source IDs and a redacted protocol trace | Qwen3 dense + BM25, RRF, BGE cross-encoder, Top-50, radius-2 windows | Full model-backed LazyMem path and paper protocol |
+| `reconstructive` (experimental) | Query-time source-preserving reconstruction | One chronological verbatim `memory` item plus auditable round traces | Dense + BM25, per-channel seen mask, RRF, reranking, session-local neighbors, optional evidence-gap query refinement | Training-free one-shot, masked, and closed-loop retrieval ablations |
+
+`reconstructive` never replaces source evidence with a model summary. Its
+controller can only decide sufficiency and propose the next retrieval query;
+the final reader receives the selected source events verbatim. The strategy is
+inspired by MemR3 and MemMachine, but is a Semafuse implementation rather than
+an exact reproduction. Typed controller, retrieval, and context settings live
+under `strategies.settings.reconstructive`; reproducible OpenRouter profiles
+and LoCoMo suites are documented in
+[`benchmarks/reconstructive`](benchmarks/reconstructive/README.md).
 
 `lazymem` implements the complete model-backed structure: raw message storage,
 durable event embeddings, parallel dense/BM25 retrieval, RRF, cross-encoder
@@ -565,13 +595,14 @@ semafuse strategy status
 semafuse strategy retry
 semafuse strategy rebuild history
 semafuse strategy rebuild lazymem
+semafuse strategy rebuild reconstructive
 ```
 
 Each import, hook, or spool replay creates persistent deliveries only for newly added raw events. Each strategy
 consumes events in its own checkpoint order and retains a retryable state on failure. `rebuild` reconstructs the target strategy's derived memories
 from the complete raw event history without modifying other strategies or raw events.
 
-Memory strategies are organized as peers under `src/strategy/`. `mod.rs` is the stable façade for dispatch, recall, and rebuild; `registry.rs` contains the ordered module registry; `recall.rs` defines the strategy-neutral `event | memory` output; and each strategy owns its constructor and private typed settings. The model-backed `lazymem` strategy lives in `lazymem.rs`, with retrieval, windowing, processing, profile validation, and prompt construction isolated in `lazymem/` submodules. Model I/O is similarly separated behind the small `inference.rs` façade into HTTP transport, OpenAI-compatible inference, reranking, processor dispatch, and isolated Codex execution. To add a strategy, implement `MemoryStrategy` and add its registration to the registry. Callers remain unchanged.
+Memory strategies are organized as peers under `src/strategy/`. `mod.rs` is the stable façade for dispatch, recall, and rebuild; `registry.rs` contains the ordered module registry; `recall.rs` defines the strategy-neutral `event | memory` output; and each strategy owns its constructor and private typed settings. The model-backed `lazymem` strategy lives in `lazymem.rs`, with retrieval, windowing, processing, profile validation, and prompt construction isolated in `lazymem/` submodules. The source-preserving `reconstructive` strategy similarly isolates its typed configuration, evidence-gap controller, and verbatim renderer under `reconstructive/`, while reusing the shared retrieval primitives. Model I/O is separated behind the small `inference.rs` façade into HTTP transport, OpenAI-compatible inference, reranking, reusable structured-output contracts, processor dispatch, and isolated Codex execution. To add a strategy, implement `MemoryStrategy` and add its registration to the registry. Callers remain unchanged.
 
 ### `session`: Read a Complete Session
 
@@ -699,10 +730,10 @@ semafuse spool replay
 ## Development Verification
 
 The database schema is managed by `migrations/`; unapplied migrations run automatically when the application starts.
-When modifying the schema or SQL queries, install the CLI matching the project's `sqlx 0.8`, update the offline query metadata, and then verify:
+When modifying the schema or SQL queries, install the CLI matching the project's `sqlx 0.9`, update the offline query metadata, and then verify:
 
 ```bash
-cargo install sqlx-cli --version '^0.8' --no-default-features --features sqlite
+cargo install sqlx-cli --version '^0.9' --no-default-features --features sqlite
 export DATABASE_URL=sqlite://./target/sqlx-dev.db
 cargo sqlx database create
 cargo sqlx migrate run

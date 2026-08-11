@@ -9,10 +9,9 @@ import os
 import re
 import time
 from typing import Any, Mapping, Sequence
-from urllib.parse import urlsplit
 
 from ..adapter import ExternalMemoryAdapter, MemoryItem
-from ..config import resolve_env_references
+from ..config import resolve_env_references, validate_secret_bearing_base_url
 from ..errors import AdapterUnavailableError, ConfigurationError
 from ..protocol import Message
 
@@ -78,18 +77,7 @@ class AMemAdapter(ExternalMemoryAdapter):
             base_url = config.get("openai_base_url")
             if not isinstance(base_url, str) or not base_url.strip():
                 raise ConfigurationError("A-MEM openai backend requires an explicit openai_base_url")
-            parsed = urlsplit(base_url)
-            if (
-                parsed.scheme not in {"http", "https"}
-                or not parsed.netloc
-                or parsed.username is not None
-                or parsed.password is not None
-                or parsed.query
-                or parsed.fragment
-            ):
-                raise ConfigurationError(
-                    "A-MEM openai_base_url must be an http(s) URL without credentials, query, or fragment"
-                )
+            validate_secret_bearing_base_url(base_url, "A-MEM openai_base_url")
         elif "api_key_env" in config or "openai_base_url" in config:
             raise ConfigurationError("A-MEM ollama backend does not accept api_key_env or openai_base_url")
         resolved, self.secrets = resolve_env_references(dict(config), "adapter.config")

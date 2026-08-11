@@ -3,7 +3,7 @@
 //! The types in this module deliberately mirror the normalized JSONL records
 //! emitted by `benchmarks/lazymem`. Benchmark histories are never mixed with a
 //! user's durable store: one-shot calls get a fresh in-memory SQLite store,
-//! while [`StrategyRetrievalSession`](crate::benchmark::StrategyRetrievalSession) owns one isolated store per explicitly
+//! while [`StrategyBenchmarkSession`](crate::benchmark::StrategyBenchmarkSession) owns one isolated store per explicitly
 //! identity-checked shared history. Both paths use ordinary ingestion, strategy
 //! dispatch, and timed recall APIs.
 
@@ -126,15 +126,17 @@ pub struct BenchmarkConstructionMetrics {
     pub event_batches_indexed: usize,
 }
 
-/// Production LazyMem retrieval over one isolated, persistent benchmark
+/// Production strategy execution over one isolated, persistent benchmark
 /// history.
 ///
 /// Construction ingests and indexes exactly once. Every query is checked
 /// against the constructor's SHA-256 history identity before recall, so a
 /// caller cannot accidentally reuse memory across datasets, users, roles,
 /// messages, sessions, or timestamps. Question IDs, query text, query time,
-/// and evaluator-only category may vary between queries.
-pub struct StrategyRetrievalSession {
+/// and evaluator-only category may vary between queries. Session queries see
+/// the complete supplied history, which matches benchmarks such as LoCoMo
+/// where questions are asked after the full conversation.
+pub struct StrategyBenchmarkSession {
     config: Config,
     store: SqliteStore,
     prepared: PreparedQuestion,
@@ -156,6 +158,35 @@ enum BenchmarkExecution {
     RetrievalOnly,
 }
 
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum BenchmarkHistoryVisibility {
+    AtQueryTime,
+    AllProvidedMessages,
+}
+
+impl BenchmarkHistoryVisibility {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::AtQueryTime => "at_query_time",
+            Self::AllProvidedMessages => "all_provided_messages",
+        }
+    }
+
+    fn strategy_reference_time_ms(self, query_time_ms: i64, prepared: &PreparedQuestion) -> i64 {
+        match self {
+            Self::AtQueryTime => query_time_ms,
+            Self::AllProvidedMessages => prepared
+                .events
+                .iter()
+                .map(CanonicalEvent::ordering_timestamp_ms)
+                .max()
+                .map_or(query_time_ms, |history_max| {
+                    query_time_ms.max(history_max.saturating_add(1))
+                }),
+        }
+    }
+}
+
 impl BenchmarkExecution {
     fn as_str(self) -> &'static str {
         match self {
@@ -163,33 +194,6 @@ impl BenchmarkExecution {
             Self::RetrievalOnly => "retrieval_only",
         }
     }
-}
-
-/// Runs one benchmark question through real Semafuse ingestion, LazyMem
-/// indexing, and deterministic query-time recall.
-///
-/// The supplied configuration must select the `lazymem` strategy for recall.
-/// Its evidence fields use benchmark message IDs rather than internal
-/// canonical event IDs, so the harness can use its established metrics. The
-/// nested strategy metadata remains available for implementation auditing.
-pub async fn run_lazymem_question(
-    config: &Config,
-    question: BenchmarkQuestion,
-    limit: usize,
-) -> Result<BenchmarkResponse> {
-    ensure!(
-        config.strategies.recall == "lazymem",
-        "the LazyMem benchmark runner requires strategies.recall = \"lazymem\""
-    );
-    ensure!(
-        config
-            .strategies
-            .enabled
-            .iter()
-            .any(|strategy| strategy == "lazymem"),
-        "the LazyMem benchmark runner requires lazymem in strategies.enabled"
-    );
-    run_strategy_question(config, question, limit).await
 }
 
 /// Runs one normalized question through the configured production strategy.
@@ -221,14 +225,24 @@ pub async fn run_strategy_retrieval_question(
     question: BenchmarkQuestion,
     limit: usize,
 ) -> Result<BenchmarkResponse> {
-    let mut session = StrategyRetrievalSession::new(config, &question).await?;
-    session.query(question, limit).await
+    let mut session = StrategyBenchmarkSession::new_retrieval(config, &question).await?;
+    session.query_retrieval(question, limit).await
 }
 
-impl StrategyRetrievalSession {
-    /// Constructs an isolated production LazyMem index for one shared history.
-    pub async fn new(config: &Config, exemplar: &BenchmarkQuestion) -> Result<Self> {
+impl StrategyBenchmarkSession {
+    /// Constructs one isolated LazyMem index for retrieval-only evaluation.
+    pub async fn new_retrieval(config: &Config, exemplar: &BenchmarkQuestion) -> Result<Self> {
         validate_strategy_configuration(config, BenchmarkExecution::RetrievalOnly)?;
+        Self::new(config, exemplar).await
+    }
+
+    /// Constructs one isolated production strategy index for a shared history.
+    ///
+    /// The store is populated and strategy indexing is dispatched during this
+    /// call only. Both [`Self::query_retrieval`] and [`Self::query_full`] reuse
+    /// that construction for every identity-compatible question.
+    pub async fn new(config: &Config, exemplar: &BenchmarkQuestion) -> Result<Self> {
+        validate_strategy_configuration(config, BenchmarkExecution::Full)?;
         validate_benchmark_question(exemplar)?;
         let history_identity_sha256 = benchmark_history_identity(exemplar)?;
         let prepared = prepare_shared_history(exemplar, &history_identity_sha256)?;
@@ -264,14 +278,45 @@ impl StrategyRetrievalSession {
         &self.construction
     }
 
-    /// Queries the already-constructed production index.
+    /// Runs retrieval and evidence-window expansion without invoking the
+    /// query-conditioned memory processor.
     ///
     /// The complete history must match the constructor's identity. Validation
     /// happens before recall and a mismatch never mutates the session.
-    pub async fn query(
+    pub async fn query_retrieval(
         &mut self,
         question: BenchmarkQuestion,
         limit: usize,
+    ) -> Result<BenchmarkResponse> {
+        validate_strategy_configuration(&self.config, BenchmarkExecution::RetrievalOnly)?;
+        self.query_with_execution(question, limit, BenchmarkExecution::RetrievalOnly)
+            .await
+    }
+
+    /// Runs the configured production strategy including query-conditioned
+    /// memory construction over the already-constructed index.
+    ///
+    /// Full session queries deliberately make every supplied message visible,
+    /// even when the dataset's query-time string parses earlier than the last
+    /// message. This is the LoCoMo lifecycle: the question is asked after the
+    /// complete conversation, and `query_time` remains evaluator metadata
+    /// rather than a corpus cutoff. The returned benchmark trace records
+    /// `history_visibility = "all_provided_messages"` and both timestamps.
+    pub async fn query_full(
+        &mut self,
+        question: BenchmarkQuestion,
+        limit: usize,
+    ) -> Result<BenchmarkResponse> {
+        validate_strategy_configuration(&self.config, BenchmarkExecution::Full)?;
+        self.query_with_execution(question, limit, BenchmarkExecution::Full)
+            .await
+    }
+
+    async fn query_with_execution(
+        &mut self,
+        question: BenchmarkQuestion,
+        limit: usize,
+        execution: BenchmarkExecution,
     ) -> Result<BenchmarkResponse> {
         ensure!(limit > 0, "benchmark retrieval limit must be positive");
         validate_benchmark_question(&question)?;
@@ -284,7 +329,8 @@ impl StrategyRetrievalSession {
             &self.prepared,
             &question,
             limit,
-            BenchmarkExecution::RetrievalOnly,
+            execution,
+            BenchmarkHistoryVisibility::AllProvidedMessages,
             query_time_ms,
             query_time_source,
             &self.construction,
@@ -339,6 +385,7 @@ async fn run_strategy_question_with_execution(
         &question,
         limit,
         execution,
+        BenchmarkHistoryVisibility::AtQueryTime,
         prepared.query_time_ms,
         prepared.query_time_source,
         &construction,
@@ -459,6 +506,7 @@ async fn recall_prepared_question(
     question: &BenchmarkQuestion,
     limit: usize,
     execution: BenchmarkExecution,
+    history_visibility: BenchmarkHistoryVisibility,
     query_time_ms: i64,
     query_time_source: &'static str,
     construction: &BenchmarkConstructionMetrics,
@@ -467,22 +515,8 @@ async fn recall_prepared_question(
     session_query_index: Option<usize>,
 ) -> Result<BenchmarkResponse> {
     let strategy_name = config.strategies.recall.as_str();
-    // LongMemEval retrieval evaluates the complete supplied haystack. Some
-    // temporal-reasoning fixtures deliberately contain evidence timestamps
-    // later than `question_date`, so retrieval-only execution must not treat
-    // that field as a corpus cutoff. Full memory execution keeps the ordinary
-    // point-in-time product semantics.
-    let strategy_reference_time_ms = match execution {
-        BenchmarkExecution::Full => query_time_ms,
-        BenchmarkExecution::RetrievalOnly => prepared
-            .events
-            .iter()
-            .map(CanonicalEvent::ordering_timestamp_ms)
-            .max()
-            .map_or(query_time_ms, |history_max| {
-                query_time_ms.max(history_max.saturating_add(1))
-            }),
-    };
+    let strategy_reference_time_ms =
+        history_visibility.strategy_reference_time_ms(query_time_ms, prepared);
     let recall_started = Instant::now();
     let query = SearchQuery {
         text: question.query.clone(),
@@ -521,29 +555,21 @@ async fn recall_prepared_question(
     } else {
         recall_result.metadata
     };
-    let (retrieved_event_ids, retrieved_source) = if strategy_name == "lazymem" {
-        retrieval_event_ids(&strategy_metadata, &source_event_ids)
-    } else {
-        (source_event_ids.clone(), "event_items")
-    };
-    let (covered_event_ids, covered_source) = if strategy_name == "lazymem" {
-        covered_event_ids(&strategy_metadata, &source_event_ids)
-    } else {
-        (source_event_ids.clone(), "event_items")
-    };
+    let (retrieved_event_ids, retrieved_source) =
+        retrieval_event_ids(&strategy_metadata, &source_event_ids);
+    let (covered_event_ids, covered_source) =
+        covered_event_ids(&strategy_metadata, &source_event_ids);
     let (retained_event_ids, retained_source) = if execution == BenchmarkExecution::RetrievalOnly {
         (Vec::new(), "retrieval_only_no_memory_construction")
-    } else if strategy_name == "lazymem" {
-        strategy_benchmark_trace_ids(&strategy_metadata, "source_event_ids")
-            .map(|ids| (ids, "strategy_benchmark_trace.source_event_ids"))
-            .unwrap_or_else(|| (source_event_ids.clone(), "memory_source_event_ids_fallback"))
     } else {
-        (source_event_ids.clone(), "event_items")
+        strategy_recall_trace_ids(&strategy_metadata, "source_event_ids")
+            .map(|ids| (ids, "recall_trace.source_event_ids"))
+            .unwrap_or_else(|| (source_event_ids.clone(), "memory_source_event_ids_fallback"))
     };
     let retrieved_message_ids = map_event_ids(&retrieved_event_ids, &prepared.message_ids_by_event)
-        .context("map LazyMem retrieval IDs back to benchmark messages")?;
+        .context("map strategy retrieval IDs back to benchmark messages")?;
     let covered_message_ids = map_event_ids(&covered_event_ids, &prepared.message_ids_by_event)
-        .context("map LazyMem coverage IDs back to benchmark messages")?;
+        .context("map strategy coverage IDs back to benchmark messages")?;
     let retained_message_ids = map_event_ids(&retained_event_ids, &prepared.message_ids_by_event)
         .context("map retained source IDs back to benchmark messages")?;
     let context_source = if execution == BenchmarkExecution::RetrievalOnly {
@@ -560,21 +586,7 @@ async fn recall_prepared_question(
     )?;
 
     let (retrieval_latency_s, processing_latency_s, strategy_total_latency_s, timing_source) =
-        if strategy_name == "lazymem" && strategy_metadata.get("timing").is_some() {
-            let retrieval = metadata_timing_ms(&strategy_metadata, "retrieval_ms") / 1_000.0;
-            let processing = (metadata_timing_ms(&strategy_metadata, "window_construction_ms")
-                + metadata_timing_ms(&strategy_metadata, "processing_ms"))
-                / 1_000.0;
-            let total = metadata_timing_ms(&strategy_metadata, "total_ms") / 1_000.0;
-            (retrieval, processing, total, "lazymem_metadata_timing")
-        } else {
-            (
-                recall_elapsed.as_secs_f64(),
-                0.0,
-                recall_elapsed.as_secs_f64(),
-                "runner_recall_total_fallback",
-            )
-        };
+        strategy_timing(&strategy_metadata, recall_elapsed.as_secs_f64());
 
     let benchmark_trace = json!({
         "schema_version": BENCHMARK_TRACE_VERSION,
@@ -591,10 +603,7 @@ async fn recall_prepared_question(
         "query_time_ms": query_time_ms,
         "query_time_source": query_time_source,
         "strategy_reference_time_ms": strategy_reference_time_ms,
-        "history_visibility": match execution {
-            BenchmarkExecution::Full => "at_query_time",
-            BenchmarkExecution::RetrievalOnly => "all_provided_messages",
-        },
+        "history_visibility": history_visibility.as_str(),
         "input_message_count": question.messages.len(),
         "indexed_message_count": prepared.events.len(),
         "skipped_empty_message_ids": prepared.skipped_empty_message_ids,
@@ -975,41 +984,6 @@ fn extract_strategy_items(
     strategy_name: &str,
     items: Vec<RecallItem>,
 ) -> Result<(String, Map<String, Value>, Vec<String>)> {
-    if strategy_name != "lazymem" {
-        let mut context = String::new();
-        let mut source_event_ids = Vec::with_capacity(items.len());
-        for item in items {
-            match item {
-                RecallItem::Event { event, .. } => {
-                    source_event_ids.push(event.id.clone());
-                    context.push_str(&format!(
-                        "[event_id={} timestamp_ms={}]\n{}\n\n",
-                        event.id,
-                        event.ordering_timestamp_ms(),
-                        event.search_text().trim()
-                    ));
-                }
-                RecallItem::Memory {
-                    namespace,
-                    content,
-                    metadata,
-                    source_event_ids,
-                    ..
-                } => {
-                    ensure!(
-                        namespace == strategy_name,
-                        "benchmark strategy {strategy_name} returned memory namespace {namespace}"
-                    );
-                    ensure!(
-                        context.is_empty(),
-                        "benchmark strategy {strategy_name} mixed event and memory items"
-                    );
-                    return Ok((content, metadata, source_event_ids));
-                }
-            }
-        }
-        return Ok((context.trim_end().to_owned(), Map::new(), source_event_ids));
-    }
     match items.as_slice() {
         [] => Ok((String::new(), Map::new(), Vec::new())),
         [
@@ -1022,15 +996,37 @@ fn extract_strategy_items(
             },
         ] => {
             ensure!(
-                namespace == "lazymem",
-                "LazyMem benchmark received a memory from unexpected namespace {namespace}"
+                namespace == strategy_name,
+                "benchmark strategy {strategy_name} returned memory namespace {namespace}"
             );
             Ok((content.clone(), metadata.clone(), source_event_ids.clone()))
         }
-        [RecallItem::Event { .. }] => bail!("LazyMem benchmark received an event-backed result"),
+        _ if items
+            .iter()
+            .all(|item| matches!(item, RecallItem::Event { .. })) =>
+        {
+            ensure!(
+                strategy_name != "lazymem",
+                "LazyMem benchmark received an event-backed result"
+            );
+            let mut context = String::new();
+            let mut source_event_ids = Vec::with_capacity(items.len());
+            for item in items {
+                let RecallItem::Event { event, .. } = item else {
+                    unreachable!("event-only result was checked above")
+                };
+                source_event_ids.push(event.id.clone());
+                context.push_str(&format!(
+                    "[event_id={} timestamp_ms={}]\n{}\n\n",
+                    event.id,
+                    event.ordering_timestamp_ms(),
+                    event.search_text().trim()
+                ));
+            }
+            Ok((context.trim_end().to_owned(), Map::new(), source_event_ids))
+        }
         _ => bail!(
-            "LazyMem benchmark expected at most one constructed memory, received {} items",
-            items.len()
+            "benchmark strategy {strategy_name} mixed event and memory items or returned multiple memories"
         ),
     }
 }
@@ -1092,8 +1088,8 @@ fn retrieval_event_ids(
     metadata: &Map<String, Value>,
     fallback: &[String],
 ) -> (Vec<String>, &'static str) {
-    if let Some(ids) = strategy_benchmark_trace_ids(metadata, "retrieved_event_ids") {
-        return (ids, "strategy_benchmark_trace.retrieved_event_ids");
+    if let Some(ids) = strategy_recall_trace_ids(metadata, "retrieved_event_ids") {
+        return (ids, "recall_trace.retrieved_event_ids");
     }
     let ids = metadata
         .get("rerank")
@@ -1112,8 +1108,8 @@ fn covered_event_ids(
     metadata: &Map<String, Value>,
     fallback: &[String],
 ) -> (Vec<String>, &'static str) {
-    if let Some(ids) = strategy_benchmark_trace_ids(metadata, "covered_event_ids") {
-        return (ids, "strategy_benchmark_trace.covered_event_ids");
+    if let Some(ids) = strategy_recall_trace_ids(metadata, "covered_event_ids") {
+        return (ids, "recall_trace.covered_event_ids");
     }
     let Some(windows) = metadata
         .get("windows")
@@ -1141,9 +1137,9 @@ fn covered_event_ids(
     }
 }
 
-fn strategy_benchmark_trace_ids(metadata: &Map<String, Value>, field: &str) -> Option<Vec<String>> {
+fn strategy_recall_trace_ids(metadata: &Map<String, Value>, field: &str) -> Option<Vec<String>> {
     metadata
-        .get("strategy_benchmark_trace")
+        .get("recall_trace")
         .and_then(|trace| trace.get(field))
         .and_then(Value::as_array)
         .map(|values| string_values(values))
@@ -1183,10 +1179,35 @@ fn metadata_timing_ms(metadata: &Map<String, Value>, name: &str) -> f64 {
         .unwrap_or(0.0)
 }
 
+fn strategy_timing(
+    metadata: &Map<String, Value>,
+    runner_recall_s: f64,
+) -> (f64, f64, f64, &'static str) {
+    if metadata.get("timing").is_some() {
+        let retrieval = metadata_timing_ms(metadata, "retrieval_ms") / 1_000.0;
+        let processing = (metadata_timing_ms(metadata, "window_construction_ms")
+            + metadata_timing_ms(metadata, "processing_ms"))
+            / 1_000.0;
+        let total = metadata_timing_ms(metadata, "total_ms") / 1_000.0;
+        (retrieval, processing, total, "strategy_metadata_timing")
+    } else {
+        (
+            runner_recall_s,
+            0.0,
+            runner_recall_s,
+            "runner_recall_total_fallback",
+        )
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::config::{BlobConfig, StrategyConfig};
+    use std::sync::{
+        Arc, Mutex,
+        atomic::{AtomicUsize, Ordering},
+    };
     use tokio::{
         io::{AsyncReadExt, AsyncWriteExt},
         net::TcpListener,
@@ -1344,17 +1365,79 @@ mod tests {
     }
 
     #[test]
-    fn stable_strategy_benchmark_trace_takes_precedence_over_internal_metadata() {
+    fn stable_recall_trace_takes_precedence_over_internal_metadata() {
         let metadata = Map::from_iter([
             (
-                "strategy_benchmark_trace".into(),
+                "recall_trace".into(),
                 json!({"retrieved_event_ids": ["evt_trace"]}),
             ),
             ("rerank".into(), json!({"output_order": ["evt_internal"]})),
         ]);
         let (ids, source) = retrieval_event_ids(&metadata, &[]);
         assert_eq!(ids, vec!["evt_trace"]);
-        assert_eq!(source, "strategy_benchmark_trace.retrieved_event_ids");
+        assert_eq!(source, "recall_trace.retrieved_event_ids");
+    }
+
+    #[test]
+    fn generic_memory_strategy_uses_stable_trace_timing_and_namespace() {
+        let metadata = Map::from_iter([
+            (
+                "recall_trace".into(),
+                json!({
+                    "retrieved_event_ids": ["retrieved"],
+                    "covered_event_ids": ["covered"],
+                    "source_event_ids": ["retained"],
+                }),
+            ),
+            (
+                "timing".into(),
+                json!({
+                    "retrieval_ms": 125.0,
+                    "window_construction_ms": 25.0,
+                    "processing_ms": 50.0,
+                    "total_ms": 225.0,
+                }),
+            ),
+        ]);
+        let (retrieved, retrieved_source) = retrieval_event_ids(&metadata, &["fallback".into()]);
+        let (covered, covered_source) = covered_event_ids(&metadata, &["fallback".into()]);
+        assert_eq!(retrieved, ["retrieved"]);
+        assert_eq!(retrieved_source, "recall_trace.retrieved_event_ids");
+        assert_eq!(covered, ["covered"]);
+        assert_eq!(covered_source, "recall_trace.covered_event_ids");
+        assert_eq!(
+            strategy_recall_trace_ids(&metadata, "source_event_ids").unwrap(),
+            ["retained"]
+        );
+        assert_eq!(
+            strategy_timing(&metadata, 9.0),
+            (0.125, 0.075, 0.225, "strategy_metadata_timing")
+        );
+
+        let memory = RecallItem::Memory {
+            namespace: "reconstructive".into(),
+            id: "memory".into(),
+            content: "verbatim context".into(),
+            metadata: metadata.clone(),
+            source_event_ids: vec!["retained".into()],
+            score: 1.0,
+        };
+        let (content, extracted_metadata, source_ids) =
+            extract_strategy_items("reconstructive", vec![memory]).unwrap();
+        assert_eq!(content, "verbatim context");
+        assert_eq!(extracted_metadata, metadata);
+        assert_eq!(source_ids, ["retained"]);
+
+        let wrong_namespace = RecallItem::Memory {
+            namespace: "lazymem".into(),
+            id: "memory".into(),
+            content: String::new(),
+            metadata: Map::new(),
+            source_event_ids: Vec::new(),
+            score: 0.0,
+        };
+        let error = extract_strategy_items("reconstructive", vec![wrong_namespace]).unwrap_err();
+        assert!(format!("{error:#}").contains("returned memory namespace lazymem"));
     }
 
     #[tokio::test]
@@ -1400,19 +1483,22 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn retrieval_only_runner_skips_an_unreachable_processor() {
+    async fn persistent_session_reuses_index_and_processes_every_full_query() {
         let listener = match TcpListener::bind("127.0.0.1:0").await {
             Ok(listener) => listener,
             Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied => return,
             Err(error) => panic!("bind mock inference server: {error}"),
         };
         let address = listener.local_addr().unwrap();
-        let embedding_batch_sizes = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let embedding_batch_sizes = Arc::new(Mutex::new(Vec::new()));
+        let processor_calls = Arc::new(AtomicUsize::new(0));
         let server_embedding_batch_sizes = embedding_batch_sizes.clone();
+        let server_processor_calls = processor_calls.clone();
         let server = tokio::spawn(async move {
             loop {
                 let (mut stream, _) = listener.accept().await.unwrap();
                 let embedding_batch_sizes = server_embedding_batch_sizes.clone();
+                let processor_calls = server_processor_calls.clone();
                 tokio::spawn(async move {
                     let mut request = Vec::new();
                     let mut buffer = [0_u8; 4_096];
@@ -1468,8 +1554,29 @@ mod tests {
                                 .map(|(index, _)| json!({"index": index, "score": 1.0 - index as f64 / 100.0}))
                                 .collect(),
                         )
+                    } else if request_line.contains("/chat/completions") {
+                        processor_calls.fetch_add(1, Ordering::SeqCst);
+                        let prompt = body["messages"][1]["content"].as_str().unwrap();
+                        let (_, raw_window) = prompt.split_once("# History Window\n").unwrap();
+                        let window: Value = serde_json::from_str(raw_window).unwrap();
+                        let decisions = ["previous_bridge", "core_messages", "next_bridge"]
+                            .into_iter()
+                            .flat_map(|section| window[section].as_array().unwrap())
+                            .map(|message| {
+                                json!({
+                                    "op": "KEEP",
+                                    "compressed_content": message["content"],
+                                    "reason": "relevant test evidence"
+                                })
+                            })
+                            .collect::<Vec<_>>();
+                        json!({
+                            "choices": [{"finish_reason": "stop", "message": {"content": serde_json::to_string(&decisions).unwrap()}}]
+                        })
                     } else {
-                        panic!("retrieval-only runner made an unexpected request: {request_line}");
+                        panic!(
+                            "persistent benchmark session made an unexpected request: {request_line}"
+                        );
                     };
                     let encoded = serde_json::to_vec(&response).unwrap();
                     let header = format!(
@@ -1493,9 +1600,10 @@ mod tests {
                         "protocol": "custom",
                         "embedding": {"backend": "openai_compatible", "endpoint": {"base_url": format!("{endpoint}/v1"), "model": "embed"}},
                         "reranker": {"backend": "openai_compatible", "endpoint": {"base_url": endpoint, "model": "reranker"}},
-                        "processor": {"backend": "openai_compatible", "endpoint": {"base_url": "http://127.0.0.1:1/v1", "model": "unreachable-processor"}},
+                        "processor": {"backend": "openai_compatible", "endpoint": {"base_url": format!("{endpoint}/v1"), "model": "processor"}},
                         "retrieval": {"dense_limit": 3, "sparse_limit": 3, "fused_limit": 3, "rerank_top_n": 2},
-                        "window": {"radius": 1, "merge_rule": "repository_contiguous", "max_messages": 3, "stride": 2}
+                        "window": {"radius": 1, "merge_rule": "repository_contiguous", "max_messages": 3, "stride": 2},
+                        "generation": {"temperature": 0.0, "top_p": 1.0, "max_tokens": 512, "max_concurrency": 1, "enable_thinking": false}
                     }),
                 )]),
             },
@@ -1514,11 +1622,11 @@ mod tests {
         }))
         .unwrap();
 
-        let mut session = StrategyRetrievalSession::new(&config, &question)
+        let mut session = StrategyBenchmarkSession::new(&config, &question)
             .await
             .unwrap();
         assert_eq!(session.construction_metrics().events_inserted, 3);
-        let response = session.query(question.clone(), 2).await.unwrap();
+        let response = session.query_retrieval(question.clone(), 2).await.unwrap();
         assert!(response.retained_message_ids.is_empty());
         assert!(!response.retrieved_message_ids.is_empty());
         assert!(!response.covered_message_ids.is_empty());
@@ -1529,6 +1637,7 @@ mod tests {
                 .contains("has not been filtered, compressed")
         );
         assert_eq!(response.metadata["strategy"]["processor_invoked"], false);
+        assert_eq!(processor_calls.load(Ordering::SeqCst), 0);
         assert_eq!(
             response.metadata["benchmark_trace"]["history_visibility"],
             "all_provided_messages"
@@ -1566,18 +1675,47 @@ mod tests {
             response.metadata["benchmark_trace"]["session_query_index"],
             0
         );
-        let mut second = question;
-        second.id = "retrieval-only-case-two".into();
-        second.query = "completed".into();
-        let second_response = session.query(second, 2).await.unwrap();
+        let mut first_full_question = question.clone();
+        first_full_question.id = "full-case-one".into();
+        first_full_question.query = "completed".into();
+        let first_full = session.query_full(first_full_question, 2).await.unwrap();
         assert_eq!(
-            second_response.metadata["benchmark_trace"]["session_query_index"],
+            first_full.metadata["benchmark_trace"]["session_query_index"],
             1
         );
         assert_eq!(
             response.metadata["benchmark_trace"]["history_identity_sha256"],
-            second_response.metadata["benchmark_trace"]["history_identity_sha256"]
+            first_full.metadata["benchmark_trace"]["history_identity_sha256"]
         );
+        assert_eq!(
+            first_full.metadata["benchmark_trace"]["execution_mode"],
+            "full"
+        );
+        assert_eq!(
+            first_full.metadata["benchmark_trace"]["history_visibility"],
+            "all_provided_messages"
+        );
+        assert!(
+            first_full.metadata["benchmark_trace"]["strategy_reference_time_ms"]
+                .as_i64()
+                .unwrap()
+                > first_full.metadata["benchmark_trace"]["query_time_ms"]
+                    .as_i64()
+                    .unwrap(),
+            "full session execution must not cut off supplied history after a parsed query time"
+        );
+        assert_eq!(first_full.retained_message_ids, vec!["m1", "m2", "m3"]);
+        assert!(first_full.context.contains("migration completed"));
+
+        let mut second_full_question = question;
+        second_full_question.id = "full-case-two".into();
+        second_full_question.query = "planning".into();
+        let second_full = session.query_full(second_full_question, 2).await.unwrap();
+        assert_eq!(
+            second_full.metadata["benchmark_trace"]["session_query_index"],
+            2
+        );
+        assert_eq!(processor_calls.load(Ordering::SeqCst), 2);
         let embedding_batch_sizes = embedding_batch_sizes.lock().unwrap().clone();
         assert_eq!(
             embedding_batch_sizes
@@ -1592,7 +1730,7 @@ mod tests {
                 .iter()
                 .filter(|batch_size| **batch_size == 1)
                 .count(),
-            2,
+            3,
             "each query should make one query-embedding request"
         );
         server.abort();

@@ -1,0 +1,85 @@
+# Full prompt-only LazyMem development profile. It preserves the paper-v2
+# query-time architecture and published sampling reconstruction, but substitutes
+# public OpenRouter embedding/reranker/model endpoints. It is therefore not a
+# paper score. OPENROUTER_API_KEY is read only from the environment.
+
+[strategies]
+enabled = ["lazymem"]
+recall = "lazymem"
+
+[strategies.settings.lazymem]
+protocol = "public-repro"
+embedding_batch_size = 256
+
+[strategies.settings.lazymem.embedding]
+backend = "openai_compatible"
+
+[strategies.settings.lazymem.embedding.endpoint]
+base_url = "https://openrouter.ai/api/v1"
+model = "perplexity/pplx-embed-v1-0.6b"
+api_key_env = "OPENROUTER_API_KEY"
+timeout_secs = 180
+max_retries = 2
+
+[strategies.settings.lazymem.embedding.endpoint.extra_body.provider]
+only = ["perplexity"]
+allow_fallbacks = false
+data_collection = "deny"
+
+[strategies.settings.lazymem.reranker]
+backend = "openai_compatible"
+
+[strategies.settings.lazymem.reranker.endpoint]
+base_url = "https://openrouter.ai/api/v1"
+model = "voyageai/rerank-2.5"
+api_key_env = "OPENROUTER_API_KEY"
+protocol = "openrouter"
+timeout_secs = 180
+max_retries = 2
+
+[strategies.settings.lazymem.reranker.endpoint.extra_body.provider]
+allow_fallbacks = false
+data_collection = "deny"
+
+[strategies.settings.lazymem.processor]
+backend = "openai_compatible"
+
+[strategies.settings.lazymem.processor.endpoint]
+base_url = "https://openrouter.ai/api/v1"
+model = "qwen/qwen3-32b"
+api_key_env = "OPENROUTER_API_KEY"
+timeout_secs = 180
+max_retries = 2
+
+# Structured output is added dynamically by the processor. These preferences
+# restrict routing to endpoints that support it and cap provider list prices.
+[strategies.settings.lazymem.processor.endpoint.extra_body.reasoning]
+enabled = true
+
+[strategies.settings.lazymem.processor.endpoint.extra_body.provider]
+sort = "price"
+allow_fallbacks = true
+require_parameters = true
+data_collection = "deny"
+max_price = { prompt = 0.11, completion = 0.31 }
+
+[strategies.settings.lazymem.retrieval]
+dense_limit = 100
+sparse_limit = 100
+fused_limit = 100
+rerank_top_n = 50
+require_dense_index = true
+
+[strategies.settings.lazymem.window]
+radius = 2
+merge_rule = "repository_contiguous"
+max_messages = 8
+stride = 7
+
+[strategies.settings.lazymem.generation]
+temperature = 0.1
+top_p = 0.95
+max_tokens = 3072
+max_concurrency = 8
+enable_thinking = true
+validation_retries = 2

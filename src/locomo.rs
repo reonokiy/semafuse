@@ -13,7 +13,7 @@
 
 use crate::longmemeval::{BenchmarkInput, BenchmarkMessage, RetrievalProfileGold};
 use anyhow::{Context, Result, bail, ensure};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use sha2::{Digest, Sha256};
 use std::{
@@ -38,8 +38,71 @@ pub const PAPER_V2_QA_COUNT: usize = 314;
 pub const PAPER_V2_RETRIEVAL_COUNT: usize = 312;
 /// Conversation IDs selected by the LazyMem paper-v2 protocol.
 pub const PAPER_V2_CONVERSATION_IDS: [&str; 2] = ["conv-49", "conv-50"];
+/// Number of non-adversarial questions in the community full LoCoMo protocol.
+pub const COMMUNITY_FULL_QA_COUNT: usize = 1_540;
+/// Number of community-full questions with non-empty retrieval evidence.
+pub const COMMUNITY_FULL_RETRIEVAL_COUNT: usize = 1_536;
+/// All conversation IDs in the pinned LoCoMo release.
+pub const COMMUNITY_FULL_CONVERSATION_IDS: [&str; 10] = [
+    "conv-26", "conv-30", "conv-41", "conv-42", "conv-43", "conv-44", "conv-47", "conv-48",
+    "conv-49", "conv-50",
+];
 
 const OPAQUE_ID_DOMAIN: &[u8] = b"semafuse/locomo/opaque-input-id/v1";
+
+/// Named, reproducible LoCoMo selections exposed by benchmark configuration.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LocomoTrack {
+    /// LazyMem paper-v2 development selection over the last two conversations.
+    #[default]
+    PaperV2,
+    /// Community leaderboard selection over all ten conversations, excluding
+    /// the adversarial category.
+    CommunityFull,
+}
+
+impl LocomoTrack {
+    /// Returns the parser selection represented by this named track.
+    pub fn mode(self) -> LocomoMode {
+        match self {
+            Self::PaperV2 => LocomoMode::PaperV2,
+            Self::CommunityFull => LocomoMode::CommunityFull,
+        }
+    }
+
+    /// Stable name written to benchmark manifests.
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::PaperV2 => "paper_v2",
+            Self::CommunityFull => "community_full",
+        }
+    }
+
+    /// Selected source conversation identifiers.
+    pub const fn conversation_ids(self) -> &'static [&'static str] {
+        match self {
+            Self::PaperV2 => &PAPER_V2_CONVERSATION_IDS,
+            Self::CommunityFull => &COMMUNITY_FULL_CONVERSATION_IDS,
+        }
+    }
+
+    /// Expected question denominator.
+    pub const fn qa_count(self) -> usize {
+        match self {
+            Self::PaperV2 => PAPER_V2_QA_COUNT,
+            Self::CommunityFull => COMMUNITY_FULL_QA_COUNT,
+        }
+    }
+
+    /// Expected evidence-eligible denominator.
+    pub const fn retrieval_count(self) -> usize {
+        match self {
+            Self::PaperV2 => PAPER_V2_RETRIEVAL_COUNT,
+            Self::CommunityFull => COMMUNITY_FULL_RETRIEVAL_COUNT,
+        }
+    }
+}
 
 /// A category retained by the LazyMem paper-v2 LoCoMo protocol.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -92,6 +155,10 @@ pub enum LocomoMode {
     /// Exact LazyMem paper-v2 subset: `conv-49`, `conv-50`, categories 1--4,
     /// 314 QA questions, and 312 retrieval-eligible questions.
     PaperV2,
+    /// Community full protocol used by recent memory-system papers: all ten
+    /// conversations, categories 1--4, 1,540 QA questions, and no adversarial
+    /// category-5 questions.
+    CommunityFull,
     /// Explicit small-data configuration intended for fixtures and adapter
     /// tests. This mode is never presented as a paper-comparable run.
     Fixture(FixtureSelection),
@@ -158,13 +225,17 @@ impl LocomoMode {
                 .into_iter()
                 .map(str::to_owned)
                 .collect(),
+            Self::CommunityFull => COMMUNITY_FULL_CONVERSATION_IDS
+                .into_iter()
+                .map(str::to_owned)
+                .collect(),
             Self::Fixture(selection) => selection.conversation_ids.clone(),
         }
     }
 
     fn categories(&self) -> BTreeSet<LocomoCategory> {
         match self {
-            Self::PaperV2 => [
+            Self::PaperV2 | Self::CommunityFull => [
                 LocomoCategory::MultiHop,
                 LocomoCategory::Temporal,
                 LocomoCategory::OpenDomain,
@@ -179,6 +250,10 @@ impl LocomoMode {
     fn expected_counts(&self) -> (Option<usize>, Option<usize>) {
         match self {
             Self::PaperV2 => (Some(PAPER_V2_QA_COUNT), Some(PAPER_V2_RETRIEVAL_COUNT)),
+            Self::CommunityFull => (
+                Some(COMMUNITY_FULL_QA_COUNT),
+                Some(COMMUNITY_FULL_RETRIEVAL_COUNT),
+            ),
             Self::Fixture(selection) => (
                 selection.expected_qa_count,
                 selection.expected_retrieval_count,
@@ -286,8 +361,8 @@ pub struct MessageIdMapping {
 
 /// Parses and adapts the official LoCoMo top-level JSON array.
 ///
-/// `acknowledge_noncommercial` must be `true` for every mode. [`LocomoMode::PaperV2`]
-/// additionally checks the fixed 314-QA and 312-retrieval denominators.
+/// `acknowledge_noncommercial` must be `true` for every mode. Named benchmark
+/// modes additionally check their fixed QA and retrieval denominators.
 pub fn parse_locomo<R: Read>(
     reader: R,
     acknowledge_noncommercial: bool,
@@ -580,6 +655,8 @@ fn prepare_qa(
         .as_array()
         .with_context(|| format!("LoCoMo {sample_id} QA {qa_index} evidence must be an array"))?;
     let source_evidence_ids = resolve_evidence(
+        sample_id,
+        qa_index,
         raw_evidence,
         &conversation.source_to_opaque_message,
         &conversation.canonical_source_message_ids,
@@ -679,6 +756,8 @@ fn projected_content(speaker: &str, text: &str, caption: &str, image_query: &str
 }
 
 fn resolve_evidence(
+    sample_id: &str,
+    qa_index: usize,
     raw_evidence: &[Value],
     source_to_opaque_message: &HashMap<String, String>,
     canonical_source_message_ids: &HashMap<String, String>,
@@ -690,7 +769,15 @@ fn resolve_evidence(
             Value::String(text) => text.clone(),
             value => value.to_string(),
         };
-        let references = evidence_references(&text);
+        let references = match (sample_id, qa_index, text.as_str()) {
+            ("conv-43", 18, "D:11:26") => vec!["D11:26".to_owned()],
+            _ => evidence_references(&text),
+        };
+        if references.is_empty() && sample_id == "conv-42" && qa_index == 88 && text == "D" {
+            // This QA also contains two valid IDs; the pinned release inserts
+            // one stray "D" between them. Ignore only that exact known token.
+            continue;
+        }
         ensure!(
             !references.is_empty() || text.trim().is_empty(),
             "unrecognized LoCoMo evidence reference {item}"
@@ -704,6 +791,15 @@ fn resolve_evidence(
                         "evidence dialog id is outside the supported numeric range: {reference}"
                     )
                 })?;
+                // The pinned upstream release has exactly two known evidence-ID
+                // typos. Keep these corrections narrow and explicit so a new
+                // missing reference still fails closed instead of silently
+                // weakening the retrieval gold.
+                let canonical = match (sample_id, qa_index, canonical.as_str()) {
+                    ("conv-42", 58, "D10:19") => "D20:15".to_owned(),
+                    ("conv-47", 38, "D4:36") => "D13:3".to_owned(),
+                    _ => canonical,
+                };
                 canonical_source_message_ids
                     .get(&canonical)
                     .cloned()
@@ -979,6 +1075,8 @@ mod tests {
 
         assert_eq!(PAPER_V2_QA_COUNT, 314);
         assert_eq!(PAPER_V2_RETRIEVAL_COUNT, 312);
+        assert_eq!(COMMUNITY_FULL_QA_COUNT, 1_540);
+        assert_eq!(COMMUNITY_FULL_RETRIEVAL_COUNT, 1_536);
     }
 
     #[test]
@@ -994,6 +1092,69 @@ mod tests {
         let bytes = serde_json::to_vec(&missing).unwrap();
         let error = parse_locomo(bytes.as_slice(), true, &fixture_mode(None, None)).unwrap_err();
         assert!(format!("{error:#}").contains("missing dialog D99:1"));
+    }
+
+    #[test]
+    fn pinned_upstream_evidence_typos_are_corrected_explicitly() {
+        let source_to_opaque_message = HashMap::from([
+            ("D20:15".to_owned(), "opaque-1".to_owned()),
+            ("D13:3".to_owned(), "opaque-2".to_owned()),
+        ]);
+        let canonical_source_message_ids = HashMap::from([
+            ("D20:15".to_owned(), "D20:15".to_owned()),
+            ("D13:3".to_owned(), "D13:3".to_owned()),
+        ]);
+
+        assert_eq!(
+            resolve_evidence(
+                "conv-42",
+                58,
+                &[json!("D10:19")],
+                &source_to_opaque_message,
+                &canonical_source_message_ids,
+            )
+            .unwrap(),
+            ["D20:15"]
+        );
+        assert_eq!(
+            resolve_evidence(
+                "conv-47",
+                38,
+                &[json!("D4:36")],
+                &source_to_opaque_message,
+                &canonical_source_message_ids,
+            )
+            .unwrap(),
+            ["D13:3"]
+        );
+        assert_eq!(
+            resolve_evidence(
+                "conv-42",
+                88,
+                &[json!("D1:18"), json!("D"), json!("D1:20")],
+                &HashMap::from([
+                    ("D1:18".to_owned(), "opaque-3".to_owned()),
+                    ("D1:20".to_owned(), "opaque-4".to_owned()),
+                ]),
+                &HashMap::from([
+                    ("D1:18".to_owned(), "D1:18".to_owned()),
+                    ("D1:20".to_owned(), "D1:20".to_owned()),
+                ]),
+            )
+            .unwrap(),
+            ["D1:18", "D1:20"]
+        );
+        assert_eq!(
+            resolve_evidence(
+                "conv-43",
+                18,
+                &[json!("D:11:26")],
+                &HashMap::from([("D11:26".to_owned(), "opaque-5".to_owned())]),
+                &HashMap::from([("D11:26".to_owned(), "D11:26".to_owned())]),
+            )
+            .unwrap(),
+            ["D11:26"]
+        );
     }
 
     #[test]
@@ -1023,6 +1184,25 @@ mod tests {
                 (LocomoCategory::Temporal, 65),
                 (LocomoCategory::OpenDomain, 20),
                 (LocomoCategory::SingleHop, 160),
+            ])
+        );
+
+        let full = load_locomo(
+            std::env::var("SEMAFUSE_TEST_LOCOMO_PATH").unwrap(),
+            true,
+            &LocomoMode::CommunityFull,
+        )
+        .unwrap();
+        assert_eq!(full.summary.conversation_count, 10);
+        assert_eq!(full.summary.qa_count, COMMUNITY_FULL_QA_COUNT);
+        assert_eq!(full.summary.retrieval_count, COMMUNITY_FULL_RETRIEVAL_COUNT);
+        assert_eq!(
+            full.summary.category_counts,
+            BTreeMap::from([
+                (LocomoCategory::MultiHop, 282),
+                (LocomoCategory::Temporal, 321),
+                (LocomoCategory::OpenDomain, 96),
+                (LocomoCategory::SingleHop, 841),
             ])
         );
     }

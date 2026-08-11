@@ -1,0 +1,129 @@
+# Reconstructive memory benchmark
+
+This directory contains the modular configurations for Semafuse's
+training-free, source-preserving memory strategy. The design combines ideas
+from [MemR3](https://arxiv.org/abs/2512.20237) and
+[MemMachine](https://arxiv.org/abs/2604.04853): hybrid retrieval, a true
+per-channel seen mask, evidence-gap query refinement, and local source-context
+expansion. It is not an exact reproduction of either paper.
+
+The optional dense-first union ablation follows the retrieval merge reported
+by [Omni-SimpleMem](https://arxiv.org/abs/2604.01007): retain dense results in
+their original order, then append only BM25-exclusive results. Merge policy
+and final ranking are independent settings, so the union can be evaluated with
+or without a cross-encoder rather than changing two hidden variables at once.
+
+The controller never writes the answer and never rewrites stored evidence. It
+can stop retrieval or emit a bounded next query. The returned memory contains
+only original source events, with session, role, timestamp, anchor rank, and
+source IDs retained for audit.
+
+## Strategy profiles
+
+All three profiles use the same embedding model, reranker, 25-anchor ceiling,
+neighbor policy, 100-event ceiling, and 32,768-character final-context budget:
+
+| Profile | Retrieval behavior | Controller calls |
+| --- | --- | --- |
+| `one-shot` | One query, 25 anchors | 0 |
+| `masked` | Five static-query rounds, five unseen anchors per round | 0 |
+| `evidence-gap` | Five-anchor rounds with sufficiency checks and query refinement | At most 4; the final round cannot affect another retrieval and is not called |
+
+These profiles match anchor and context budgets, not compute. Masked and
+evidence-gap retrieval can issue more embedding and reranker calls and can
+reach deeper unseen pools. BM25 uses Top-50, so the complete comparison is an
+end-to-end memory comparison rather than an equal-context experiment.
+
+Configuration files:
+
+- `configs/semafuse_reconstructive.one-shot.openrouter.toml`
+- `configs/semafuse_reconstructive.one-shot.evidence-packet50.openrouter.toml`
+- `configs/semafuse_reconstructive.one-shot.dense-bm25-union.openrouter.toml`
+- `configs/semafuse_reconstructive.masked.openrouter.toml`
+- `configs/semafuse_reconstructive.evidence-gap.openrouter.toml`
+
+The dense-BM25-union profile sets `merge = "dense_bm25_union"` and
+`final_ranker = "none"`; it therefore has no reranker backend or reranker
+calls. Existing profiles omit both fields and retain the default
+`rrf` + `cross_encoder` behavior.
+
+The evidence-packet profile keeps the same 25 anchors and retrieval stack as
+the original one-shot profile, but caps the final verbatim context at 50 source
+events. Since anchors outrank neighbors in the deterministic renderer, this
+keeps every anchor and admits only the highest-priority local context.
+
+Secrets are referenced only through `OPENROUTER_API_KEY`; no key is stored in
+these files.
+
+## LoCoMo tracks
+
+The main full-answer suites deliberately set `stages = []`: only the memory
+that a method actually returns is passed to the frozen common reader, avoiding
+an extra paid answer for a raw retrieval-stage ablation.
+
+- `../locomo/configs/paper_v2.reconstructive-ablation.openrouter.toml`: 314
+  development questions from the two-conversation LazyMem selection.
+- `../locomo/configs/paper_v2.reconstructive-v4.openrouter.toml`: the same 314
+  questions with a structured concise reader and four matched outputs: BM25,
+  two RRF-plus-reranker context budgets, and the no-reranker dense/BM25 union.
+- `../locomo/configs/community_full.reconstructive.openrouter.toml`: the common
+  ten-conversation track with 1,540 questions, of which 1,536 have retrieval
+  evidence.
+
+All three use the released category-aware LoCoMo token-F1 implementation. That
+metric is useful for fixed-reader comparisons inside this repository, but it
+must not be compared directly with papers reporting binary or LLM-judge
+accuracy.
+
+The v4 suite is an experimental beta protocol. Its pinned dataset and complete
+configuration resolve successfully under `--validate-only`, but no complete
+paid v4 run or publishable receipt exists yet. Do not claim a quality gain from
+the suite configuration alone.
+
+Validate without model calls:
+
+```bash
+cargo run --release --locked --features benchmarks --bin semafuse -- bench locomo \
+  --mode full \
+  --suite benchmarks/locomo/configs/paper_v2.reconstructive-v4.openrouter.toml \
+  --dataset /path/to/pinned/locomo10.json \
+  --acknowledge-noncommercial \
+  --validate-only \
+  --output-dir /tmp/semafuse-reconstructive-validation
+```
+
+Run a deterministic stratified gate, then resume the same journal with a
+larger or omitted limit:
+
+```bash
+target/release/semafuse bench locomo \
+  --mode full \
+  --suite benchmarks/locomo/configs/paper_v2.reconstructive-v4.openrouter.toml \
+  --dataset /path/to/pinned/locomo10.json \
+  --acknowledge-noncommercial \
+  --question-limit 8 \
+  --output-dir benchmarks/locomo/results/paper-v2-reconstructive-v1
+```
+
+`--question-limit` and `--method` do not change the run identity, so methods
+can be completed on different days in the same output directory. Code, method
+configuration, reader configuration, and `Cargo.lock` do change the identity;
+freeze them after the first paid call.
+
+## Cost and audit scope
+
+Every recall records per-round candidate counts, query-embedding calls,
+reranker calls, controller queries, cited evidence IDs, token usage, reported
+controller cost, retained event count, and context character count. Controller
+traces keep the model's proposed query separate from the query actually
+applied, and classify repeated-query and validation-exhaustion fallbacks. The
+local fuse and summary cover controller/LazyMem processor and common-reader calls.
+Embedding, reranker, transport failures, and history-index construction are not
+priced by those records and must be reconciled against the provider account.
+
+A complete 314-question v4 run schedules 1,256 common-reader answers, about 957
+embedding requests, and 628 reranker requests; its one-shot profiles make no
+controller calls. The configured `$20` fuse covers reported answer/processor
+usage only, not embedding, reranking, retries that fail before persistence, or
+provider-side minimum charges. Run the eight-question pilot and reconcile the
+provider account before scheduling the full cohort.

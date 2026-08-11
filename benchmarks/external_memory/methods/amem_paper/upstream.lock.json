@@ -1,0 +1,20 @@
+{
+  "method": "amem_paper_original",
+  "repository": "https://github.com/WujiangXu/A-mem",
+  "revision": "0c8039f28fdcc08189a23c07a3437d9d2482f9c2",
+  "license": "MIT",
+  "license_file": "LICENSE.upstream",
+  "license_upstream_blob_sha256": "025a4a7762131be135bc34c8916d82996844f4dce35c53a464149a672dab5001",
+  "license_vendored_sha256": "d517724a9bd48e8cd91bc7cc6fd63c3e4029adb14c0e53b64e157e7ed3426da6",
+  "source": {
+    "path": "src/semafuse_external_memory/upstreams/amem_paper/memory_layer.py",
+    "upstream_blob_sha256": "b9a5b5797881b25c5524b98a543b22a1bbbcc7f285437ca667a5673e7f293eba",
+    "vendored_sha256": "7829e3c068ea8b50344970a9704bd17a7a4ff8252c46547927ae4334b705bcfe",
+    "normalization": "one trailing newline added; executable source is otherwise byte-identical"
+  },
+  "audited_runtime_patches": [
+    "inject missing standard-library re module after source hash verification",
+    "force consolidation retrievers to reuse the immutable local embedding snapshot",
+    "skip impossible evolution actions when the memory graph has no neighbors"
+  ]
+}

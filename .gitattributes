@@ -1,0 +1,5 @@
+# Audited source snapshots and byte-exact prompts preserve their recorded bytes.
+THIRD_PARTY_NOTICES.html -whitespace
+benchmarks/external_memory/src/semafuse_external_memory/adapters/amem_paper.py -whitespace
+benchmarks/external_memory/src/semafuse_external_memory/upstreams/amem_paper/memory_layer.py -whitespace
+benchmarks/locomo/receipts/sources/locomo314.development.external-memory/** -whitespace
