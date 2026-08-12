@@ -70,6 +70,47 @@ fn command_lookup_ignores_pathext_on_posix() {
     ));
 }
 
+#[cfg(feature = "daemon")]
+#[test]
+fn daemon_serve_is_a_feature_gated_semafuse_subcommand() {
+    use clap::Parser;
+
+    let cli = super::Cli::try_parse_from([
+        "semafuse",
+        "daemon",
+        "serve",
+        "--config",
+        "/tmp/semafuse-daemon.toml",
+    ])
+    .unwrap();
+    assert_eq!(cli.command.name(), "daemon.serve");
+    assert!(matches!(
+        cli.command,
+        super::Commands::Daemon {
+            command: super::DaemonCommands::Serve { .. }
+        }
+    ));
+}
+
+#[cfg(not(feature = "daemon"))]
+#[test]
+fn daemon_serve_is_absent_without_the_server_feature() {
+    use clap::Parser;
+
+    let result = super::Cli::try_parse_from([
+        "semafuse",
+        "daemon",
+        "serve",
+        "--config",
+        "/tmp/semafuse-daemon.toml",
+    ]);
+    let error = match result {
+        Ok(_) => panic!("daemon serve unexpectedly parsed without the daemon feature"),
+        Err(error) => error,
+    };
+    assert_eq!(error.kind(), clap::error::ErrorKind::InvalidSubcommand);
+}
+
 #[cfg(feature = "benchmarks")]
 #[test]
 fn bench_jsonl_is_a_feature_gated_semafuse_subcommand() {
@@ -85,6 +126,35 @@ fn bench_jsonl_is_a_feature_gated_semafuse_subcommand() {
         cli.command,
         super::Commands::Bench {
             command: super::benchmark_cli::BenchmarkCommand::Jsonl(_)
+        }
+    ));
+}
+
+#[cfg(feature = "benchmarks")]
+#[test]
+fn bench_locomo_exposes_the_full_answer_validation_workflow() {
+    let cli = super::Cli::try_parse_from([
+        "semafuse",
+        "bench",
+        "locomo",
+        "--suite",
+        "/tmp/suite.toml",
+        "--dataset",
+        "/tmp/locomo10.json",
+        "--acknowledge-noncommercial",
+        "--mode",
+        "full",
+        "--validate-only",
+        "--method",
+        "reconstructive_v4",
+        "--output-dir",
+        "/tmp/validation",
+    ])
+    .unwrap();
+    assert!(matches!(
+        cli.command,
+        super::Commands::Bench {
+            command: super::benchmark_cli::BenchmarkCommand::Locomo(_)
         }
     ));
 }

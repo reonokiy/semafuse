@@ -537,7 +537,7 @@ mod tests {
     }
 
     #[test]
-    fn defaults_match_the_paper_benchmark() {
+    fn defaults_match_the_paper_protocol() {
         assert_eq!(
             HistoryWindowConfig::default(),
             HistoryWindowConfig {

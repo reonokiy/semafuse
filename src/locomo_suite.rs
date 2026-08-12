@@ -1,7 +1,7 @@
-//! Retrieval-only LoCoMo paper-v2 comparison suite.
+//! Retrieval-only LoCoMo comparison suite.
 //!
-//! This runner fixes the LazyMem paper-v2 selection (two conversations, 314
-//! category-1--4 QA items, and 312 questions with evidence) while keeping all
+//! The configured track selects either the LazyMem paper-v2 development subset
+//! or the ten-conversation community protocol while keeping all
 //! answer and evidence annotations outside memory-system inputs. It scores
 //! deterministic BM25/recent controls, the production Semafuse retrieval
 //! stages, and process-isolated external memory workers through one evaluator.
@@ -10,11 +10,16 @@
 //! non-commercial-use acknowledgement and accept only the pinned official data
 //! file hash. The dataset itself is never copied into benchmark artifacts.
 
+pub use crate::locomo_suite_common::{
+    EvidenceMetricsAtCutoff, LocomoEfficiency, LocomoQuestionRecord,
+};
+#[cfg(test)]
+use crate::locomo_suite_common::{
+    inspect_python_environment, installed_distributions_sha256, is_strict_python_dependency_lock,
+    python_tree_sha256, resolve_dependency_lock, resolve_executable, validate_dependency_pins,
+};
 use crate::{
-    benchmark::{
-        BenchmarkMessage as RunnerMessage, BenchmarkQuestion as RunnerQuestion, BenchmarkResponse,
-        StrategyRetrievalSession,
-    },
+    benchmark::{BenchmarkResponse, StrategyBenchmarkSession},
     benchmark_baselines::{BaselineHit, Message as BaselineMessage, bm25, recent},
     benchmark_journal::{
         JournalRecord, JournalRecordKey, JsonlJournal, SummaryEnvelope, write_summary_atomic,
@@ -23,11 +28,14 @@ use crate::{
     benchmark_report::{
         MetricDirection, ScalarBenchmarkReport, ScalarMetricRow, build_scalar_report,
     },
-    config::{self as semafuse_config, Config},
     locomo::{
-        DATA_LICENSE, LocomoMode, PAPER_V2_CONVERSATION_IDS, PAPER_V2_QA_COUNT,
-        PAPER_V2_RETRIEVAL_COUNT, PreparedDataset, PreparedQuestion, UPSTREAM_COMMIT,
+        DATA_LICENSE, LocomoTrack, PreparedDataset, PreparedQuestion, UPSTREAM_COMMIT,
         UPSTREAM_DATA_SHA256, load_locomo,
+    },
+    locomo_suite_common::{
+        MethodConfig, ResolvedExternalMethod, ResolvedMethod, SemafuseStage, SuiteConfig,
+        method_manifest, projected_corpus, resolve_methods, runner_question, sha256_file,
+        validate_method_configs, validate_track_dataset,
     },
 };
 use anyhow::{Context, Result, bail, ensure};
@@ -35,6 +43,8 @@ use config::{Config as LayeredConfig, File};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 use sha2::{Digest, Sha256};
+#[cfg(test)]
+use std::env;
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap, HashSet},
     fs,
@@ -79,221 +89,6 @@ pub struct LocomoSuiteArtifacts {
     pub summary: Value,
 }
 
-/// Fixed evidence metrics for one cutoff.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct EvidenceMetricsAtCutoff {
-    /// Maximum number of ranked source messages inspected.
-    pub cutoff: usize,
-    /// Number of gold source messages found within the cutoff.
-    pub hits: usize,
-    /// Hits divided by the fixed cutoff.
-    pub precision: f64,
-    /// One when at least one gold source message was found.
-    pub recall_any: f64,
-    /// One when every gold source message was found.
-    pub recall_all: f64,
-    /// Fraction of gold source messages found.
-    pub mean_recall: f64,
-    /// Reciprocal rank of the first gold source message.
-    pub mrr: f64,
-    /// Conventional binary-relevance nDCG.
-    pub ndcg: f64,
-}
-
-/// One label-aware evaluator record. No question, answer, or message text is
-/// persisted.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct LocomoQuestionRecord {
-    /// Output schema version.
-    pub schema_version: u32,
-    /// Stable identity for the complete suite execution.
-    pub run_key: String,
-    /// Stable baseline, Semafuse stage, or external method identifier.
-    pub method: String,
-    /// Opaque question identifier supplied by the label-isolated adapter.
-    pub question_id: String,
-    /// Stable paper category label.
-    pub category: String,
-    /// Numeric official category in `1..=4`.
-    pub category_number: u8,
-    /// Number of gold evidence messages for this question.
-    pub gold_count: usize,
-    /// Ranked opaque source-message identifiers retained for rescoring.
-    pub ranked_message_ids: Vec<String>,
-    /// Evidence metrics at exactly 1, 5, 10, and 50.
-    pub evidence: Vec<EvidenceMetricsAtCutoff>,
-    /// Wall-clock measurements with explicit shared-execution semantics.
-    pub efficiency: LocomoEfficiency,
-    /// Secret-free method metadata.
-    pub metadata: Map<String, Value>,
-}
-
-/// Per-record runtime measurements.
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct LocomoEfficiency {
-    /// Complete execution wall time for this baseline call, production call,
-    /// or external search.
-    pub query_wall_s: f64,
-    /// Retrieval time reported by Semafuse, when available.
-    pub retrieval_s: Option<f64>,
-    /// Once-per-conversation history construction shared by its queries.
-    pub shared_construction_s: Option<f64>,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct SuiteConfig {
-    schema_version: u32,
-    name: String,
-    baseline_method: String,
-    methods: Vec<MethodConfig>,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
-enum MethodConfig {
-    Bm25 {
-        id: String,
-        #[serde(default = "default_limit")]
-        limit: usize,
-    },
-    Recent {
-        id: String,
-        #[serde(default = "default_limit")]
-        limit: usize,
-    },
-    Semafuse {
-        id: String,
-        config: PathBuf,
-        #[serde(default = "default_limit")]
-        limit: usize,
-        stages: Vec<SemafuseStage>,
-    },
-    ExternalJsonl {
-        id: String,
-        worker_config: PathBuf,
-        command: Vec<String>,
-        #[serde(default)]
-        working_directory: Option<PathBuf>,
-        #[serde(default)]
-        python_path: Option<PathBuf>,
-        #[serde(default = "default_limit")]
-        top_k: usize,
-        #[serde(default = "default_context_tokens")]
-        max_context_tokens: usize,
-        #[serde(default = "default_timeout_seconds")]
-        timeout_seconds: u64,
-    },
-}
-
-impl MethodConfig {
-    fn id(&self) -> &str {
-        match self {
-            Self::Bm25 { id, .. }
-            | Self::Recent { id, .. }
-            | Self::Semafuse { id, .. }
-            | Self::ExternalJsonl { id, .. } => id,
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-enum SemafuseStage {
-    Dense,
-    Bm25,
-    Rrf,
-    Retrieved,
-}
-
-impl SemafuseStage {
-    const fn as_str(self) -> &'static str {
-        match self {
-            Self::Dense => "dense",
-            Self::Bm25 => "bm25",
-            Self::Rrf => "rrf",
-            Self::Retrieved => "retrieved",
-        }
-    }
-}
-
-fn default_limit() -> usize {
-    50
-}
-
-fn default_context_tokens() -> usize {
-    16_384
-}
-
-fn default_timeout_seconds() -> u64 {
-    600
-}
-
-#[derive(Debug)]
-enum ResolvedMethod {
-    Bm25 {
-        id: String,
-        limit: usize,
-    },
-    Recent {
-        id: String,
-        limit: usize,
-    },
-    Semafuse {
-        id: String,
-        config: Config,
-        config_sha256: String,
-        resolved_config_sha256: String,
-        embedding_model: Option<String>,
-        reranker_model: Option<String>,
-        limit: usize,
-        stages: Vec<SemafuseStage>,
-    },
-    ExternalJsonl(ResolvedExternalMethod),
-}
-
-impl ResolvedMethod {
-    fn id(&self) -> &str {
-        match self {
-            Self::Bm25 { id, .. } | Self::Recent { id, .. } | Self::Semafuse { id, .. } => id,
-            Self::ExternalJsonl(method) => &method.id,
-        }
-    }
-
-    fn output_ids(&self) -> Vec<String> {
-        match self {
-            Self::Semafuse { id, stages, .. } => stages
-                .iter()
-                .map(|stage| format!("{id}::{}", stage.as_str()))
-                .collect(),
-            _ => vec![self.id().to_owned()],
-        }
-    }
-}
-
-#[derive(Debug)]
-struct ResolvedExternalMethod {
-    id: String,
-    worker_config: PathBuf,
-    worker_config_sha256: String,
-    adapter_kind: String,
-    track: String,
-    upstream_revision: Option<String>,
-    model_revisions: BTreeMap<String, String>,
-    reader_tokenizer_model: Option<String>,
-    reader_tokenizer_revision: Option<String>,
-    command: Vec<String>,
-    command_sha256: String,
-    working_directory: Option<PathBuf>,
-    python_path: Option<PathBuf>,
-    top_k: usize,
-    max_context_tokens: usize,
-    timeout: Duration,
-}
-
 #[derive(Debug)]
 struct MethodOutput {
     method: String,
@@ -302,7 +97,7 @@ struct MethodOutput {
     metadata: Map<String, Value>,
 }
 
-/// Executes the pinned LoCoMo paper-v2 retrieval protocol.
+/// Executes a pinned LoCoMo retrieval protocol.
 pub async fn run_locomo_retrieval_suite(
     options: &LocomoSuiteRunOptions,
 ) -> Result<LocomoSuiteArtifacts> {
@@ -314,6 +109,7 @@ pub async fn run_locomo_retrieval_suite(
         .with_context(|| format!("read suite {}", options.suite_path.display()))?;
     let suite = load_suite(&options.suite_path)?;
     validate_suite(&suite)?;
+    validate_retrieval_stages(&suite)?;
     let suite_dir = options
         .suite_path
         .parent()
@@ -323,17 +119,17 @@ pub async fn run_locomo_retrieval_suite(
     let dataset_sha256 = sha256_file(&options.dataset_path)?;
     ensure!(
         dataset_sha256 == UPSTREAM_DATA_SHA256,
-        "LoCoMo paper-v2 requires pinned locomo10.json SHA-256 {UPSTREAM_DATA_SHA256}; got {dataset_sha256}"
+        "LoCoMo requires pinned locomo10.json SHA-256 {UPSTREAM_DATA_SHA256}; got {dataset_sha256}"
     );
     let dataset = load_locomo(
         &options.dataset_path,
         options.acknowledge_noncommercial,
-        &LocomoMode::PaperV2,
+        &suite.track.mode(),
     )?;
-    validate_paper_dataset(&dataset)?;
+    validate_track_dataset(&dataset, suite.track)?;
 
     let cargo_lock_sha256 = cargo_lock_sha256();
-    let code_sha256 = benchmark_code_sha256();
+    let code_sha256 = crate::benchmark_identity::source_sha256();
     let run_key = run_key(
         &suite_bytes,
         &dataset_sha256,
@@ -420,7 +216,12 @@ pub async fn run_locomo_retrieval_suite(
     }
 
     validate_record_completeness(&records, &dataset, &methods, &run_key)?;
-    let summary = build_locomo_summary_from_records(&suite.baseline_method, &records)?;
+    let summary = build_locomo_summary_from_records(
+        suite.track,
+        &dataset.summary,
+        &suite.baseline_method,
+        &records,
+    )?;
     let method_manifest = method_manifest(&methods);
     let mut limitations = vec![
         "retrieval-only evidence metrics are not LoCoMo answer F1 and must not be compared with published answer scores",
@@ -439,17 +240,17 @@ pub async fn run_locomo_retrieval_suite(
         "schema_version": 1,
         "run_key": run_key,
         "suite": suite.name,
-        "track": "paper-v2-selection/retrieval-only-common-evaluator",
+        "track": format!("{}-selection/retrieval-only-common-evaluator", suite.track.name()),
         "paper_comparable": false,
         "benchmark": {
             "name": "LoCoMo",
             "upstream_commit": UPSTREAM_COMMIT,
             "dataset_sha256": dataset_sha256,
             "selection": {
-                "conversation_ids": PAPER_V2_CONVERSATION_IDS,
+                "conversation_ids": suite.track.conversation_ids(),
                 "categories": [1, 2, 3, 4],
-                "qa_n": PAPER_V2_QA_COUNT,
-                "retrieval_eval_n": PAPER_V2_RETRIEVAL_COUNT,
+                "qa_n": dataset.summary.qa_count,
+                "retrieval_eval_n": dataset.summary.retrieval_count,
             },
         },
         "license": {
@@ -518,7 +319,7 @@ fn load_suite(path: &Path) -> Result<SuiteConfig> {
         .with_context(|| format!("deserialize LoCoMo suite TOML {}", path.display()))
 }
 
-fn validate_suite(suite: &SuiteConfig) -> Result<()> {
+pub(crate) fn validate_suite(suite: &SuiteConfig) -> Result<()> {
     ensure!(
         suite.schema_version == SUITE_SCHEMA_VERSION,
         "unsupported LoCoMo suite schema_version {}",
@@ -536,285 +337,28 @@ fn validate_suite(suite: &SuiteConfig) -> Result<()> {
         suite.methods.len() >= 2,
         "LoCoMo comparison requires at least two configured methods"
     );
-    let mut output_ids = HashSet::new();
-    let mut direct_baselines = HashSet::new();
-    for method in &suite.methods {
-        ensure!(
-            !method.id().trim().is_empty() && !method.id().contains("::"),
-            "method IDs must be non-empty and must not contain ::"
-        );
-        match method {
-            MethodConfig::Bm25 { id, limit } | MethodConfig::Recent { id, limit } => {
-                ensure!(
-                    *limit >= 50,
-                    "method {id} must return at least 50 items for fixed @50 scoring"
-                );
-                ensure!(output_ids.insert(id.clone()), "duplicate output id {id}");
-                direct_baselines.insert(id.clone());
-            }
-            MethodConfig::Semafuse {
-                id, limit, stages, ..
-            } => {
-                ensure!(
-                    *limit >= 50,
-                    "method {id} must return at least 50 items for fixed @50 scoring"
-                );
-                ensure!(!stages.is_empty(), "method {id} must expose stages");
-                let unique = stages.iter().copied().collect::<BTreeSet<_>>();
-                ensure!(
-                    unique.len() == stages.len(),
-                    "method {id} has duplicate stages"
-                );
-                for stage in stages {
-                    let output = format!("{id}::{}", stage.as_str());
-                    ensure!(
-                        output_ids.insert(output.clone()),
-                        "duplicate output id {output}"
-                    );
-                }
-            }
-            MethodConfig::ExternalJsonl {
-                id,
-                command,
-                top_k,
-                max_context_tokens,
-                timeout_seconds,
-                ..
-            } => {
-                ensure!(
-                    *top_k >= 50,
-                    "external method {id} must request at least 50 native items for fixed @50 scoring"
-                );
-                ensure!(
-                    *top_k <= 1_000,
-                    "external method {id} top_k exceeds protocol maximum 1000"
-                );
-                ensure!(
-                    (1..=10_000_000).contains(max_context_tokens),
-                    "external method {id} max_context_tokens is outside protocol limits"
-                );
-                ensure!(
-                    *timeout_seconds > 0,
-                    "external method {id} timeout must be positive"
-                );
-                ensure!(
-                    !command.is_empty() && command.iter().all(|part| !part.trim().is_empty()),
-                    "external method {id} command must contain non-empty arguments"
-                );
-                ensure!(output_ids.insert(id.clone()), "duplicate output id {id}");
-            }
-        }
-    }
+    validate_method_configs(&suite.methods)?;
     ensure!(
-        direct_baselines.contains(&suite.baseline_method),
+        suite.methods.iter().any(|method| matches!(
+            method,
+            MethodConfig::Bm25 { id, .. } | MethodConfig::Recent { id, .. }
+                if id == &suite.baseline_method
+        )),
         "baseline_method must name a configured BM25 or recent control"
     );
     Ok(())
 }
 
-fn resolve_methods(suite: &SuiteConfig, suite_dir: &Path) -> Result<Vec<ResolvedMethod>> {
-    suite
-        .methods
-        .iter()
-        .map(|method| match method {
-            MethodConfig::Bm25 { id, limit } => Ok(ResolvedMethod::Bm25 {
-                id: id.clone(),
-                limit: *limit,
-            }),
-            MethodConfig::Recent { id, limit } => Ok(ResolvedMethod::Recent {
-                id: id.clone(),
-                limit: *limit,
-            }),
-            MethodConfig::Semafuse {
-                id,
-                config,
-                limit,
-                stages,
-            } => {
-                let path = resolve_path(suite_dir, config)?;
-                let config_sha256 = sha256_file(&path)?;
-                let config = semafuse_config::load_from_path(&path)?;
-                ensure!(
-                    config.strategies.recall == "lazymem"
-                        && config
-                            .strategies
-                            .enabled
-                            .iter()
-                            .any(|name| name == "lazymem"),
-                    "LoCoMo Semafuse method {id} requires enabled recall strategy lazymem"
-                );
-                let resolved_config_sha256 =
-                    hex::encode(Sha256::digest(format!("{config:?}").as_bytes()));
-                let embedding_model =
-                    lazymem_setting_string(&config, &["embedding", "endpoint", "model"]);
-                let reranker_model =
-                    lazymem_setting_string(&config, &["reranker", "endpoint", "model"]);
-                Ok(ResolvedMethod::Semafuse {
-                    id: id.clone(),
-                    config,
-                    config_sha256,
-                    resolved_config_sha256,
-                    embedding_model,
-                    reranker_model,
-                    limit: *limit,
-                    stages: stages.clone(),
-                })
-            }
-            MethodConfig::ExternalJsonl {
-                id,
-                worker_config,
-                command,
-                working_directory,
-                python_path,
-                top_k,
-                max_context_tokens,
-                timeout_seconds,
-            } => {
-                let worker_config = resolve_path(suite_dir, worker_config)?;
-                let worker_config_sha256 = sha256_file(&worker_config)?;
-                let identity = external_config_identity(&worker_config)?;
-                let working_directory = working_directory
-                    .as_ref()
-                    .map(|path| resolve_path(suite_dir, path))
-                    .transpose()?;
-                let python_path = python_path
-                    .as_ref()
-                    .map(|path| resolve_path(suite_dir, path))
-                    .transpose()?;
-                let command_sha256 = hash_strings(command);
-                Ok(ResolvedMethod::ExternalJsonl(ResolvedExternalMethod {
-                    id: id.clone(),
-                    worker_config,
-                    worker_config_sha256,
-                    adapter_kind: identity.adapter_kind,
-                    track: identity.track,
-                    upstream_revision: identity.upstream_revision,
-                    model_revisions: identity.model_revisions,
-                    reader_tokenizer_model: identity.reader_tokenizer_model,
-                    reader_tokenizer_revision: identity.reader_tokenizer_revision,
-                    command: command.clone(),
-                    command_sha256,
-                    working_directory,
-                    python_path,
-                    top_k: *top_k,
-                    max_context_tokens: *max_context_tokens,
-                    timeout: Duration::from_secs(*timeout_seconds),
-                }))
-            }
-        })
-        .collect()
-}
-
-fn lazymem_setting_string(config: &Config, path: &[&str]) -> Option<String> {
-    let mut value = config.strategies.settings.get("lazymem")?;
-    for component in path {
-        value = value.get(*component)?;
+fn validate_retrieval_stages(suite: &SuiteConfig) -> Result<()> {
+    for method in &suite.methods {
+        if let MethodConfig::Semafuse { id, stages, .. } = method {
+            ensure!(
+                !stages.is_empty(),
+                "retrieval-only method {id} must expose at least one retrieval stage"
+            );
+        }
     }
-    value.as_str().map(str::to_owned)
-}
-
-struct ExternalConfigIdentity {
-    adapter_kind: String,
-    track: String,
-    upstream_revision: Option<String>,
-    model_revisions: BTreeMap<String, String>,
-    reader_tokenizer_model: Option<String>,
-    reader_tokenizer_revision: Option<String>,
-}
-
-fn external_config_identity(path: &Path) -> Result<ExternalConfigIdentity> {
-    let value: Value = serde_json::from_slice(
-        &fs::read(path).with_context(|| format!("read worker config {}", path.display()))?,
-    )
-    .with_context(|| format!("parse worker config {}", path.display()))?;
-    let adapter_kind = value
-        .pointer("/adapter/kind")
-        .and_then(Value::as_str)
-        .context("external worker config has no adapter.kind string")?;
-    let track = value
-        .pointer("/run_policy/track")
-        .and_then(Value::as_str)
-        .context("external worker config has no run_policy.track string")?;
-    ensure!(
-        !adapter_kind.trim().is_empty() && !track.trim().is_empty(),
-        "external worker adapter kind and track must be non-empty"
-    );
-    let upstream_revision = value
-        .pointer("/run_policy/upstream/revision")
-        .and_then(Value::as_str)
-        .map(str::to_owned);
-    let model_revisions = value
-        .pointer("/run_policy/models")
-        .and_then(Value::as_object)
-        .map(|models| {
-            models
-                .iter()
-                .filter_map(|(role, lock)| {
-                    lock.get("revision")
-                        .and_then(Value::as_str)
-                        .map(|revision| (role.clone(), revision.to_owned()))
-                })
-                .collect()
-        })
-        .unwrap_or_default();
-    let reader_tokenizer_model = value
-        .pointer("/tokenizer/model")
-        .and_then(Value::as_str)
-        .map(str::to_owned);
-    let reader_tokenizer_revision = value
-        .pointer("/tokenizer/revision")
-        .and_then(Value::as_str)
-        .map(str::to_owned);
-    Ok(ExternalConfigIdentity {
-        adapter_kind: adapter_kind.to_owned(),
-        track: track.to_owned(),
-        upstream_revision,
-        model_revisions,
-        reader_tokenizer_model,
-        reader_tokenizer_revision,
-    })
-}
-
-fn resolve_path(base: &Path, path: &Path) -> Result<PathBuf> {
-    let candidate = if path.is_absolute() {
-        path.to_path_buf()
-    } else {
-        base.join(path)
-    };
-    candidate
-        .canonicalize()
-        .with_context(|| format!("resolve configured path {}", candidate.display()))
-}
-
-fn validate_paper_dataset(dataset: &PreparedDataset) -> Result<()> {
-    ensure!(
-        dataset.summary.conversation_count == PAPER_V2_CONVERSATION_IDS.len(),
-        "LoCoMo paper-v2 requires exactly two conversations"
-    );
-    ensure!(
-        dataset.summary.qa_count == PAPER_V2_QA_COUNT,
-        "LoCoMo paper-v2 QA denominator mismatch"
-    );
-    ensure!(
-        dataset.summary.retrieval_count == PAPER_V2_RETRIEVAL_COUNT,
-        "LoCoMo paper-v2 retrieval denominator mismatch"
-    );
     Ok(())
-}
-
-fn projected_corpus(question: &PreparedQuestion) -> Vec<BaselineMessage> {
-    question
-        .input
-        .messages
-        .iter()
-        .map(|message| BaselineMessage {
-            id: message.id.clone(),
-            role: message.role.clone(),
-            content: message.content.clone(),
-            session_id: message.session_id.clone(),
-            corpus_index: message.index,
-        })
-        .collect()
 }
 
 async fn execute_native_method(
@@ -888,13 +432,15 @@ async fn execute_semafuse_method(
         let exemplar = questions[0];
         validate_shared_conversation(questions, exemplar)?;
         let exemplar_input = runner_question(exemplar);
-        let mut session = StrategyRetrievalSession::new(config, &exemplar_input).await?;
+        let mut session = StrategyBenchmarkSession::new_retrieval(config, &exemplar_input).await?;
         let construction_s = session.construction_metrics().total_s;
         let history_identity = session.history_identity_sha256().to_owned();
         let amortization_n = questions.len();
         for question in missing {
             let started = Instant::now();
-            let response = session.query(runner_question(question), *limit).await?;
+            let response = session
+                .query_retrieval(runner_question(question), *limit)
+                .await?;
             let query_wall_s = started.elapsed().as_secs_f64();
             let outputs = semafuse_stage_outputs(
                 id,
@@ -988,29 +534,6 @@ fn baseline_output(id: &str, kind: &str, ranking: Vec<String>, elapsed: Duration
             ("kind".into(), json!(kind)),
             ("shared_execution".into(), json!(false)),
         ]),
-    }
-}
-
-fn runner_question(question: &PreparedQuestion) -> RunnerQuestion {
-    RunnerQuestion {
-        id: question.input.id.clone(),
-        dataset: question.input.dataset.clone(),
-        question_type: String::new(),
-        query: question.input.query.clone(),
-        query_time: question.input.query_time.clone(),
-        messages: question
-            .input
-            .messages
-            .iter()
-            .map(|message| RunnerMessage {
-                id: message.id.clone(),
-                index: Some(message.index),
-                role: message.role.clone(),
-                content: message.content.clone(),
-                timestamp: message.timestamp.clone(),
-                session_id: message.session_id.clone(),
-            })
-            .collect(),
     }
 }
 
@@ -1245,7 +768,7 @@ fn validate_shared_conversation(
     Ok(())
 }
 
-fn project_external_source_ids(
+pub(crate) fn project_external_source_ids(
     items: &[ExternalSearchItem],
     corpus: &[BaselineMessage],
     limit: usize,
@@ -1277,7 +800,7 @@ fn project_external_source_ids(
     Ok(ranking)
 }
 
-struct ExternalWorker {
+pub(crate) struct ExternalWorker {
     child: Child,
     stdin: ChildStdin,
     stdout: BufReader<ChildStdout>,
@@ -1287,8 +810,8 @@ struct ExternalWorker {
 }
 
 impl ExternalWorker {
-    async fn spawn(method: &ResolvedExternalMethod) -> Result<Self> {
-        let mut command = Command::new(&method.command[0]);
+    pub(crate) async fn spawn(method: &ResolvedExternalMethod) -> Result<Self> {
+        let mut command = Command::new(&method.executable_invocation);
         command
             .args(&method.command[1..])
             .arg("--config")
@@ -1321,7 +844,7 @@ impl ExternalWorker {
         })
     }
 
-    async fn reset(&mut self) -> Result<()> {
+    pub(crate) async fn reset(&mut self) -> Result<()> {
         let result = self.rpc("reset", Map::new()).await?;
         let result: ExternalResetResult =
             serde_json::from_value(result).context("external reset result violates protocol")?;
@@ -1329,7 +852,7 @@ impl ExternalWorker {
         Ok(())
     }
 
-    async fn add_history(
+    pub(crate) async fn add_history(
         &mut self,
         messages: &[crate::longmemeval::BenchmarkMessage],
     ) -> Result<()> {
@@ -1401,7 +924,7 @@ impl ExternalWorker {
         Ok(())
     }
 
-    async fn search(
+    pub(crate) async fn search(
         &mut self,
         query: &str,
         top_k: usize,
@@ -1469,7 +992,7 @@ impl ExternalWorker {
         Ok(result)
     }
 
-    async fn close(mut self) -> Result<()> {
+    pub(crate) async fn close(mut self) -> Result<()> {
         let result = self.rpc("close", Map::new()).await?;
         let result: ExternalCloseResult =
             serde_json::from_value(result).context("external close result violates protocol")?;
@@ -1599,27 +1122,29 @@ struct ExternalCloseResult {
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct ExternalSearchResult {
-    items: Vec<ExternalSearchItem>,
-    context: String,
-    context_tokens: usize,
-    truncated: bool,
+pub(crate) struct ExternalSearchResult {
+    pub(crate) items: Vec<ExternalSearchItem>,
+    pub(crate) context: String,
+    pub(crate) context_tokens: usize,
+    pub(crate) truncated: bool,
 }
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct ExternalSearchItem {
-    id: String,
-    text: String,
-    score: Option<f64>,
-    source_ids: Vec<String>,
-    session: Option<String>,
-    timestamp: Option<String>,
-    token_count: usize,
+pub(crate) struct ExternalSearchItem {
+    pub(crate) id: String,
+    pub(crate) text: String,
+    pub(crate) score: Option<f64>,
+    pub(crate) source_ids: Vec<String>,
+    pub(crate) session: Option<String>,
+    pub(crate) timestamp: Option<String>,
+    pub(crate) token_count: usize,
 }
 
 /// Builds paired accuracy reports from complete persisted records.
 pub fn build_locomo_summary_from_records(
+    track: LocomoTrack,
+    dataset_summary: &crate::locomo::DatasetSummary,
     baseline_method: &str,
     records: &[LocomoQuestionRecord],
 ) -> Result<Value> {
@@ -1671,10 +1196,10 @@ pub fn build_locomo_summary_from_records(
         "schema_version": 1,
         "run_key": run_key,
         "benchmark": "locomo",
-        "protocol": "paper-v2-retrieval-only",
+        "protocol": format!("{}-retrieval-only", track.name()),
         "baseline_method": baseline_method,
-        "qa_n": PAPER_V2_QA_COUNT,
-        "retrieval_eval_n": PAPER_V2_RETRIEVAL_COUNT,
+        "qa_n": dataset_summary.qa_count,
+        "retrieval_eval_n": dataset_summary.retrieval_count,
         "cutoffs": EVIDENCE_CUTOFFS,
         "methods": method_ids,
         "reports": reports,
@@ -1842,123 +1367,8 @@ fn qa_category_counts(dataset: &PreparedDataset) -> BTreeMap<String, usize> {
         .collect()
 }
 
-fn method_manifest(methods: &[ResolvedMethod]) -> Vec<Value> {
-    let mut manifest = Vec::new();
-    for method in methods {
-        match method {
-            ResolvedMethod::Bm25 { id, limit } => manifest.push(json!({
-                "id": id,
-                "kind": "bm25",
-                "limit": limit,
-            })),
-            ResolvedMethod::Recent { id, limit } => manifest.push(json!({
-                "id": id,
-                "kind": "recent",
-                "limit": limit,
-            })),
-            ResolvedMethod::Semafuse {
-                id,
-                config_sha256,
-                resolved_config_sha256,
-                embedding_model,
-                reranker_model,
-                limit,
-                stages,
-                ..
-            } => manifest.push(json!({
-                "id": id,
-                "kind": "semafuse_production_retrieval",
-                "config_sha256": config_sha256,
-                "resolved_config_sha256": resolved_config_sha256,
-                "embedding_model": embedding_model,
-                "reranker_model": reranker_model,
-                "model_revisions_verified": false,
-                "limit": limit,
-                "stages": stages,
-                "outputs": method.output_ids(),
-                "shared_execution": true,
-                "state_scope": "one_ingest_and_index_per_source_conversation",
-                "query_order": "sequential",
-            })),
-            ResolvedMethod::ExternalJsonl(external) => manifest.push(json!({
-                "id": external.id,
-                "kind": "external_jsonl",
-                "adapter_kind": external.adapter_kind,
-                "track": external.track,
-                "upstream_revision": external.upstream_revision,
-                "model_revisions": external.model_revisions,
-                "reader_tokenizer_model": external.reader_tokenizer_model,
-                "reader_tokenizer_revision": external.reader_tokenizer_revision,
-                "protected_identity_complete": external.track != "development"
-                    && external.upstream_revision.is_some()
-                    && !external.model_revisions.is_empty(),
-                "worker_config_sha256": external.worker_config_sha256,
-                "command_sha256": external.command_sha256,
-                "top_k": external.top_k,
-                "max_context_tokens": external.max_context_tokens,
-                "timeout_seconds": external.timeout.as_secs(),
-                "state_scope": "one_reset_and_construction_per_source_conversation",
-            })),
-        }
-    }
-    manifest.sort_by(|left, right| left["id"].as_str().cmp(&right["id"].as_str()));
-    manifest
-}
-
-fn sha256_file(path: impl AsRef<Path>) -> Result<String> {
-    let path = path.as_ref();
-    let bytes = fs::read(path).with_context(|| format!("read {} for hashing", path.display()))?;
-    Ok(hex::encode(Sha256::digest(bytes)))
-}
-
-fn hash_strings(values: &[String]) -> String {
-    let mut digest = Sha256::new();
-    for value in values {
-        digest.update((value.len() as u64).to_be_bytes());
-        digest.update(value.as_bytes());
-    }
-    hex::encode(digest.finalize())
-}
-
 fn cargo_lock_sha256() -> String {
     hex::encode(Sha256::digest(include_bytes!("../Cargo.lock")))
-}
-
-fn benchmark_code_sha256() -> String {
-    let mut digest = Sha256::new();
-    for (path, bytes) in [
-        (
-            "src/locomo_suite.rs",
-            include_bytes!("locomo_suite.rs").as_slice(),
-        ),
-        ("src/locomo.rs", include_bytes!("locomo.rs").as_slice()),
-        (
-            "src/benchmark.rs",
-            include_bytes!("benchmark.rs").as_slice(),
-        ),
-        (
-            "src/benchmark_baselines.rs",
-            include_bytes!("benchmark_baselines.rs").as_slice(),
-        ),
-        (
-            "src/benchmark_metrics.rs",
-            include_bytes!("benchmark_metrics.rs").as_slice(),
-        ),
-        (
-            "src/benchmark_report.rs",
-            include_bytes!("benchmark_report.rs").as_slice(),
-        ),
-        (
-            "src/benchmark_journal.rs",
-            include_bytes!("benchmark_journal.rs").as_slice(),
-        ),
-    ] {
-        digest.update((path.len() as u64).to_be_bytes());
-        digest.update(path.as_bytes());
-        digest.update((bytes.len() as u64).to_be_bytes());
-        digest.update(bytes);
-    }
-    hex::encode(digest.finalize())
 }
 
 fn run_key(
@@ -1969,7 +1379,7 @@ fn run_key(
     code_sha256: &str,
 ) -> String {
     let mut digest = Sha256::new();
-    digest.update(b"semafuse-locomo-retrieval-run/v1");
+    digest.update(b"semafuse-locomo-retrieval-run/v2");
     digest.update((suite_bytes.len() as u64).to_be_bytes());
     digest.update(suite_bytes);
     digest.update(dataset_sha256.as_bytes());
@@ -1989,11 +1399,25 @@ fn run_key(
             ResolvedMethod::ExternalJsonl(method) => {
                 digest.update(method.worker_config_sha256.as_bytes());
                 digest.update(method.command_sha256.as_bytes());
+                digest.update(method.executable_sha256.as_bytes());
+                update_optional_sha256(&mut digest, &method.python_tree_sha256);
+                update_optional_sha256(&mut digest, &method.dependency_lock_sha256);
+                update_optional_sha256(&mut digest, &method.python_environment_sha256);
+                digest.update([u8::from(method.dependency_pins_verified)]);
             }
             _ => {}
         }
     }
     hex::encode(digest.finalize())
+}
+
+fn update_optional_sha256(digest: &mut Sha256, value: &Option<String>) {
+    if let Some(value) = value {
+        digest.update([1]);
+        digest.update(value.as_bytes());
+    } else {
+        digest.update([0]);
+    }
 }
 
 #[cfg(test)]
@@ -2038,6 +1462,7 @@ mod tests {
         let invalid = SuiteConfig {
             schema_version: 1,
             name: "test".into(),
+            track: LocomoTrack::PaperV2,
             baseline_method: "semafuse::retrieved".into(),
             methods: vec![
                 MethodConfig::Bm25 {
@@ -2054,6 +1479,108 @@ mod tests {
         };
         let error = validate_suite(&invalid).unwrap_err();
         assert!(format!("{error:#}").contains("at least 50"));
+    }
+
+    #[test]
+    fn empty_semafuse_stages_are_full_answer_compatible_but_not_retrieval_runnable() {
+        let suite = SuiteConfig {
+            schema_version: 1,
+            name: "full-answer-only".into(),
+            track: LocomoTrack::PaperV2,
+            baseline_method: "bm25".into(),
+            methods: vec![
+                MethodConfig::Bm25 {
+                    id: "bm25".into(),
+                    limit: 50,
+                },
+                MethodConfig::Semafuse {
+                    id: "reconstructive".into(),
+                    config: "unused".into(),
+                    limit: 50,
+                    stages: Vec::new(),
+                },
+            ],
+        };
+        validate_suite(&suite).unwrap();
+        let error = validate_retrieval_stages(&suite).unwrap_err();
+        assert!(format!("{error:#}").contains("must expose at least one retrieval stage"));
+    }
+
+    #[test]
+    fn semafuse_main_output_id_participates_in_duplicate_validation() {
+        let suite = SuiteConfig {
+            schema_version: 1,
+            name: "duplicate-main-output".into(),
+            track: LocomoTrack::PaperV2,
+            baseline_method: "same".into(),
+            methods: vec![
+                MethodConfig::Bm25 {
+                    id: "same".into(),
+                    limit: 50,
+                },
+                MethodConfig::Semafuse {
+                    id: "same".into(),
+                    config: "unused".into(),
+                    limit: 50,
+                    stages: Vec::new(),
+                },
+            ],
+        };
+        let error = validate_suite(&suite).unwrap_err();
+        assert!(format!("{error:#}").contains("duplicate output id same"));
+    }
+
+    #[test]
+    fn resolve_methods_uses_the_configured_recall_strategy_models() {
+        let directory = tempdir().unwrap();
+        let strategy_config = directory.path().join("reconstructive.toml");
+        fs::write(
+            &strategy_config,
+            r#"
+[strategies]
+enabled = ["reconstructive"]
+recall = "reconstructive"
+
+[strategies.settings.reconstructive.embedding.endpoint]
+model = "test-embedding"
+
+[strategies.settings.reconstructive.reranker.endpoint]
+model = "test-reranker"
+"#,
+        )
+        .unwrap();
+        let suite = SuiteConfig {
+            schema_version: 1,
+            name: "generic-strategy".into(),
+            track: LocomoTrack::PaperV2,
+            baseline_method: "bm25".into(),
+            methods: vec![
+                MethodConfig::Bm25 {
+                    id: "bm25".into(),
+                    limit: 50,
+                },
+                MethodConfig::Semafuse {
+                    id: "reconstructive".into(),
+                    config: strategy_config,
+                    limit: 50,
+                    stages: Vec::new(),
+                },
+            ],
+        };
+        validate_suite(&suite).unwrap();
+        let methods = resolve_methods(&suite, directory.path()).unwrap();
+        let ResolvedMethod::Semafuse {
+            config,
+            embedding_model,
+            reranker_model,
+            ..
+        } = &methods[1]
+        else {
+            unreachable!()
+        };
+        assert_eq!(config.strategies.recall, "reconstructive");
+        assert_eq!(embedding_model.as_deref(), Some("test-embedding"));
+        assert_eq!(reranker_model.as_deref(), Some("test-reranker"));
     }
 
     #[test]
@@ -2081,7 +1608,23 @@ mod tests {
             record("bm25", "q2", "single-hop", 1.0),
             record("candidate", "q2", "single-hop", 1.0),
         ];
-        let summary = build_locomo_summary_from_records("bm25", &records).unwrap();
+        let summary = build_locomo_summary_from_records(
+            LocomoTrack::PaperV2,
+            &crate::locomo::DatasetSummary {
+                conversation_count: 1,
+                qa_count: 2,
+                retrieval_count: 2,
+                category_counts: BTreeMap::from([
+                    (crate::locomo::LocomoCategory::MultiHop, 1),
+                    (crate::locomo::LocomoCategory::SingleHop, 1),
+                ]),
+            },
+            "bm25",
+            &records,
+        )
+        .unwrap();
+        assert_eq!(summary["qa_n"], 2);
+        assert_eq!(summary["retrieval_eval_n"], 2);
         assert_eq!(summary["cutoffs"], json!([1, 5, 10, 50]));
         assert_eq!(summary["reports"].as_object().unwrap().len(), 24);
         let report = &summary["reports"]["evidence_recall_all@10"];
@@ -2128,6 +1671,320 @@ mod tests {
         assert!(project_external_source_ids(&[item(vec!["unknown"])], &corpus, 50).is_err());
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn executable_resolution_uses_path_and_binds_file_bytes() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let directory = tempdir().unwrap();
+        let bin = directory.path().join("bin");
+        fs::create_dir(&bin).unwrap();
+        let executable = bin.join("worker");
+        let bytes = b"#!/bin/sh\nexit 0\n";
+        fs::write(&executable, bytes).unwrap();
+        let mut permissions = fs::metadata(&executable).unwrap().permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(&executable, permissions).unwrap();
+
+        let resolved = resolve_executable(
+            "worker",
+            directory.path(),
+            Some(std::ffi::OsStr::new("bin/../bin")),
+        )
+        .unwrap();
+        assert_eq!(
+            resolved.invocation_path,
+            directory.path().join("bin/../bin/worker")
+        );
+        assert_ne!(resolved.invocation_path, resolved.identity_target);
+        assert_eq!(resolved.identity_target, executable.canonicalize().unwrap());
+        assert_eq!(
+            sha256_file(&resolved.identity_target).unwrap(),
+            hex::encode(Sha256::digest(bytes))
+        );
+    }
+
+    #[test]
+    fn python_tree_hash_is_path_stable_and_content_bound() {
+        let first = tempdir().unwrap();
+        fs::create_dir(first.path().join("pkg")).unwrap();
+        fs::write(first.path().join("pkg/b.py"), b"B\n").unwrap();
+        fs::write(first.path().join("a.py"), b"A\n").unwrap();
+        fs::write(first.path().join("ignored.txt"), b"ignored").unwrap();
+
+        let second = tempdir().unwrap();
+        fs::create_dir(second.path().join("pkg")).unwrap();
+        fs::write(second.path().join("a.py"), b"A\n").unwrap();
+        fs::write(second.path().join("pkg/b.py"), b"B\n").unwrap();
+
+        let expected = "21e0e22606a49f4a3813dc462fe749bd499ae3cccf69acb434903ef7e8b6fbf9";
+        assert_eq!(python_tree_sha256(first.path()).unwrap(), expected);
+        assert_eq!(python_tree_sha256(second.path()).unwrap(), expected);
+
+        fs::write(second.path().join("pkg/b.py"), b"changed\n").unwrap();
+        assert_ne!(python_tree_sha256(second.path()).unwrap(), expected);
+    }
+
+    #[test]
+    fn external_identity_inputs_fail_closed() {
+        let directory = tempdir().unwrap();
+        let worker_config = directory.path().join("worker.json");
+        fs::write(
+            &worker_config,
+            br#"{"adapter":{"kind":"fake"},"run_policy":{"track":"development"}}"#,
+        )
+        .unwrap();
+        let search_path = env::var_os("PATH");
+        let command = resolve_executable("python", directory.path(), search_path.as_deref())
+            .unwrap()
+            .invocation_path;
+        let suite = SuiteConfig {
+            schema_version: 1,
+            name: "identity-test".into(),
+            track: LocomoTrack::PaperV2,
+            baseline_method: "bm25".into(),
+            methods: vec![
+                MethodConfig::Bm25 {
+                    id: "bm25".into(),
+                    limit: 50,
+                },
+                MethodConfig::ExternalJsonl {
+                    id: "external".into(),
+                    worker_config: worker_config.clone(),
+                    command: vec![command.to_string_lossy().into_owned()],
+                    working_directory: None,
+                    python_path: None,
+                    source_root: None,
+                    dependency_lock: None,
+                    top_k: 50,
+                    max_context_tokens: 16_384,
+                    timeout_seconds: 10,
+                },
+            ],
+        };
+        let error = resolve_methods(&suite, directory.path()).unwrap_err();
+        assert!(format!("{error:#}").contains("outside contract-test"));
+
+        let source_root = directory.path().join("source-root");
+        fs::create_dir(&source_root).unwrap();
+        fs::write(source_root.join("module.py"), b"module\n").unwrap();
+        let environment = inspect_python_environment(&command, None).unwrap();
+        let (package, version) = environment.distributions.first_key_value().unwrap();
+        let lock_contents = format!("{package}=={version}\n");
+        let dependency_lock = directory.path().join("requirements.lock.txt");
+        fs::write(&dependency_lock, &lock_contents).unwrap();
+        let mut configured = suite.clone();
+        let MethodConfig::ExternalJsonl {
+            source_root: configured_source_root,
+            dependency_lock: configured_dependency_lock,
+            ..
+        } = &mut configured.methods[1]
+        else {
+            unreachable!()
+        };
+        *configured_source_root = Some("source-root".into());
+        *configured_dependency_lock = Some("requirements.lock.txt".into());
+        validate_suite(&configured).unwrap();
+        let resolved = resolve_methods(&configured, directory.path()).unwrap();
+        let ResolvedMethod::ExternalJsonl(resolved) = &resolved[1] else {
+            unreachable!()
+        };
+        assert_eq!(
+            resolved.python_tree_sha256.as_deref(),
+            Some(python_tree_sha256(&source_root).unwrap().as_str())
+        );
+        assert_eq!(
+            resolved.dependency_lock_sha256.as_deref(),
+            Some(hex::encode(Sha256::digest(lock_contents.as_bytes())).as_str())
+        );
+        assert!(resolved.python_environment_sha256.is_some());
+        assert!(resolved.dependency_pins_verified);
+
+        let mut incomplete = configured.clone();
+        let MethodConfig::ExternalJsonl {
+            dependency_lock, ..
+        } = &mut incomplete.methods[1]
+        else {
+            unreachable!()
+        };
+        *dependency_lock = None;
+        let error = validate_suite(&incomplete).unwrap_err();
+        assert!(
+            format!("{error:#}").contains("configure source_root and dependency_lock together")
+        );
+
+        let empty_source = directory.path().join("empty-source");
+        fs::create_dir(&empty_source).unwrap();
+        let error = python_tree_sha256(&empty_source).unwrap_err();
+        assert!(format!("{error:#}").contains("contains no .py files"));
+
+        let source_file = directory.path().join("source.py");
+        fs::write(&source_file, b"source\n").unwrap();
+        let error = python_tree_sha256(&source_file).unwrap_err();
+        assert!(format!("{error:#}").contains("regular directory"));
+
+        let dependency_directory = directory.path().join("dependency-directory");
+        fs::create_dir(&dependency_directory).unwrap();
+        let error = resolve_dependency_lock(directory.path(), &dependency_directory).unwrap_err();
+        assert!(format!("{error:#}").contains("regular non-symlink file"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn python_tree_rejects_symlinks_when_supported() {
+        use std::os::unix::fs::symlink;
+
+        let directory = tempdir().unwrap();
+        fs::write(directory.path().join("source.py"), b"source\n").unwrap();
+        match symlink("source.py", directory.path().join("linked.py")) {
+            Ok(()) => {
+                let error = python_tree_sha256(directory.path()).unwrap_err();
+                assert!(format!("{error:#}").contains("contains a symlink"));
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied => {}
+            Err(error) => panic!("create test symlink: {error}"),
+        }
+    }
+
+    #[test]
+    fn installed_distribution_fingerprint_captures_complete_package_state() {
+        let first = BTreeMap::from([
+            ("demo".to_owned(), "1.0".to_owned()),
+            ("shared".to_owned(), "2.0".to_owned()),
+        ]);
+        let changed_version = BTreeMap::from([
+            ("demo".to_owned(), "1.1".to_owned()),
+            ("shared".to_owned(), "2.0".to_owned()),
+        ]);
+        let added_distribution = BTreeMap::from([
+            ("demo".to_owned(), "1.0".to_owned()),
+            ("extra".to_owned(), "3.0".to_owned()),
+            ("shared".to_owned(), "2.0".to_owned()),
+        ]);
+        assert_ne!(
+            installed_distributions_sha256(&first),
+            installed_distributions_sha256(&changed_version)
+        );
+        assert_ne!(
+            installed_distributions_sha256(&first),
+            installed_distributions_sha256(&added_distribution)
+        );
+    }
+
+    #[test]
+    fn strict_dependency_lock_rejects_pin_mismatch_and_unknown_syntax() {
+        let directory = tempdir().unwrap();
+        let lock = directory.path().join("requirements.lock.txt");
+        let installed = BTreeMap::from([
+            ("demo-pkg".to_owned(), "1.0+cpu".to_owned()),
+            ("other".to_owned(), "2.0".to_owned()),
+        ]);
+
+        fs::write(
+            &lock,
+            b"# exact lock\n--extra-index-url https://example.invalid/simple\nDemo_Pkg==1.0+cpu\nother==2.0\n",
+        )
+        .unwrap();
+        assert!(is_strict_python_dependency_lock(&lock));
+        validate_dependency_pins(&lock, &installed).unwrap();
+
+        fs::write(&lock, b"demo-pkg==9.0\n").unwrap();
+        let error = validate_dependency_pins(&lock, &installed).unwrap_err();
+        assert!(format!("{error:#}").contains("has version 1.0+cpu, expected 9.0"));
+
+        fs::write(&lock, b"demo-pkg>=1.0\n").unwrap();
+        let error = validate_dependency_pins(&lock, &installed).unwrap_err();
+        assert!(format!("{error:#}").contains("not an exact name==version pin"));
+
+        fs::write(&lock, b"--extra-index-url-typo https://example.invalid\n").unwrap();
+        let error = validate_dependency_pins(&lock, &installed).unwrap_err();
+        assert!(format!("{error:#}").contains("unrecognized requirement option"));
+    }
+
+    #[test]
+    fn external_identity_hashes_are_manifested_and_bound_into_run_key() {
+        let method = |executable_sha256: &str,
+                      python_tree_sha256: &str,
+                      dependency_lock_sha256: &str,
+                      python_environment_sha256: &str| {
+            let model_revisions = BTreeMap::from([("embedding".into(), "model-revision".into())]);
+            vec![ResolvedMethod::ExternalJsonl(ResolvedExternalMethod {
+                id: "external".into(),
+                worker_config: "worker.json".into(),
+                worker_config_sha256: "worker-config".into(),
+                adapter_kind: "paper".into(),
+                track: "paper-reproduction".into(),
+                upstream_revision: Some("upstream-revision".into()),
+                model_revisions,
+                reader_tokenizer_model: None,
+                reader_tokenizer_revision: None,
+                command: vec!["worker".into()],
+                command_sha256: "command".into(),
+                executable_invocation: "/resolved/worker".into(),
+                executable_sha256: executable_sha256.into(),
+                working_directory: None,
+                python_path: None,
+                python_tree_sha256: Some(python_tree_sha256.into()),
+                dependency_lock_sha256: Some(dependency_lock_sha256.into()),
+                python_environment_sha256: Some(python_environment_sha256.into()),
+                dependency_pins_verified: true,
+                top_k: 50,
+                max_context_tokens: 16_384,
+                timeout: Duration::from_secs(10),
+            })]
+        };
+        let baseline = method("executable-a", "python-a", "lock-a", "environment-a");
+        let baseline_key = run_key(b"suite", "dataset", &baseline, "cargo", "code");
+        assert_ne!(
+            baseline_key,
+            run_key(
+                b"suite",
+                "dataset",
+                &method("executable-b", "python-a", "lock-a", "environment-a"),
+                "cargo",
+                "code"
+            )
+        );
+        assert_ne!(
+            baseline_key,
+            run_key(
+                b"suite",
+                "dataset",
+                &method("executable-a", "python-b", "lock-a", "environment-a"),
+                "cargo",
+                "code"
+            )
+        );
+        assert_ne!(
+            baseline_key,
+            run_key(
+                b"suite",
+                "dataset",
+                &method("executable-a", "python-a", "lock-b", "environment-a"),
+                "cargo",
+                "code"
+            )
+        );
+        assert_ne!(
+            baseline_key,
+            run_key(
+                b"suite",
+                "dataset",
+                &method("executable-a", "python-a", "lock-a", "environment-b"),
+                "cargo",
+                "code"
+            )
+        );
+
+        let manifest = method_manifest(&baseline);
+        assert_eq!(manifest[0]["executable_sha256"], "executable-a");
+        assert_eq!(manifest[0]["python_tree_sha256"], "python-a");
+        assert_eq!(manifest[0]["dependency_lock_sha256"], "lock-a");
+        assert_eq!(manifest[0]["python_environment_sha256"], "environment-a");
+        assert_eq!(manifest[0]["dependency_pins_verified"], true);
+        assert_eq!(manifest[0]["protected_identity_complete"], true);
+    }
+
     #[tokio::test]
     async fn existing_fake_worker_protocol_round_trips() {
         let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
@@ -2138,6 +1995,9 @@ mod tests {
         {
             return;
         }
+        let search_path = env::var_os("PATH");
+        let executable = resolve_executable("python", &external, search_path.as_deref()).unwrap();
+        let executable_sha256 = sha256_file(&executable.identity_target).unwrap();
         let method = ResolvedExternalMethod {
             id: "fake".into(),
             worker_config: external.join("configs/fake.contract-test.json"),
@@ -2149,13 +2009,19 @@ mod tests {
             reader_tokenizer_model: None,
             reader_tokenizer_revision: None,
             command: vec![
-                "python3".into(),
+                "python".into(),
                 "-m".into(),
                 "semafuse_external_memory.worker".into(),
             ],
             command_sha256: "command".into(),
+            executable_invocation: executable.invocation_path,
+            executable_sha256,
             working_directory: Some(external.clone()),
             python_path: Some(external.join("src")),
+            python_tree_sha256: None,
+            dependency_lock_sha256: None,
+            python_environment_sha256: None,
+            dependency_pins_verified: false,
             top_k: 50,
             max_context_tokens: 16_384,
             timeout: Duration::from_secs(10),

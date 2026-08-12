@@ -28,15 +28,18 @@ class SyntheticComparison:
         (self.harness / "adapters" / "amem.py").write_text(
             "def fail_closed():\n    return True\n", encoding="utf-8"
         )
+        (self.harness / "adapters" / "amem_paper.py").write_text(
+            "def paper_backend():\n    return True\n", encoding="utf-8"
+        )
         harness_receipt = receipt.inspect_external_harness(self.harness)
         self.spec: dict[str, object] = {
-            "schema_version": 1,
+            "schema_version": receipt.SCHEMA_VERSION,
             "label": "development",
             "baseline": "BM25",
             "external_harness": {
                 "directory": "external-harness",
                 "tree_sha256": harness_receipt["tree_sha256"],
-                "amem_adapter_sha256": harness_receipt["amem_adapter_sha256"],
+                "adapter_sha256s": harness_receipt["adapter_sha256s"],
             },
             "runs": [],
             "methods": [
@@ -47,7 +50,11 @@ class SyntheticComparison:
                     "source_method": "semafuse::retrieved",
                 },
                 {"name": "Mem0", "run": "mem0-run", "source_method": "mem0_oss_raw"},
-                {"name": "A-MEM", "run": "amem-run", "source_method": "amem_openrouter"},
+                {
+                    "name": "A-MEM package/dev",
+                    "run": "amem-run",
+                    "source_method": "amem_openrouter",
+                },
             ],
         }
         self.run_methods = {
@@ -303,6 +310,21 @@ class SyntheticComparison:
             receipt._canonical_json(value["summary"]["manifest"])
         ).hexdigest()
 
+    def update_candidate_manifest(self, run_id: str, **updates: object) -> None:
+        path = self.root / run_id / "summary.json"
+        value = json.loads(path.read_text(encoding="utf-8"))
+        candidate = next(
+            method
+            for method in value["summary"]["manifest"]["methods"]
+            if method["kind"] != "bm25"
+        )
+        candidate.update(updates)
+        path.write_text(
+            json.dumps(value, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+        )
+        self.refresh_summary_and_manifest_hashes(run_id)
+        self.write_spec()
+
     def write_spec(self) -> None:
         self.spec_path.write_text(
             json.dumps(self.spec, indent=2, sort_keys=True) + "\n", encoding="utf-8"
@@ -322,12 +344,34 @@ class CompactReceiptTests(unittest.TestCase):
 
     def test_builds_deterministic_text_free_paired_receipt(self) -> None:
         result = self.fixture.build()
+        self.assertEqual(result["schema_version"], 2)
         self.assertEqual(result["population"]["question_count"], 312)
         self.assertEqual(result["bootstrap"]["seed"], 20260808)
         self.assertEqual(result["bootstrap"]["resamples"], 10_000)
         self.assertEqual(result["methods"]["BM25"]["metrics"]["RecallAll@10"]["mean"], 0.5)
         self.assertEqual(
             result["methods"]["Semafuse"]["metrics"]["RecallAll@10"]["mean"], 0.75
+        )
+        self.assertIn("A-MEM package/dev", result["methods"])
+        self.assertFalse(
+            result["methods"]["A-MEM package/dev"]["source"]["identity"][
+                "run_key_bound"
+            ]
+        )
+        self.assertFalse(
+            result["methods"]["Mem0"]["source"]["identity"]["run_key_bound"]
+        )
+        self.assertNotIn(
+            "dependency_pins_verified",
+            result["methods"]["Mem0"]["source"]["identity"],
+        )
+        self.assertEqual(
+            set(result["provenance"]["external_harness"]["required_adapter_paths"]),
+            receipt._REQUIRED_ADAPTER_PATHS,
+        )
+        self.assertIn(
+            "does not claim a clean environment",
+            result["provenance"]["external_harness"]["run_key_binding_note"],
         )
         semafuse_latency = result["methods"]["Semafuse"]["latency"]
         self.assertAlmostEqual(semafuse_latency["query_wall_s"]["total"], 78.0)
@@ -377,6 +421,135 @@ class CompactReceiptTests(unittest.TestCase):
         self.assertFalse(result["validation"]["absolute_paths_serialized"])
         self.assertFalse(result["validation"]["credentials_serialized"])
         self.assertEqual(result, self.fixture.build())
+
+    def test_display_name_allows_package_dev_without_relaxing_identifiers(self) -> None:
+        self.assertEqual(
+            receipt._require_display_name("A-MEM package/dev", "method"),
+            "A-MEM package/dev",
+        )
+        for value in ("../A-MEM", " A-MEM", "A-MEM//paper", "A-MEM\npackage"):
+            with self.subTest(display_name=value):
+                with self.assertRaisesRegex(receipt.VerificationError, "safe display name"):
+                    receipt._require_display_name(value, "method")
+        with self.assertRaisesRegex(receipt.VerificationError, "safe opaque identifier"):
+            receipt._require_name("amem run", "run_id")
+        with self.assertRaisesRegex(receipt.VerificationError, "safe opaque identifier"):
+            receipt._require_name("amem/paper", "source_method", method=True)
+
+    def test_bound_paper_backend_identity_matches_live_harness(self) -> None:
+        tree_sha256 = self.fixture.spec["external_harness"]["tree_sha256"]
+        self.fixture.update_candidate_manifest(
+            "amem-run",
+            adapter_kind="amem_paper",
+            executable_sha256="7" * 64,
+            python_tree_sha256=tree_sha256,
+            dependency_lock_sha256="8" * 64,
+            python_environment_sha256="6" * 64,
+            dependency_pins_verified=True,
+        )
+        amem_selection = next(
+            method
+            for method in self.fixture.spec["methods"]
+            if method["source_method"] == "amem_openrouter"
+        )
+        amem_selection["name"] = "A-MEM paper"
+        self.fixture.write_spec()
+
+        result = self.fixture.build()
+        identity = result["methods"]["A-MEM paper"]["source"]["identity"]
+        self.assertEqual(identity["adapter_kind"], "amem_paper")
+        self.assertEqual(identity["executable_sha256"], "7" * 64)
+        self.assertEqual(identity["python_tree_sha256"], tree_sha256)
+        self.assertEqual(identity["dependency_lock_sha256"], "8" * 64)
+        self.assertEqual(identity["python_environment_sha256"], "6" * 64)
+        self.assertTrue(identity["dependency_pins_verified"])
+        self.assertTrue(identity["run_key_bound"])
+        self.assertFalse(
+            result["methods"]["Mem0"]["source"]["identity"]["run_key_bound"]
+        )
+
+    def test_bound_external_python_tree_must_match_live_harness(self) -> None:
+        self.fixture.update_candidate_manifest(
+            "amem-run",
+            adapter_kind="amem_paper",
+            executable_sha256="7" * 64,
+            python_tree_sha256="9" * 64,
+            dependency_lock_sha256="8" * 64,
+            python_environment_sha256="6" * 64,
+            dependency_pins_verified=True,
+        )
+        with self.assertRaisesRegex(receipt.VerificationError, "audited harness tree"):
+            self.fixture.build()
+
+    def test_bound_external_identity_keeps_pins_claim_separate(self) -> None:
+        tree_sha256 = self.fixture.spec["external_harness"]["tree_sha256"]
+        self.fixture.update_candidate_manifest(
+            "amem-run",
+            executable_sha256="7" * 64,
+            python_tree_sha256=tree_sha256,
+            dependency_lock_sha256="8" * 64,
+            python_environment_sha256="6" * 64,
+            dependency_pins_verified=False,
+        )
+
+        result = self.fixture.build()
+        identity = result["methods"]["A-MEM package/dev"]["source"]["identity"]
+        self.assertTrue(identity["run_key_bound"])
+        self.assertFalse(identity["dependency_pins_verified"])
+
+    def test_bound_external_identity_fields_are_all_or_none(self) -> None:
+        self.fixture.update_candidate_manifest(
+            "amem-run",
+            executable_sha256="7" * 64,
+        )
+        with self.assertRaisesRegex(receipt.VerificationError, "provide executable_sha256"):
+            self.fixture.build()
+
+    def test_bound_external_identity_requires_complete_metadata_bundle(self) -> None:
+        tree_sha256 = self.fixture.spec["external_harness"]["tree_sha256"]
+        cases = (
+            {
+                "executable_sha256": "7" * 64,
+                "python_tree_sha256": tree_sha256,
+                "dependency_lock_sha256": "8" * 64,
+                "python_environment_sha256": "6" * 64,
+            },
+            {"dependency_pins_verified": True},
+        )
+        for updates in cases:
+            with self.subTest(updates=sorted(updates)):
+                parent = {
+                    "id": "amem_paper_original",
+                    "kind": "external_jsonl",
+                    **updates,
+                }
+                identity = receipt._method_identity(parent)
+                with self.assertRaisesRegex(
+                    receipt.VerificationError, "dependency_pins_verified"
+                ):
+                    receipt._set_external_run_key_binding(
+                        parent, identity, tree_sha256
+                    )
+
+    def test_method_identity_rejects_invalid_bound_hash(self) -> None:
+        with self.assertRaisesRegex(receipt.VerificationError, "lowercase SHA-256"):
+            receipt._method_identity(
+                {
+                    "id": "amem_paper_original",
+                    "kind": "external_jsonl",
+                    "python_environment_sha256": "not-a-sha",
+                }
+            )
+
+    def test_method_identity_rejects_non_boolean_pins_claim(self) -> None:
+        with self.assertRaisesRegex(receipt.VerificationError, "must be boolean"):
+            receipt._method_identity(
+                {
+                    "id": "amem_paper_original",
+                    "kind": "external_jsonl",
+                    "dependency_pins_verified": "true",
+                }
+            )
 
     def test_inconsistent_identified_construction_group_fails_closed(self) -> None:
         path = Path(self.temporary.name) / "semafuse-run" / "per-question.jsonl"
@@ -591,10 +764,62 @@ class CompactReceiptTests(unittest.TestCase):
         with self.assertRaisesRegex(receipt.VerificationError, "paper-reproduction claim rejected"):
             self.fixture.build()
 
-    def test_external_harness_and_amem_patch_hash_are_required(self) -> None:
+    def test_external_harness_tree_hash_is_required(self) -> None:
         path = self.fixture.harness / "adapters" / "amem.py"
         path.write_text("def fail_closed():\n    return False\n", encoding="utf-8")
         with self.assertRaisesRegex(receipt.VerificationError, "tree SHA-256 mismatch"):
+            self.fixture.build()
+
+    def test_external_harness_root_symlink_is_rejected(self) -> None:
+        link = Path(self.temporary.name) / "harness-link"
+        try:
+            link.symlink_to(self.fixture.harness, target_is_directory=True)
+        except (NotImplementedError, OSError) as error:
+            self.skipTest(f"directory symlinks are unavailable: {error}")
+
+        with self.assertRaisesRegex(receipt.VerificationError, "root must be a real directory"):
+            receipt.inspect_external_harness(link)
+
+    def test_external_harness_nested_directory_symlink_is_rejected(self) -> None:
+        outside = Path(self.temporary.name) / "outside-harness-source"
+        outside.mkdir()
+        (outside / "hidden.py").write_text("VALUE = 1\n", encoding="utf-8")
+        link = self.fixture.harness / "linked-source"
+        try:
+            link.symlink_to(outside, target_is_directory=True)
+        except (NotImplementedError, OSError) as error:
+            self.skipTest(f"directory symlinks are unavailable: {error}")
+
+        with self.assertRaisesRegex(receipt.VerificationError, "contains a symlink"):
+            receipt.inspect_external_harness(self.fixture.harness)
+
+    def test_committed_development_harness_snapshot_matches_pins(self) -> None:
+        spec = receipt.load_comparison_spec(
+            LOC0MO_DIR / "receipts" / "locomo314.development.inputs.json"
+        )
+        inspected = receipt.inspect_external_harness(spec.external_harness.directory)
+
+        self.assertEqual(inspected["tree_sha256"], spec.external_harness.tree_sha256)
+        for path, expected in spec.external_harness.adapter_sha256s.items():
+            self.assertEqual(inspected["adapter_sha256s"][path], expected)
+
+    def test_external_harness_requires_both_amem_adapter_pins(self) -> None:
+        adapter_sha256s = self.fixture.spec["external_harness"]["adapter_sha256s"]
+        del adapter_sha256s["adapters/amem_paper.py"]
+        self.fixture.write_spec()
+        with self.assertRaisesRegex(receipt.VerificationError, "lacks required adapters"):
+            receipt.load_comparison_spec(self.fixture.spec_path)
+
+    def test_external_harness_adapter_map_detects_stale_paper_adapter_pin(self) -> None:
+        path = self.fixture.harness / "adapters" / "amem_paper.py"
+        path.write_text("def paper_backend():\n    return False\n", encoding="utf-8")
+        inspected = receipt.inspect_external_harness(self.fixture.harness)
+        self.fixture.spec["external_harness"]["tree_sha256"] = inspected["tree_sha256"]
+        self.fixture.write_spec()
+        with self.assertRaisesRegex(
+            receipt.VerificationError,
+            "adapter SHA-256 mismatch for adapters/amem_paper.py",
+        ):
             self.fixture.build()
 
     def test_contract_adapter_cannot_enter_a_development_receipt(self) -> None:

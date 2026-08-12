@@ -1,4 +1,4 @@
-# A-MEM dependency
+# A-MEM reusable-package development baseline
 
 Create an isolated Python 3.11 or 3.12 environment and install
 `requirements.txt`.
@@ -24,9 +24,11 @@ For the OpenAI-compatible backend it also requires `api_key_env` and an
 explicit non-secret `openai_base_url`; the adapter scopes that URL through
 `OPENAI_BASE_URL` only while constructing the upstream SDK client. For
 OpenRouter, use `api_key_env: "OPENROUTER_API_KEY"` and
-`openai_base_url: "https://openrouter.ai/api/v1"`. The pinned system uses a
-fixed Chroma collection name and resets that collection during initialization,
-so run it in a dedicated process/storage environment.
+`openai_base_url: "https://openrouter.ai/api/v1"`. Remote base URLs must use
+HTTPS; plain HTTP is accepted only for an explicit localhost or loopback-IP
+endpoint. The pinned system uses a fixed Chroma collection name and resets that
+collection during initialization, so run it in a dedicated process/storage
+environment.
 
 The LoCoMo development config uses `openai/gpt-4o-mini`, matching the A-MEM
 paper's memory-model family, with `llm_max_attempts = 3`. The adapter validates

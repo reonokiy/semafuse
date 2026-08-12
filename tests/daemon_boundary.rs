@@ -8,12 +8,12 @@ use std::{
 };
 
 #[test]
-fn daemon_status_never_starts_semafused() {
+fn daemon_status_never_starts_a_server_process() {
     let directory = tempfile::tempdir().expect("temporary directory");
     let fake_bin = directory.path().join("bin");
     fs::create_dir(&fake_bin).expect("fake bin directory");
     let marker = directory.path().join("started");
-    let fake_daemon = fake_bin.join("semafused");
+    let fake_daemon = fake_bin.join("semafuse");
     fs::write(
         &fake_daemon,
         format!("#!/bin/sh\nprintf started > '{}'\n", marker.display()),
@@ -37,10 +37,32 @@ fn daemon_status_never_starts_semafused() {
         ])
         .assert()
         .failure()
-        .stderr(contains("semafused status probe failed"));
+        .stderr(contains("Semafuse daemon status probe failed"));
 
     assert!(
         !marker.exists(),
-        "the one-shot CLI must never spawn semafused"
+        "daemon status must never spawn a server process"
     );
+}
+
+#[cfg(feature = "daemon")]
+#[test]
+fn daemon_serve_loads_the_requested_config() {
+    let directory = tempfile::tempdir().expect("temporary directory");
+    let missing = directory.path().join("missing.toml");
+    let mut command = Command::cargo_bin("semafuse").expect("semafuse binary");
+
+    command
+        .args([
+            "daemon",
+            "serve",
+            "--config",
+            missing.to_str().expect("UTF-8 temporary path"),
+        ])
+        .assert()
+        .failure()
+        .stderr(contains(format!(
+            "failed to read config {}",
+            missing.display()
+        )));
 }

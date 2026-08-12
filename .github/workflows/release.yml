@@ -2,137 +2,205 @@ name: Release
 
 on:
   push:
-    tags:
-      - "v*"
+    branches:
+      - main
+  workflow_dispatch:
 
 concurrency:
-  group: release-${{ github.ref }}
-  cancel-in-progress: false
+  group: release-main
+  queue: max
 
 permissions:
   contents: read
+  pull-requests: read
 
 env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  prepare:
+    name: Resolve unpublished version
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    outputs:
+      assets: ${{ steps.version.outputs.assets }}
+      should_release: ${{ steps.version.outputs.should_release }}
+      tag: ${{ steps.version.outputs.tag }}
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - name: Check out source and tags
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Resolve package version
+        id: version
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          if [[ "$GITHUB_REF" != "refs/heads/main" ]]; then
+            echo "Releases must run from main; got $GITHUB_REF" >&2
+            exit 1
+          fi
+          merged_pr=""
+          for attempt in 1 2 3 4 5; do
+            if associated_pulls="$(gh api \
+              "repos/$GITHUB_REPOSITORY/commits/$GITHUB_SHA/pulls?per_page=100")"
+            then
+              merged_pr="$(jq -r --arg repository "$GITHUB_REPOSITORY" '
+                first(.[] | select(
+                  .merged_at != null and
+                  .base.ref == "main" and
+                  .base.repo.full_name == $repository
+                ) | .number) // empty
+              ' <<< "$associated_pulls")"
+            fi
+            if [[ -n "$merged_pr" ]]; then
+              break
+            fi
+            if (( attempt < 5 )); then
+              sleep "$((attempt * 2))"
+            fi
+          done
+          if [[ -z "$merged_pr" ]]; then
+            echo "Main commit was not introduced by a merged pull request." >&2
+            exit 1
+          fi
+          echo "Verified merged pull request #$merged_pr for $GITHUB_SHA."
+          metadata="$(bash scripts/release-metadata.sh)"
+          assets="$(jq -cer '.assets' <<< "$metadata")"
+          version="$(jq -er '.version' <<< "$metadata")"
+          tag="$(jq -er '.tag' <<< "$metadata")"
+          {
+            echo "assets=$assets"
+            echo "version=$version"
+            echo "tag=$tag"
+          } >> "$GITHUB_OUTPUT"
+          if git show-ref --verify --quiet "refs/tags/$tag"; then
+            tag_commit="$(git rev-parse "$tag^{commit}")"
+            if ! git merge-base --is-ancestor "$tag_commit" "$GITHUB_SHA"; then
+              echo "Existing tag $tag is not an ancestor of this main commit." >&2
+              exit 1
+            fi
+            tag_versions="$(
+              python3 - "$tag" <<'PY'
+          import json
+          import subprocess
+          import sys
+          import tomllib
+
+          tag = sys.argv[1]
+          manifest = tomllib.loads(
+              subprocess.check_output(
+                  ["git", "show", f"{tag}:Cargo.toml"], text=True
+              )
+          )
+          lock = tomllib.loads(
+              subprocess.check_output(
+                  ["git", "show", f"{tag}:Cargo.lock"], text=True
+              )
+          )
+          if manifest["package"]["name"] != "semafuse":
+              raise SystemExit("tagged Cargo.toml is not the Semafuse package")
+          lock_versions = [
+              package["version"]
+              for package in lock["package"]
+              if package["name"] == "semafuse"
+          ]
+          if len(lock_versions) != 1:
+              raise SystemExit(
+                  "tagged Cargo.lock must contain exactly one Semafuse package"
+              )
+          print(json.dumps({
+              "manifest": manifest["package"]["version"],
+              "lock": lock_versions[0],
+          }))
+          PY
+            )"
+            if ! jq -e --arg version "$version" \
+              '.manifest == $version and .lock == $version' \
+              <<< "$tag_versions" >/dev/null
+            then
+              echo "Tag $tag does not contain version $version in both Cargo.toml and Cargo.lock." >&2
+              exit 1
+            fi
+
+            if ! release_json="$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/$tag")"; then
+              echo "Tag $tag exists without a published GitHub release; refusing to report a successful skip." >&2
+              exit 1
+            fi
+
+            expected_prerelease=false
+            if [[ "$version" == *-* ]]; then
+              expected_prerelease=true
+            fi
+            if [[ "$(jq -r '.draft' <<< "$release_json")" != "false" ]] || \
+              [[ "$(jq -r '.prerelease' <<< "$release_json")" != "$expected_prerelease" ]]
+            then
+              echo "Existing release $tag has incorrect draft/prerelease state." >&2
+              exit 1
+            fi
+
+            mapfile -t expected_assets < <(jq -r '.[]' <<< "$assets")
+            expected_assets+=("SHA256SUMS.txt")
+            for asset in "${expected_assets[@]}"; do
+              if ! jq -e --arg name "$asset" \
+                'any(.assets[]; .name == $name and .size > 0)' <<< "$release_json" >/dev/null
+              then
+                echo "Existing release $tag is missing or has an empty required asset: $asset" >&2
+                exit 1
+              fi
+            done
+
+            echo "Version $version already has a complete release; skipping publication."
+            echo "should_release=false" >> "$GITHUB_OUTPUT"
+          else
+            draft_id="$(gh api --paginate --slurp \
+              "repos/$GITHUB_REPOSITORY/releases?per_page=100" \
+              | jq -r --arg tag "$tag" \
+                'first(.[][] | select(.draft and .tag_name == $tag) | .id) // empty')"
+            if [[ -n "$draft_id" ]]; then
+              echo "Draft release $draft_id already reserves $tag; remove or publish it before retrying." >&2
+              exit 1
+            fi
+            echo "Version $version is unpublished and will be released as $tag."
+            echo "should_release=true" >> "$GITHUB_OUTPUT"
+          fi
+
   quality:
     name: Run quality checks
     uses: ./.github/workflows/ci.yml
     permissions:
       contents: read
 
-  validate-tag:
-    name: Validate release tag
-    runs-on: ubuntu-24.04
-    steps:
-      - name: Check out source
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - name: Match tag to Cargo package version
-        shell: bash
-        run: |
-          crate_version="$(awk -F '"' '/^version = "/ { print $2; exit }' Cargo.toml)"
-          tag_version="${GITHUB_REF_NAME#v}"
-          if [[ "$tag_version" != "$crate_version" ]]; then
-            echo "Tag $GITHUB_REF_NAME does not match the Semafuse package version ($crate_version)" >&2
-            exit 1
-          fi
-
   build:
-    name: Build ${{ matrix.target }}
+    name: Build release archives
     needs:
+      - prepare
       - quality
-      - validate-tag
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - runner: ubuntu-24.04
-            target: x86_64-unknown-linux-gnu
-            archive: tar.gz
-          - runner: ubuntu-24.04-arm
-            target: aarch64-unknown-linux-gnu
-            archive: tar.gz
-          - runner: macos-15-intel
-            target: x86_64-apple-darwin
-            archive: tar.gz
-          - runner: macos-15
-            target: aarch64-apple-darwin
-            archive: tar.gz
-          - runner: windows-2025
-            target: x86_64-pc-windows-msvc
-            archive: zip
-    runs-on: ${{ matrix.runner }}
-    steps:
-      - name: Check out source
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - name: Install Rust
-        shell: bash
-        run: |
-          rustup target add "${{ matrix.target }}"
-          rustc --version --verbose
-      - name: Build semafuse release binary
-        shell: bash
-        run: cargo build --locked --release --target "${{ matrix.target }}" -p semafuse --bin semafuse
-      - name: Build semafused release binary
-        if: matrix.archive == 'tar.gz'
-        shell: bash
-        run: cargo build --locked --release --target "${{ matrix.target }}" -p semafuse --bin semafused --no-default-features --features models-candle
-      - name: Smoke-test semafuse
-        shell: bash
-        run: |
-          binary="target/${{ matrix.target }}/release/semafuse"
-          if [[ "$RUNNER_OS" == "Windows" ]]; then
-            binary="${binary}.exe"
-          fi
-          "$binary" --version
-      - name: Smoke-test semafused
-        if: matrix.archive == 'tar.gz'
-        shell: bash
-        run: target/${{ matrix.target }}/release/semafused --version
-      - name: Package Unix binary
-        if: matrix.archive == 'tar.gz'
-        shell: bash
-        run: |
-          archive="semafuse-${GITHUB_REF_NAME}-${{ matrix.target }}.tar.gz"
-          staging="target/release-package"
-          mkdir -p dist "$staging"
-          cp "target/${{ matrix.target }}/release/semafuse" "$staging/"
-          cp "target/${{ matrix.target }}/release/semafused" "$staging/"
-          cp semafused.example.toml "$staging/"
-          cp LICENSE "$staging/"
-          tar -C "$staging" -czf "dist/$archive" semafuse semafused semafused.example.toml LICENSE
-      - name: Package Windows binary
-        if: matrix.archive == 'zip'
-        shell: pwsh
-        run: |
-          $archive = "semafuse-$env:GITHUB_REF_NAME-${{ matrix.target }}.zip"
-          $staging = "target\release-package"
-          New-Item -ItemType Directory -Force dist | Out-Null
-          New-Item -ItemType Directory -Force $staging | Out-Null
-          Copy-Item "target\${{ matrix.target }}\release\semafuse.exe" $staging
-          Copy-Item LICENSE $staging
-          Compress-Archive -Path "$staging\*" -DestinationPath "dist\$archive"
-      - name: Upload packaged binary
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: release-${{ matrix.target }}
-          path: dist/*
-          if-no-files-found: error
-          compression-level: 0
-          retention-days: 1
+    if: needs.prepare.outputs.should_release == 'true'
+    uses: ./.github/workflows/release-build.yml
+    permissions:
+      contents: read
+    with:
+      version: ${{ needs.prepare.outputs.version }}
 
   release:
     name: Publish GitHub release
-    needs: build
+    needs:
+      - prepare
+      - build
+    if: needs.prepare.outputs.should_release == 'true'
     runs-on: ubuntu-24.04
+    timeout-minutes: 15
     permissions:
       contents: write
     steps:
+      - name: Check out release notes
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - name: Download packaged binaries
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
@@ -140,23 +208,128 @@ jobs:
           path: dist
           merge-multiple: true
       - name: Generate SHA-256 checksums
+        env:
+          RELEASE_ASSETS: ${{ needs.prepare.outputs.assets }}
         shell: bash
         run: |
           cd dist
-          sha256sum semafuse-* > SHA256SUMS.txt
-      - name: Create or update GitHub release
+          mapfile -t archives < <(jq -r '.[]' <<< "$RELEASE_ASSETS")
+          [[ "${#archives[@]}" -eq 5 ]]
+          for archive in "${archives[@]}"; do
+            test -s "$archive"
+          done
+          [[ "$(find . -maxdepth 1 -type f | wc -l)" -eq "${#archives[@]}" ]]
+          sha256sum "${archives[@]}" > SHA256SUMS.txt
+          sha256sum --check --strict SHA256SUMS.txt
+      - name: Prepare release notes
         env:
-          GH_TOKEN: ${{ github.token }}
+          RELEASE_VERSION: ${{ needs.prepare.outputs.version }}
         shell: bash
         run: |
-          if gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            gh release upload "$GITHUB_REF_NAME" dist/* \
-              --repo "$GITHUB_REPOSITORY" \
-              --clobber
-          else
-            gh release create "$GITHUB_REF_NAME" dist/* \
-              --repo "$GITHUB_REPOSITORY" \
-              --verify-tag \
-              --generate-notes \
-              --title "Semafuse $GITHUB_REF_NAME"
+          awk -v section="## $RELEASE_VERSION" '
+            $0 == section { emit = 1 }
+            emit && /^## / && $0 != section { exit }
+            emit { print }
+          ' CHANGELOG.md > release-notes.md
+          test -s release-notes.md
+      - name: Create tag and GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ needs.prepare.outputs.tag }}
+          RELEASE_VERSION: ${{ needs.prepare.outputs.version }}
+        shell: bash
+        run: |
+          cleanup_failed_draft() {
+            status=$?
+            trap - EXIT
+            if (( status != 0 )); then
+              set +e
+              draft_id="$(gh api --paginate --slurp \
+                "repos/$GITHUB_REPOSITORY/releases?per_page=100" \
+                | jq -r --arg tag "$RELEASE_TAG" --arg target "$GITHUB_SHA" \
+                  --arg owner "$release_owner" \
+                  'first(.[][] | select(
+                    .draft and .tag_name == $tag and .target_commitish == $target and
+                    ((.body // "") | contains($owner))
+                  ) | .id) // empty')"
+              if [[ -n "$draft_id" ]]; then
+                echo "Deleting incomplete draft release $draft_id after publication failure." >&2
+                if gh api --method DELETE "repos/$GITHUB_REPOSITORY/releases/$draft_id"; then
+                  if remaining_release_id="$(gh api --paginate --slurp \
+                    "repos/$GITHUB_REPOSITORY/releases?per_page=100" \
+                    | jq -r --arg tag "$RELEASE_TAG" \
+                      'first(.[][] | select(.tag_name == $tag) | .id) // empty')" && \
+                    tag_target="$(gh api \
+                    "repos/$GITHUB_REPOSITORY/git/ref/tags/$RELEASE_TAG" \
+                    --jq '.object.sha' 2>/dev/null)"
+                  then
+                    if [[ -z "$remaining_release_id" && "$tag_target" == "$GITHUB_SHA" ]]; then
+                      echo "Deleting the workflow-owned orphan tag $RELEASE_TAG." >&2
+                      gh api --method DELETE \
+                        "repos/$GITHUB_REPOSITORY/git/refs/tags/$RELEASE_TAG"
+                    fi
+                  fi
+                fi
+              fi
+            fi
+            exit "$status"
+          }
+
+          create_flags=(--draft)
+          make_latest=true
+          if [[ "$RELEASE_VERSION" == *-* ]]; then
+            create_flags+=(--prerelease)
+            make_latest=false
           fi
+
+          release_owner="<!-- semafuse-release-run:${GITHUB_RUN_ID}:${GITHUB_RUN_ATTEMPT} -->"
+          printf '\n%s\n' "$release_owner" >> release-notes.md
+
+          existing_ref="$(gh api \
+            "repos/$GITHUB_REPOSITORY/git/matching-refs/tags/$RELEASE_TAG" \
+            | jq -r --arg ref "refs/tags/$RELEASE_TAG" \
+              '.[] | select(.ref == $ref) | .ref')"
+          if [[ -n "$existing_ref" ]]; then
+            echo "Tag $RELEASE_TAG appeared while this workflow was running; refusing to overwrite it." >&2
+            exit 1
+          fi
+
+          draft_id="$(gh api --paginate --slurp \
+            "repos/$GITHUB_REPOSITORY/releases?per_page=100" \
+            | jq -r --arg tag "$RELEASE_TAG" \
+              'first(.[][] | select(.draft and .tag_name == $tag) | .id) // empty')"
+          if [[ -n "$draft_id" ]]; then
+            echo "Draft release $draft_id appeared while this workflow was running; refusing to replace it." >&2
+            exit 1
+          fi
+
+          # Keep publication separate from draft creation. If the publish
+          # response is lost after GitHub creates the tag, the published
+          # release remains paired with it instead of gh deleting the release.
+          trap cleanup_failed_draft EXIT
+          gh release create "$RELEASE_TAG" dist/* \
+            --repo "$GITHUB_REPOSITORY" \
+            --target "$GITHUB_SHA" \
+            --generate-notes \
+            --notes-file release-notes.md \
+            "${create_flags[@]}" \
+            --title "Semafuse $RELEASE_TAG"
+
+          owned_draft_id="$(gh api --paginate --slurp \
+            "repos/$GITHUB_REPOSITORY/releases?per_page=100" \
+            | jq -er --arg tag "$RELEASE_TAG" --arg target "$GITHUB_SHA" \
+              --arg owner "$release_owner" \
+              '[.[][] | select(
+                .draft and .tag_name == $tag and .target_commitish == $target and
+                ((.body // "") | contains($owner))
+              )] | if length == 1 then .[0].id else error(
+                "expected exactly one draft owned by this workflow run"
+              ) end')"
+
+          published_release="$(gh api --method PATCH \
+            "repos/$GITHUB_REPOSITORY/releases/$owned_draft_id" \
+            -F draft=false -f make_latest="$make_latest")"
+          jq -e --arg tag "$RELEASE_TAG" --arg target "$GITHUB_SHA" '
+            (.draft | not) and .tag_name == $tag and .target_commitish == $target
+          ' <<< "$published_release" > /dev/null
+          trap - EXIT

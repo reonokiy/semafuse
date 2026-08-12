@@ -48,7 +48,7 @@ impl ModelEngines {
 
 /// Load configured engines without allowing the long-running process to fetch
 /// artifacts. Model directories must have been provisioned by a one-shot
-/// command before `semafused` starts.
+/// command before daemon mode starts.
 #[cfg(feature = "models-candle")]
 pub fn load_engines(config: &ModelsConfig) -> Result<ModelEngines, String> {
     candle::load_engines(config)
@@ -57,7 +57,7 @@ pub fn load_engines(config: &ModelsConfig) -> Result<ModelEngines, String> {
 #[cfg(not(feature = "models-candle"))]
 pub fn load_engines(_config: &ModelsConfig) -> Result<ModelEngines, String> {
     Err(
-        "models are configured, but this semafused binary was built without the `models-candle` feature"
+        "models are configured, but this Semafuse binary was built without the `models-candle` feature"
             .to_owned(),
     )
 }

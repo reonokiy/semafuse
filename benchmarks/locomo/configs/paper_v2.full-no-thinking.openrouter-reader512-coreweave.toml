@@ -1,0 +1,68 @@
+# Stable final-reader profile selected from OpenRouter's live endpoints API
+# after StreamLake's shared pool repeatedly returned 429. CoreWeave serves the
+# same instruct checkpoint in BF16 and supports every requested parameter.
+# All methods share this exact provider and 512-token answer cap.
+schema_version = 1
+name = "LoCoMo paper-v2 full prompt-only LazyMem no-thinking CoreWeave reader-512 ablation"
+baseline_method = "bm25_top50"
+
+[answerer]
+expected_provider = "CoreWeave"
+temperature = 0.0
+top_p = 1.0
+max_tokens = 512
+enable_thinking = false
+
+[answerer.endpoint]
+base_url = "https://openrouter.ai/api/v1"
+model = "qwen/qwen3-30b-a3b-instruct-2507"
+api_key_env = "OPENROUTER_API_KEY"
+thinking_control = "no_control"
+timeout_secs = 180
+max_retries = 2
+
+[answerer.endpoint.extra_body.provider]
+order = ["CoreWeave"]
+allow_fallbacks = false
+require_parameters = true
+data_collection = "deny"
+max_price = { prompt = 0.11, completion = 0.31 }
+
+[pricing]
+input_usd_per_million = 0.11
+output_usd_per_million = 0.31
+max_reported_usage_usd = 3.50
+
+[[methods]]
+kind = "bm25"
+id = "bm25_top50"
+limit = 50
+
+[[methods]]
+kind = "semafuse"
+id = "lazymem_prompt_only_no_thinking"
+config = "../../lazymem/configs/semafuse_lazymem.openrouter-full-no-thinking.toml"
+limit = 50
+stages = ["retrieved"]
+
+[[imported_rankings]]
+id = "mem0_oss_raw_source_ranking_rag"
+source_method = "mem0_oss_raw"
+journal = "../results/mem0-openrouter-v2/per-question.jsonl"
+journal_sha256 = "e24168622d7962c5ade065976364f5241c3ec7da3eb7179ff172ba2378435673"
+summary = "../results/mem0-openrouter-v2/summary.json"
+summary_sha256 = "65eab82d9c5e7364d99d7ad25b782897c00f043585b253ef4d9f244c9cf68b6f"
+source_run_key = "67799c9fe3e34c2814d467a90404c224404d7c37aebb5cac2bdfd5d56671dee9"
+limit = 50
+cohort = "retrieval_eligible"
+
+[[imported_rankings]]
+id = "amem_paper_original_source_ranking_rag"
+source_method = "amem_paper_original"
+journal = "../results/amem-paper-original-openrouter/per-question.jsonl"
+journal_sha256 = "ad4d1ba1f6c97da8653719c07add511af9b68f2c98afad63a170b8c911f5d0d8"
+summary = "../results/amem-paper-original-openrouter/summary.json"
+summary_sha256 = "984c3fa1d75397b5f433688f99a72723c06b0e4a30b559dfd7ce8c15830cdaab"
+source_run_key = "b1c2face0a5f17810feaef047f5376ef9ddada15a43e65d55b058e27420067ae"
+limit = 50
+cohort = "retrieval_eligible"

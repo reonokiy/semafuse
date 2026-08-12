@@ -1,0 +1,23 @@
+# Paid development/common-evaluator run of the Mem0 raw-vector ablation.
+# infer=false means this is not Mem0's LLM extraction or a paper score.
+schema_version = 1
+name = "LoCoMo paper-v2 Mem0 OSS raw-vector retrieval development"
+baseline_method = "bm25"
+
+[[methods]]
+kind = "bm25"
+id = "bm25"
+limit = 50
+
+[[methods]]
+kind = "external_jsonl"
+id = "mem0_oss_raw"
+worker_config = "../../external_memory/configs/mem0_oss.locomo314.openrouter-raw.json"
+command = ["python", "-m", "semafuse_external_memory.worker"]
+working_directory = "../../external_memory"
+python_path = "../../external_memory/src"
+source_root = "../../external_memory/src/semafuse_external_memory"
+dependency_lock = "../../external_memory/methods/mem0_oss/requirements.txt"
+top_k = 50
+max_context_tokens = 16384
+timeout_seconds = 600

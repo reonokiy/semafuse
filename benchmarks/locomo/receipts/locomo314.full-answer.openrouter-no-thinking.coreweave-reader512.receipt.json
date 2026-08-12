@@ -1,0 +1,735 @@
+{
+  "artifacts": {
+    "answer_binding_sha256": "8abd2738705c0df650a29ae797b892a277f43f7bc61472ef222f4c6a95ce8d8e",
+    "answers_journal": {
+      "bytes": 2834304,
+      "records": 1566,
+      "sha256": "e5c5a568fbf46e9dc930002a19453329333b981ef91e74daf4da194ddc5aa72e"
+    },
+    "memory_binding_sha256": "8d431eb56c2ca8d06a6a4044ad06d19b66c14be194f0068587a06a68ac411e33",
+    "memory_journal": {
+      "bytes": 112675902,
+      "records": 1566,
+      "sha256": "ac1b92a8f4331db8e9765f2145b9b388e47709fedd0a31add6e29fa5c334a90b"
+    },
+    "summary": {
+      "bytes": 28434,
+      "embedded_manifest_sha256": "69b2c1ee6753f660231578d726e915cacff5eb142aabda439c18051ac771d180",
+      "embedded_report_sha256": "9d78fcfed79ea6d65da392dc42d74c214c938d51bc992357affe6c8dcc7a2ea9",
+      "sha256": "821865d58f7d2797df79023dff22f7a218c263cfe8cedd161ed1f9bc07fb7e98"
+    }
+  },
+  "baseline": "bm25_top50",
+  "benchmark": "LoCoMo",
+  "bootstrap": {
+    "confidence_level": 0.95,
+    "interval": "percentile_linear",
+    "prng": "SplitMix64_unbiased_rejection_sampling",
+    "resamples": 2000,
+    "sampling": "with_replacement",
+    "seed": 42,
+    "unit": "opaque_question_id"
+  },
+  "classification": {
+    "common_answer_provider": "CoreWeave",
+    "metric": "locomo_official_f1",
+    "metric_notice": "Released category-aware LoCoMo token F1; not the LazyMem binary LLM judge.",
+    "metric_units": "fraction",
+    "paper_reproduction_eligible": false,
+    "reasoning_profile": "no_thinking"
+  },
+  "limitations": [
+    "Reference labels are absent from the receipt inputs, so per-question F1 is not text-rescored.",
+    "Imported Mem0 and A-MEM outputs are pinned source-ranking RAG, not native memory contexts.",
+    "Embedding, reranker, and failed uncommitted call costs are outside journal accounting.",
+    "Raw memory contexts and predictions remain only in the local input journals."
+  ],
+  "methods": [
+    {
+      "cohort": "retrieval_eligible",
+      "id": "amem_paper_original_source_ranking_rag",
+      "kind": "imported_source_ranking_rag",
+      "limit": 50,
+      "native_memory_reused": false,
+      "source_journal_sha256": "ad4d1ba1f6c97da8653719c07add511af9b68f2c98afad63a170b8c911f5d0d8",
+      "source_method": "amem_paper_original",
+      "source_run_key": "b1c2face0a5f17810feaef047f5376ef9ddada15a43e65d55b058e27420067ae",
+      "source_summary_sha256": "984c3fa1d75397b5f433688f99a72723c06b0e4a30b559dfd7ce8c15830cdaab"
+    },
+    {
+      "cohort": "all_qa",
+      "id": "bm25_top50",
+      "kind": "bm25",
+      "limit": 50
+    },
+    {
+      "cohort": "all_qa",
+      "config_sha256": "3b45edea3c551f47b772c9510827fa816c11b81ab0f6d9a161b7e6d21ad79c48",
+      "embedding_model": "perplexity/pplx-embed-v1-0.6b",
+      "id": "lazymem_prompt_only_no_thinking",
+      "kind": "semafuse_full_memory_and_retrieval",
+      "limit": 50,
+      "model_revisions_verified": false,
+      "output_role": "main",
+      "reranker_model": "voyageai/rerank-2.5",
+      "resolved_config_sha256": "76eba19ad78e05bacf111a0a036409e4ddde7a387f370005e056c479546cd2e0"
+    },
+    {
+      "cohort": "all_qa",
+      "config_sha256": "3b45edea3c551f47b772c9510827fa816c11b81ab0f6d9a161b7e6d21ad79c48",
+      "embedding_model": "perplexity/pplx-embed-v1-0.6b",
+      "id": "lazymem_prompt_only_no_thinking::retrieved",
+      "kind": "semafuse_full_memory_and_retrieval",
+      "limit": 50,
+      "model_revisions_verified": false,
+      "output_role": "retrieval_stage",
+      "parent_method": "lazymem_prompt_only_no_thinking",
+      "reranker_model": "voyageai/rerank-2.5",
+      "resolved_config_sha256": "76eba19ad78e05bacf111a0a036409e4ddde7a387f370005e056c479546cd2e0"
+    },
+    {
+      "cohort": "retrieval_eligible",
+      "id": "mem0_oss_raw_source_ranking_rag",
+      "kind": "imported_source_ranking_rag",
+      "limit": 50,
+      "native_memory_reused": false,
+      "source_journal_sha256": "e24168622d7962c5ade065976364f5241c3ec7da3eb7179ff172ba2378435673",
+      "source_method": "mem0_oss_raw",
+      "source_run_key": "67799c9fe3e34c2814d467a90404c224404d7c37aebb5cac2bdfd5d56671dee9",
+      "source_summary_sha256": "65eab82d9c5e7364d99d7ad25b782897c00f043585b253ef4d9f244c9cf68b6f"
+    }
+  ],
+  "population": {
+    "artifact_output_cohorts": {
+      "all_qa_314": {
+        "category_counts": {
+          "multi-hop": 69,
+          "open-domain": 20,
+          "single-hop": 160,
+          "temporal": 65
+        },
+        "output_method_count": 3,
+        "pair_count": 942,
+        "question_count": 314,
+        "question_set_sha256": "e17078090da0740cdcb279fa72e0cf2f43665463389fef490cd06975d91c74aa"
+      },
+      "retrieval_eligible_312": {
+        "category_counts": {
+          "multi-hop": 69,
+          "open-domain": 18,
+          "single-hop": 160,
+          "temporal": 65
+        },
+        "comparison_method_count": 5,
+        "output_method_count": 2,
+        "pair_count": 624,
+        "question_count": 312,
+        "question_set_sha256": "98dbfcf95d707909ac040aebcaec7fd0b9e5c3c12ca1ca2c2ce4e532d3dcf3dc"
+      }
+    },
+    "evaluator_metadata_sha256": "fc28c312f2e6730240d4c14b46c6d79223935a41384e0f6ff9dfe45bb1fd46c0",
+    "expected_answer_records": 1566,
+    "expected_memory_records": 1566,
+    "opaque_question_ids_serialized": false
+  },
+  "provenance": {
+    "answer_prompt_sha256": "230848966360d596b66656bd326e7c8ee0c400b05930fd348a7d4a693a90eca6",
+    "answer_prompt_version": "semafuse-locomo-common-answer/v1",
+    "common_answer_model": "qwen/qwen3-30b-a3b-instruct-2507",
+    "dataset_sha256": "79fa87e90f04081343b8c8debecb80a9a6842b76a7aa537dc9fdf651ea698ff4",
+    "implementation": {
+      "benchmark_code_sha256": "d73f95faec900328c3c95c2508fe03abc29f46f8666a62d662020cc6aedd82ce",
+      "cargo_lock_sha256": "d54f705298264922fe4e5dc418cd5624de00647f9b716a76bd6a28404c31925a",
+      "crate_version": "0.1.0"
+    },
+    "memory_run_key": "8a9e7a352fdda98b57ac8b3dfd20544fe97feb8c92d8c72e5c5f8471c44083d9",
+    "official_scorer_sha256": "8e3be5d57ff2ff9ec5cd05939592f468c5f3f1fd95d13e431932bdf6bf0fd6fd",
+    "run_key": "06417683904c0d88b7e3e45102f498ec1a6b58c1874c89ac7ed6bf1aa9ae578a",
+    "tool": {
+      "path": "benchmarks/locomo/compact_answer_receipt.py",
+      "sha256": "215504ca7d2a1514b898a614124fadf9f1208bdafc03f9ccad42e6ea139975e0"
+    },
+    "upstream_commit": "3eb6f2c585f5e1699204e3c3bdf7adc5c28cb376"
+  },
+  "results": {
+    "official_f1_by_cohort": {
+      "all_qa_314": {
+        "methods": [
+          "bm25_top50",
+          "lazymem_prompt_only_no_thinking",
+          "lazymem_prompt_only_no_thinking::retrieved"
+        ],
+        "official_f1": {
+          "baseline_method": "bm25_top50",
+          "bootstrap": {
+            "confidence_level": 0.95,
+            "interval_method": "percentile_linear",
+            "resamples": 2000,
+            "seed": 42
+          },
+          "comparisons": {
+            "lazymem_prompt_only_no_thinking": {
+              "baseline_method": "bm25_top50",
+              "delta_ci95": {
+                "lower": 0.010028337821856716,
+                "upper": 0.04201325081428738
+              },
+              "denominator": 314,
+              "losses": 88,
+              "mean_delta": 0.025068078596205107,
+              "method": "lazymem_prompt_only_no_thinking",
+              "ties": 110,
+              "wins": 116
+            },
+            "lazymem_prompt_only_no_thinking::retrieved": {
+              "baseline_method": "bm25_top50",
+              "delta_ci95": {
+                "lower": 0.017035711570737456,
+                "upper": 0.047464796033956036
+              },
+              "denominator": 314,
+              "losses": 84,
+              "mean_delta": 0.03214406314066561,
+              "method": "lazymem_prompt_only_no_thinking::retrieved",
+              "ties": 124,
+              "wins": 106
+            }
+          },
+          "denominator": 314,
+          "direction": "higher_is_better",
+          "methods": {
+            "bm25_top50": {
+              "by_question_type": {
+                "multi-hop": {
+                  "ci95": {
+                    "lower": 0.1490986689027967,
+                    "upper": 0.2521364345289141
+                  },
+                  "denominator": 69,
+                  "mean": 0.19779198117605185
+                },
+                "open-domain": {
+                  "ci95": {
+                    "lower": 0.06803498514256989,
+                    "upper": 0.1732010072682955
+                  },
+                  "denominator": 20,
+                  "mean": 0.118084792443117
+                },
+                "single-hop": {
+                  "ci95": {
+                    "lower": 0.19410870136693045,
+                    "upper": 0.2482433919381722
+                  },
+                  "denominator": 160,
+                  "mean": 0.2207462283751135
+                },
+                "temporal": {
+                  "ci95": {
+                    "lower": 0.04179883323081621,
+                    "upper": 0.08137536859285803
+                  },
+                  "denominator": 65,
+                  "mean": 0.06074802062790918
+                }
+              },
+              "overall": {
+                "ci95": {
+                  "lower": 0.15630372979628532,
+                  "upper": 0.1958926365439942
+                },
+                "denominator": 314,
+                "mean": 0.17604254914280948
+              }
+            },
+            "lazymem_prompt_only_no_thinking": {
+              "by_question_type": {
+                "multi-hop": {
+                  "ci95": {
+                    "lower": 0.21604218517087648,
+                    "upper": 0.3234466576468703
+                  },
+                  "denominator": 69,
+                  "mean": 0.2666379435112449
+                },
+                "open-domain": {
+                  "ci95": {
+                    "lower": 0.04807941743922133,
+                    "upper": 0.12110318076288075
+                  },
+                  "denominator": 20,
+                  "mean": 0.08413274658871302
+                },
+                "single-hop": {
+                  "ci95": {
+                    "lower": 0.22167056937025134,
+                    "upper": 0.2755462166995826
+                  },
+                  "denominator": 160,
+                  "mean": 0.2473206374533935
+                },
+                "temporal": {
+                  "ci95": {
+                    "lower": 0.03851287686950944,
+                    "upper": 0.07166270504877195
+                  },
+                  "denominator": 65,
+                  "mean": 0.05379633974549948
+                }
+              },
+              "overall": {
+                "ci95": {
+                  "lower": 0.18131387562067675,
+                  "upper": 0.22185559389770404
+                },
+                "denominator": 314,
+                "mean": 0.20111062773901459
+              }
+            },
+            "lazymem_prompt_only_no_thinking::retrieved": {
+              "by_question_type": {
+                "multi-hop": {
+                  "ci95": {
+                    "lower": 0.22029134052859728,
+                    "upper": 0.3252248980660896
+                  },
+                  "denominator": 69,
+                  "mean": 0.26991704420104234
+                },
+                "open-domain": {
+                  "ci95": {
+                    "lower": 0.05617056899610292,
+                    "upper": 0.14843801112089947
+                  },
+                  "denominator": 20,
+                  "mean": 0.10187655443492011
+                },
+                "single-hop": {
+                  "ci95": {
+                    "lower": 0.22460793219942046,
+                    "upper": 0.27811252461042085
+                  },
+                  "denominator": 160,
+                  "mean": 0.25053724532173516
+                },
+                "temporal": {
+                  "ci95": {
+                    "lower": 0.050652609850697555,
+                    "upper": 0.0938487685508831
+                  },
+                  "denominator": 65,
+                  "mean": 0.07112045949174199
+                }
+              },
+              "overall": {
+                "ci95": {
+                  "lower": 0.18755948257268518,
+                  "upper": 0.22922992530776318
+                },
+                "denominator": 314,
+                "mean": 0.20818661228347513
+              }
+            }
+          },
+          "metric": "locomo_official_f1",
+          "schema_version": 1
+        },
+        "question_n": 314
+      },
+      "retrieval_eligible_312": {
+        "methods": [
+          "amem_paper_original_source_ranking_rag",
+          "bm25_top50",
+          "lazymem_prompt_only_no_thinking",
+          "lazymem_prompt_only_no_thinking::retrieved",
+          "mem0_oss_raw_source_ranking_rag"
+        ],
+        "official_f1": {
+          "baseline_method": "bm25_top50",
+          "bootstrap": {
+            "confidence_level": 0.95,
+            "interval_method": "percentile_linear",
+            "resamples": 2000,
+            "seed": 42
+          },
+          "comparisons": {
+            "amem_paper_original_source_ranking_rag": {
+              "baseline_method": "bm25_top50",
+              "delta_ci95": {
+                "lower": -0.0195532050035101,
+                "upper": 0.016488869254627562
+              },
+              "denominator": 312,
+              "losses": 107,
+              "mean_delta": -0.0012980040235493879,
+              "method": "amem_paper_original_source_ranking_rag",
+              "ties": 111,
+              "wins": 94
+            },
+            "lazymem_prompt_only_no_thinking": {
+              "baseline_method": "bm25_top50",
+              "delta_ci95": {
+                "lower": 0.010158345687678342,
+                "upper": 0.04177442951635985
+              },
+              "denominator": 312,
+              "losses": 87,
+              "mean_delta": 0.025229840674843552,
+              "method": "lazymem_prompt_only_no_thinking",
+              "ties": 109,
+              "wins": 116
+            },
+            "lazymem_prompt_only_no_thinking::retrieved": {
+              "baseline_method": "bm25_top50",
+              "delta_ci95": {
+                "lower": 0.01701597074311406,
+                "upper": 0.0483152928534067
+              },
+              "denominator": 312,
+              "losses": 83,
+              "mean_delta": 0.032358157178485225,
+              "method": "lazymem_prompt_only_no_thinking::retrieved",
+              "ties": 123,
+              "wins": 106
+            },
+            "mem0_oss_raw_source_ranking_rag": {
+              "baseline_method": "bm25_top50",
+              "delta_ci95": {
+                "lower": 0.012337208604502844,
+                "upper": 0.04288399076352816
+              },
+              "denominator": 312,
+              "losses": 94,
+              "mean_delta": 0.027319618533170647,
+              "method": "mem0_oss_raw_source_ranking_rag",
+              "ties": 120,
+              "wins": 98
+            }
+          },
+          "denominator": 312,
+          "direction": "higher_is_better",
+          "methods": {
+            "amem_paper_original_source_ranking_rag": {
+              "by_question_type": {
+                "multi-hop": {
+                  "ci95": {
+                    "lower": 0.1947186455596158,
+                    "upper": 0.3050626338434112
+                  },
+                  "denominator": 69,
+                  "mean": 0.247969750771795
+                },
+                "open-domain": {
+                  "ci95": {
+                    "lower": 0.05172845124960397,
+                    "upper": 0.129375930423689
+                  },
+                  "denominator": 18,
+                  "mean": 0.08974808956213536
+                },
+                "single-hop": {
+                  "ci95": {
+                    "lower": 0.17330655436146222,
+                    "upper": 0.22928579532596946
+                  },
+                  "denominator": 160,
+                  "mean": 0.20080344499679534
+                },
+                "temporal": {
+                  "ci95": {
+                    "lower": 0.042331722627056305,
+                    "upper": 0.0824252881093894
+                  },
+                  "denominator": 65,
+                  "mean": 0.06125778942967382
+                }
+              },
+              "overall": {
+                "ci95": {
+                  "lower": 0.15497241032310782,
+                  "upper": 0.1981207233519067
+                },
+                "denominator": 312,
+                "mean": 0.17575540361470623
+              }
+            },
+            "bm25_top50": {
+              "by_question_type": {
+                "multi-hop": {
+                  "ci95": {
+                    "lower": 0.1490986689027967,
+                    "upper": 0.2521364345289141
+                  },
+                  "denominator": 69,
+                  "mean": 0.19779198117605185
+                },
+                "open-domain": {
+                  "ci95": {
+                    "lower": 0.07243966692797486,
+                    "upper": 0.1879295287983399
+                  },
+                  "denominator": 18,
+                  "mean": 0.12916658895310654
+                },
+                "single-hop": {
+                  "ci95": {
+                    "lower": 0.19410870136693045,
+                    "upper": 0.2482433919381722
+                  },
+                  "denominator": 160,
+                  "mean": 0.2207462283751135
+                },
+                "temporal": {
+                  "ci95": {
+                    "lower": 0.04179883323081621,
+                    "upper": 0.08137536859285803
+                  },
+                  "denominator": 65,
+                  "mean": 0.06074802062790918
+                }
+              },
+              "overall": {
+                "ci95": {
+                  "lower": 0.1583398179124463,
+                  "upper": 0.1986539463750086
+                },
+                "denominator": 312,
+                "mean": 0.17705340763825564
+              }
+            },
+            "lazymem_prompt_only_no_thinking": {
+              "by_question_type": {
+                "multi-hop": {
+                  "ci95": {
+                    "lower": 0.21604218517087648,
+                    "upper": 0.3234466576468703
+                  },
+                  "denominator": 69,
+                  "mean": 0.2666379435112449
+                },
+                "open-domain": {
+                  "ci95": {
+                    "lower": 0.05175992374242732,
+                    "upper": 0.1297464425297659
+                  },
+                  "denominator": 18,
+                  "mean": 0.09146062752281243
+                },
+                "single-hop": {
+                  "ci95": {
+                    "lower": 0.22167056937025134,
+                    "upper": 0.2755462166995826
+                  },
+                  "denominator": 160,
+                  "mean": 0.2473206374533935
+                },
+                "temporal": {
+                  "ci95": {
+                    "lower": 0.03851287686950944,
+                    "upper": 0.07166270504877195
+                  },
+                  "denominator": 65,
+                  "mean": 0.05379633974549948
+                }
+              },
+              "overall": {
+                "ci95": {
+                  "lower": 0.1824199306207841,
+                  "upper": 0.22402747197936143
+                },
+                "denominator": 312,
+                "mean": 0.20228324831309918
+              }
+            },
+            "lazymem_prompt_only_no_thinking::retrieved": {
+              "by_question_type": {
+                "multi-hop": {
+                  "ci95": {
+                    "lower": 0.22029134052859728,
+                    "upper": 0.3252248980660896
+                  },
+                  "denominator": 69,
+                  "mean": 0.26991704420104234
+                },
+                "open-domain": {
+                  "ci95": {
+                    "lower": 0.062116988258707234,
+                    "upper": 0.1619780267959277
+                  },
+                  "denominator": 18,
+                  "mean": 0.1112968363616871
+                },
+                "single-hop": {
+                  "ci95": {
+                    "lower": 0.22460793219942046,
+                    "upper": 0.27811252461042085
+                  },
+                  "denominator": 160,
+                  "mean": 0.25053724532173516
+                },
+                "temporal": {
+                  "ci95": {
+                    "lower": 0.050652609850697555,
+                    "upper": 0.0938487685508831
+                  },
+                  "denominator": 65,
+                  "mean": 0.07112045949174199
+                }
+              },
+              "overall": {
+                "ci95": {
+                  "lower": 0.18945714928828908,
+                  "upper": 0.23185617581425905
+                },
+                "denominator": 312,
+                "mean": 0.20941156481674086
+              }
+            },
+            "mem0_oss_raw_source_ranking_rag": {
+              "by_question_type": {
+                "multi-hop": {
+                  "ci95": {
+                    "lower": 0.22506927551219863,
+                    "upper": 0.3303529921212678
+                  },
+                  "denominator": 69,
+                  "mean": 0.2738744289351076
+                },
+                "open-domain": {
+                  "ci95": {
+                    "lower": 0.0666626553277492,
+                    "upper": 0.15542539693140897
+                  },
+                  "denominator": 18,
+                  "mean": 0.11140583938379903
+                },
+                "single-hop": {
+                  "ci95": {
+                    "lower": 0.20968104142588598,
+                    "upper": 0.26579760915712747
+                  },
+                  "denominator": 160,
+                  "mean": 0.2376795103077514
+                },
+                "temporal": {
+                  "ci95": {
+                    "lower": 0.05185021654193449,
+                    "upper": 0.09869222813273584
+                  },
+                  "denominator": 65,
+                  "mean": 0.07435418170483032
+                }
+              },
+              "overall": {
+                "ci95": {
+                  "lower": 0.18438002168597292,
+                  "upper": 0.22657398917388907
+                },
+                "denominator": 312,
+                "mean": 0.20437302617142628
+              }
+            }
+          },
+          "metric": "locomo_official_f1",
+          "schema_version": 1
+        },
+        "question_n": 312
+      }
+    }
+  },
+  "schema_version": 1,
+  "track": "paper-v2-selection/full-answer-development",
+  "usage": {
+    "answer_completion_tokens_per_call": 46.264367816091955,
+    "answerer": {
+      "calls": 1566,
+      "completion_tokens": 72450,
+      "cost": 1.3344667,
+      "prompt_tokens": 13127317
+    },
+    "answerer_response_telemetry": {
+      "finish_reason_response_counts": {
+        "stop": 1566
+      },
+      "logical_responses": 1566,
+      "model_response_counts": {
+        "qwen/qwen3-30b-a3b-instruct-2507": 1566
+      },
+      "provider_response_counts": {
+        "CoreWeave": 1566
+      },
+      "reasoning": {
+        "reported_tokens": 0,
+        "responses_missing_token_count": 0,
+        "responses_with_substantive_reasoning": 0,
+        "responses_without_substantive_reasoning": 1566
+      },
+      "responses_missing_finish_reason": 0,
+      "responses_missing_model": 0,
+      "responses_missing_provider": 0,
+      "validation_retry_responses": 0
+    },
+    "configured_fuse_usd": 3.5,
+    "estimated_or_reported_usd": 3.27027846,
+    "processor": {
+      "calls": 9072,
+      "completion_tokens": 3262118,
+      "cost": 1.9358117600000004,
+      "prompt_tokens": 12780234
+    },
+    "processor_completion_tokens_per_call": 359.5809082892416,
+    "processor_response_telemetry": {
+      "finish_reason_response_counts": {
+        "length": 29,
+        "stop": 9043
+      },
+      "logical_responses": 9072,
+      "model_response_counts": {
+        "qwen/qwen3-32b": 9072
+      },
+      "provider_response_counts": {
+        "DeepInfra": 9072
+      },
+      "reasoning": {
+        "reported_tokens": 0,
+        "responses_missing_token_count": 0,
+        "responses_with_substantive_reasoning": 0,
+        "responses_without_substantive_reasoning": 9072
+      },
+      "responses_missing_finish_reason": 0,
+      "responses_missing_model": 0,
+      "responses_missing_provider": 0,
+      "validation_retry_responses": 29
+    },
+    "scope": "semafuse_processor_and_common_answerer_only",
+    "untracked_cost_categories": [
+      "embedding",
+      "reranker",
+      "failed_uncommitted_completion_calls"
+    ]
+  },
+  "validation": {
+    "absolute_paths_serialized": false,
+    "answer_prompt_model_and_provider_bound": true,
+    "answer_reasoning_absent_and_zero_tokens": true,
+    "caller_hash_pins_supplied_and_matched": true,
+    "cohort_314_and_312_coverage_validated": true,
+    "complete_manifest_and_summary": true,
+    "context_hashes_and_byte_counts_validated": 1566,
+    "credentials_serialized": false,
+    "finish_reason_contract_validated": true,
+    "journal_envelopes_and_run_keys_validated": true,
+    "manifest_and_processor_no_thinking_profile_bound": true,
+    "memory_answer_pair_sets_identical": true,
+    "memory_outputs_bound_to_manifest_method_identity": true,
+    "official_f1_text_rescored": false,
+    "official_question_sets_categories_and_metadata_pinned": true,
+    "prediction_hashes_validated": 1566,
+    "processor_reasoning_absent_with_delimiter_allowance": true,
+    "raw_text_serialized": false,
+    "recursive_safety_scan_passed": true,
+    "summary_means_deltas_and_bootstrap_recomputed": true,
+    "unique_method_question_pairs_validated": true,
+    "usage_and_response_telemetry_reconciled": true
+  }
+}

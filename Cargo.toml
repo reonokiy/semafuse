@@ -1,13 +1,16 @@
 [package]
 name = "semafuse"
-version = "0.1.0"
+version = "0.1.0-beta.1"
 edition = "2024"
+rust-version = "1.97.1"
 description = "Local, agent-neutral conversation memory for coding agents"
 license = "MIT"
+repository = "https://github.com/reonokiy/semafuse"
+publish = false
 
 [features]
 default = ["services-fs"]
-benchmarks = []
+benchmarks = ["dep:dotenvy", "dep:nltk-porter"]
 daemon = [
     "dep:thiserror",
     "dep:toml",
@@ -106,41 +109,41 @@ services-yandex-disk = ["opendal/services-yandex-disk"]
 [dependencies]
 anyhow = "1.0"
 chrono = { version = "0.4", default-features = false, features = ["std"] }
-clap = { version = "4.5", features = ["derive"] }
+clap = { version = "4.6", features = ["derive"] }
 config = { version = "0.15", default-features = false, features = ["toml"] }
 dirs = "6.0"
-dotenvy = "0.15"
+dotenvy = { version = "0.15", optional = true }
 fs2 = "0.4"
 hex = "0.4"
 indicatif = "0.18"
 async-trait = "0.1"
-base64 = "0.22"
-opendal = "0.57"
+base64 = "0.23"
+opendal = "0.58"
 reqwest = { version = "0.13", default-features = false, features = ["json", "rustls"] }
 rmcp = { version = "3.1", features = ["transport-io"] }
-schemars = "1.0"
+schemars = "1.2"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
-sha2 = "0.10"
+sha2 = "0.11"
 shell-escape = "0.1"
-sqlx = { version = "0.8", features = ["runtime-tokio", "sqlite", "macros", "migrate"] }
-tokio = { version = "1.47", features = ["macros", "rt-multi-thread", "io-std", "io-util", "net", "process", "sync", "time"] }
+sqlx = { version = "0.9", features = ["runtime-tokio", "sqlite", "macros", "migrate"] }
+tokio = { version = "1.53", features = ["macros", "rt-multi-thread", "io-std", "io-util", "net", "process", "sync", "time"] }
 rustix = { version = "1", features = ["process"] }
-nltk-porter = "0.1"
-tempfile = "3.20"
+nltk-porter = { version = "0.1", optional = true }
+tempfile = "3.27"
 walkdir = "2.5"
 thiserror = { version = "2", optional = true }
-toml = { version = "0.8", optional = true }
+toml = { version = "1.1", optional = true }
 tracing = { version = "0.1", optional = true }
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"], optional = true }
 
-# Keep these versions aligned. FastEmbed 5.17.3 uses Candle 0.11 and
+# Keep these versions aligned. FastEmbed 5.17.4 uses Candle 0.11 and
 # tokenizers 0.22.2. The dependency is feature-gated because FastEmbed also
 # pulls its ORT integration even when only its Candle Qwen3 model is used.
 candle-core = { version = "=0.11.0", optional = true }
 candle-nn = { version = "=0.11.0", optional = true }
 candle-transformers = { version = "=0.11.0", optional = true }
-fastembed = { version = "=5.17.3", default-features = false, features = ["qwen3", "ort-load-dynamic"], optional = true }
+fastembed = { version = "=5.17.4", default-features = false, features = ["qwen3", "ort-load-dynamic"], optional = true }
 tokenizers = { version = "=0.22.2", default-features = false, features = ["onig"], optional = true }
 
 # Apple builds include both the Metal GPU backend and Accelerate CPU fallback.
@@ -149,13 +152,8 @@ tokenizers = { version = "=0.22.2", default-features = false, features = ["onig"
 candle-core = { version = "=0.11.0", features = ["accelerate", "metal"], optional = true }
 candle-nn = { version = "=0.11.0", features = ["accelerate", "metal"], optional = true }
 candle-transformers = { version = "=0.11.0", features = ["accelerate", "metal"], optional = true }
-fastembed = { version = "=5.17.3", default-features = false, features = ["accelerate", "metal", "ort-load-dynamic", "qwen3"], optional = true }
+fastembed = { version = "=5.17.4", default-features = false, features = ["accelerate", "metal", "ort-load-dynamic", "qwen3"], optional = true }
 
 [dev-dependencies]
-assert_cmd = "2.0"
+assert_cmd = "2.2"
 predicates = "3.1"
-
-[[bin]]
-name = "semafused"
-path = "src/bin/semafused.rs"
-required-features = ["daemon"]

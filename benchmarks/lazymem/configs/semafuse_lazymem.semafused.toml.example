@@ -1,6 +1,6 @@
-# Semafuse LazyMem benchmark using the separately managed local semafused models service.
+# Semafuse LazyMem benchmark using the separately managed local daemon models service.
 #
-# Start semafused first, then run:
+# Start `semafuse daemon serve` first, then run:
 #   cargo run --bin semafuse -- daemon status --socket /run/user/1000/semafuse/semafused.sock
 # Replace the socket path and both fingerprints below with that status output.
 # TOML does not expand $XDG_RUNTIME_DIR. Changing either fingerprint changes the

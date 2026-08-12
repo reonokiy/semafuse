@@ -2,7 +2,10 @@
 
 This package runs third-party memory systems behind a strict, process-isolated
 JSONL contract. It translates benchmark messages into upstream `add` and
-`search` calls; it does **not** copy or reimplement Mem0 or A-MEM algorithms.
+`search` calls. Installable upstreams remain thin package adapters. Because the
+A-MEM paper repository has no Python package metadata, its exact original
+`memory_layer.py` is vendored with its MIT license and byte identity; all
+behavioral bridge patches remain outside that source snapshot.
 Each method should run in its own virtual environment so incompatible upstream
 dependencies cannot change Semafuse's benchmark environment.
 
@@ -12,6 +15,8 @@ fake or simpler method. Secrets are inherited through environment variables;
 configuration files may contain only names such as `OPENROUTER_API_KEY` under
 an `*_env` field. Literal `api_key`, `password`, `token`, `secret`, credential,
 or authorization fields are rejected before an upstream package is imported.
+Any base URL that carries those credentials must use HTTPS; plain HTTP is
+accepted only for an explicit `localhost` or loopback-IP development endpoint.
 Worker stderr is drained but never returned by the driver because upstream SDKs
 can log request headers or credentials.
 
@@ -44,11 +49,11 @@ mutable API alias or a provider that does not disclose an immutable model
 revision cannot produce a protected track with this harness; use `development`
 and report that limitation instead.
 
-The two method requirement files currently pin their upstream Git commits but
-not every transitive, platform-specific wheel. The loader therefore rejects
-all protected labels for these methods until a reviewed complete dependency
-lock is registered. A `pip freeze` attached after a run is useful evidence but
-does not retroactively turn that run into a protected track.
+The method environments do not yet lock every platform-specific wheel by hash.
+The loader therefore rejects protected labels until a reviewed complete
+dependency lock is registered. A version graph attached after a run is useful
+development evidence but does not retroactively turn that run into a protected
+track.
 
 Run the offline contract tests without either method installed:
 
@@ -62,7 +67,8 @@ Install a method in an isolated environment, then start a worker through
 example configs, and the method-specific installation notes:
 
 - [Mem0 OSS](methods/mem0_oss/README.md)
-- [A-MEM system](methods/amem/README.md)
+- [A-MEM reusable package baseline](methods/amem/README.md)
+- [A-MEM paper-original backend](methods/amem_paper/README.md)
 
 ## Comparison tracks
 
@@ -98,10 +104,13 @@ upstream implementation revision, ingestion unit, prompts, models, thinking
 mode, retrieval depth, tokenizer/context cap, evaluator, latency boundary, and
 hardware policy. The adapter is merely transport:
 
-- A-MEM's paper reproduction code is `WujiangXu/A-mem`; this first adapter
-  targets the separately published `agiresearch/A-mem` system package. Runs
-  through it must be labeled native or paper-substituted, not exact A-MEM paper
-  reproduction.
+- `amem` targets the separately published `agiresearch/A-mem` reusable package
+  and is only a package/development baseline. `amem_paper` runs the original
+  system from `WujiangXu/A-mem`, including rich notes, evolution, query rewrite,
+  and graph expansion. The latter still is not a paper-table score under the
+  two-conversation common retrieval evaluator; full reproduction also requires
+  ten conversations, categories 1-5, category-specific k, answer generation,
+  and the paper's answer metrics.
 - Mem0 runs use the self-hosted Apache-2.0 `mem0.Memory` API. A paper table that
   used hosted Mem0, graph memory, another package version, or another extraction
   stack requires its own pinned config and cannot reuse published numbers.
@@ -178,6 +187,8 @@ worker_config = "../../external_memory/configs/mem0_oss.locomo314.openrouter-raw
 command = ["/tmp/semafuse-mem0-venv/bin/python", "-m", "semafuse_external_memory.worker"]
 working_directory = "../../external_memory"
 python_path = "../../external_memory/src"
+source_root = "../../external_memory/src/semafuse_external_memory"
+dependency_lock = "../../external_memory/methods/mem0_oss/requirements.txt"
 top_k = 50
 max_context_tokens = 16384
 timeout_seconds = 600
@@ -188,7 +199,7 @@ The suite appends the resolved `--config` argument, resets independently for
 LoCoMo is CC BY-NC 4.0, so the suite's non-commercial acknowledgement and
 attribution gate still applies.
 
-### A-MEM OpenRouter development run
+### A-MEM reusable-package OpenRouter development baseline
 
 [`configs/amem.locomo314.openrouter.development.json`](configs/amem.locomo314.openrouter.development.json)
 uses GPT-4o mini through an explicit OpenRouter base URL, validates and retries
@@ -212,6 +223,8 @@ worker_config = "../../external_memory/configs/amem.locomo314.openrouter.develop
 command = ["/tmp/semafuse-amem-venv/bin/python", "-m", "semafuse_external_memory.worker"]
 working_directory = "../../external_memory"
 python_path = "../../external_memory/src"
+source_root = "../../external_memory/src/semafuse_external_memory"
+dependency_lock = "../../external_memory/methods/amem/requirements.txt"
 top_k = 50
 max_context_tokens = 16384
 timeout_seconds = 600
@@ -222,3 +235,42 @@ described in [the method notes](methods/amem/README.md), then export only
 `OPENROUTER_API_KEY` into the worker environment. The LoCoMo suite supplies the
 resolved `--config` argument and applies the same reset and retrieval policy as
 the Mem0 method above.
+
+### A-MEM paper-original OpenRouter development run
+
+[`configs/amem_paper_original.locomo314.openrouter.development.json`](configs/amem_paper_original.locomo314.openrouter.development.json)
+selects the exact paper repository commit, pinned MiniLM snapshot, paper
+metadata/evolution prompts, paper query-keyword rewrite, and per-seed link
+expansion. `retrieval.base_k` is independent from the JSONL protocol's final
+native-item `top_k`, so links are represented in each dense seed's ordered
+multi-source provenance instead of being appended after a full top-k list.
+
+The configuration requires OpenRouter endpoints to honor all requested
+parameters, validates every JSON-schema response locally, disables implicit
+SDK retries, and gives each of the adapter's three attempts a 90-second bound.
+It remains a common-policy development result because the hosted LLM revision
+and wheel artifacts are not immutable, and because this evaluator reports evidence
+Recall/nDCG rather than LoCoMo answer F1.
+
+Use the tracked suite after installing the pinned environment and placing the
+API key only in `OPENROUTER_API_KEY`:
+
+```bash
+export PATH=/tmp/semafuse-amem-venv/bin:$PATH
+export PYTHONPATH=benchmarks/external_memory/src
+export HF_HOME=/tmp/semafuse-amem-hf-cache
+cargo run --release --locked --features benchmarks --bin semafuse -- bench locomo \
+  --suite benchmarks/locomo/configs/paper_v2.amem-paper-original.openrouter.toml \
+  --dataset /absolute/path/to/locomo10.json \
+  --acknowledge-noncommercial \
+  --output-dir benchmarks/locomo/results/amem-paper-original-openrouter
+```
+
+The suite hashes the worker source tree and
+`methods/amem_paper/requirements.lock.txt` into the run identity. Before any
+paid call it uses the exact invocation interpreter to inventory every installed
+distribution, verifies all 72 strict pins in that lock, and binds the complete
+runtime inventory hash into the run key. The lock records the resolved graph
+reachable from the paper backend's dependency roots, while the runtime hash
+also binds unrelated packages present in the isolated environment; neither
+claims wheel-hash completeness.

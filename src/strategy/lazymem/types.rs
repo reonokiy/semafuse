@@ -3,9 +3,7 @@
 use crate::model::{AgentKind, EventSource, MessageRole};
 use serde::{Deserialize, Serialize};
 
-/// Reciprocal-rank-fusion constant used by the paper's retrieval pipeline.
-pub(super) const PAPER_RRF_K: u32 = 60;
-/// Number of messages retained after cross-encoder reranking in the benchmark.
+/// Number of messages retained after cross-encoder reranking.
 pub(super) const PAPER_RETRIEVAL_TOP_N: usize = 50;
 /// Number of neighboring messages restored on either side of an anchor.
 pub(super) const PAPER_CONTEXT_RADIUS: usize = 2;

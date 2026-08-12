@@ -3,12 +3,15 @@
 mod config;
 mod processor;
 mod prompt;
-mod retrieval;
+pub(in crate::strategy) mod retrieval;
 mod types;
 mod window;
 
 use config::LazyMemConfig;
-use prompt::{PROCESSOR_PROMPT_VERSION, PROCESSOR_SYSTEM_PROMPT, processor_prompt};
+use prompt::{
+    PROCESSOR_PROMPT_VERSION, PROCESSOR_SYSTEM_PROMPT, processor_prompt,
+    processor_prompt_for_attempt,
+};
 
 use self::{
     processor::{ProcessingInput, WindowModelResponse, combine_window_responses},
@@ -46,7 +49,7 @@ pub(in crate::strategy) const REGISTRATION: StrategyRegistration =
     StrategyRegistration::new("lazymem", build);
 
 const NAMESPACE: &str = "lazymem";
-const BENCHMARK_TRACE_SCHEMA_VERSION: &str = "semafuse.lazymem-recall/v1";
+const RECALL_TRACE_SCHEMA_VERSION: &str = "semafuse.lazymem-recall/v1";
 
 fn build(settings: Option<&Value>) -> Result<Box<dyn MemoryStrategy>> {
     Ok(Box::new(LazyMemStrategy {
@@ -63,6 +66,7 @@ fn parse_config(settings: Option<&Value>) -> Result<LazyMemConfig> {
     Ok(config)
 }
 
+#[cfg(feature = "benchmarks")]
 pub(super) async fn recall_retrieval_only(
     settings: Option<&Value>,
     context: &dyn StrategyContext,
@@ -176,8 +180,8 @@ impl LazyMemStrategy {
                 metadata: Map::from_iter([
                     ("timing".into(), timing.clone()),
                     (
-                        "strategy_benchmark_trace".into(),
-                        strategy_benchmark_trace(None, None, &[], &timing),
+                        "recall_trace".into(),
+                        recall_trace(None, None, &[], &timing),
                     ),
                 ]),
             });
@@ -233,8 +237,8 @@ impl LazyMemStrategy {
                     ),
                     ("timing".into(), timing.clone()),
                     (
-                        "strategy_benchmark_trace".into(),
-                        strategy_benchmark_trace(Some(&retrieval), None, &[], &timing),
+                        "recall_trace".into(),
+                        recall_trace(Some(&retrieval), None, &[], &timing),
                     ),
                 ]),
             });
@@ -317,8 +321,8 @@ impl LazyMemStrategy {
                 ),
                 ("timing".into(), timing.clone()),
                 (
-                    "strategy_benchmark_trace".into(),
-                    strategy_benchmark_trace(Some(&retrieval), Some(&history), &[], &timing),
+                    "recall_trace".into(),
+                    recall_trace(Some(&retrieval), Some(&history), &[], &timing),
                 ),
             ]);
             return Ok(RecallResult {
@@ -327,10 +331,13 @@ impl LazyMemStrategy {
             });
         }
         let processing_started = Instant::now();
-        let responses = self.process_windows(request, &history.windows).await?;
+        let processor_results = self.process_windows(request, &history.windows).await?;
         let processing = combine_window_responses(&ProcessingInput {
             windows: history.windows.clone(),
-            responses,
+            responses: processor_results
+                .iter()
+                .map(|result| result.response.clone())
+                .collect(),
         })?;
         let processing_elapsed = processing_started.elapsed();
         if processing.messages.is_empty() {
@@ -351,12 +358,12 @@ impl LazyMemStrategy {
                     ("windows".into(), serde_json::to_value(&history.trace)?),
                     (
                         "processing".into(),
-                        redacted_processing_trace(&processing.trace),
+                        redacted_processing_trace(&processing.trace, &processor_results),
                     ),
                     ("timing".into(), timing.clone()),
                     (
-                        "strategy_benchmark_trace".into(),
-                        strategy_benchmark_trace(Some(&retrieval), Some(&history), &[], &timing),
+                        "recall_trace".into(),
+                        recall_trace(Some(&retrieval), Some(&history), &[], &timing),
                     ),
                 ]),
             });
@@ -437,17 +444,12 @@ impl LazyMemStrategy {
             ("windows".into(), serde_json::to_value(&history.trace)?),
             (
                 "processing".into(),
-                redacted_processing_trace(&processing.trace),
+                redacted_processing_trace(&processing.trace, &processor_results),
             ),
             ("timing".into(), timing.clone()),
             (
-                "strategy_benchmark_trace".into(),
-                strategy_benchmark_trace(
-                    Some(&retrieval),
-                    Some(&history),
-                    &source_event_ids,
-                    &timing,
-                ),
+                "recall_trace".into(),
+                recall_trace(Some(&retrieval), Some(&history), &source_event_ids, &timing),
             ),
         ]);
         let score = retrieval
@@ -485,7 +487,7 @@ fn timing_metadata(
     })
 }
 
-fn strategy_benchmark_trace(
+fn recall_trace(
     retrieval: Option<&RetrievalOutput>,
     history: Option<&HistoryWindowOutput>,
     source_event_ids: &[String],
@@ -506,7 +508,7 @@ fn strategy_benchmark_trace(
         }
     }
     json!({
-        "schema_version": BENCHMARK_TRACE_SCHEMA_VERSION,
+        "schema_version": RECALL_TRACE_SCHEMA_VERSION,
         "retrieved_event_ids": retrieved_event_ids,
         "covered_event_ids": covered_event_ids,
         "source_event_ids": source_event_ids,
@@ -519,6 +521,25 @@ struct RetrievalOutput {
     reranked: Vec<RerankedCandidate>,
     rerank_trace: RerankTrace,
     query_vector_dimensions: usize,
+}
+
+#[derive(Debug, Clone)]
+struct ProcessorAttemptSummary {
+    attempt: usize,
+    model: String,
+    provider: Option<String>,
+    finish_reason: Option<String>,
+    prompt_tokens: Option<u64>,
+    completion_tokens: Option<u64>,
+    reasoning_tokens: Option<u64>,
+    reasoning_present: bool,
+    cost: Option<f64>,
+}
+
+#[derive(Debug, Clone)]
+struct WindowProcessingResult {
+    response: WindowModelResponse,
+    attempts: Vec<ProcessorAttemptSummary>,
 }
 
 impl LazyMemStrategy {
@@ -597,33 +618,88 @@ impl LazyMemStrategy {
         &self,
         request: &RecallRequest,
         windows: &[EvidenceWindow],
-    ) -> Result<Vec<WindowModelResponse>> {
+    ) -> Result<Vec<WindowProcessingResult>> {
         let mut responses = Vec::with_capacity(windows.len());
         for chunk in windows.chunks(self.config.effective_max_concurrency()) {
             let mut tasks = JoinSet::new();
             for window in chunk {
                 let endpoint = self.config.processor.clone();
                 let options = self.config.generation_options();
+                let validation_retries = self.config.validation_retries();
                 let expected_decisions = window.messages.len();
                 let window_order = window.window_order;
+                let validation_window = window.clone();
                 let prompt = processor_prompt(request, window)?;
                 tasks.spawn(async move {
-                    endpoint
-                        .chat_json(
-                            PROCESSOR_SYSTEM_PROMPT,
-                            &prompt,
-                            options,
-                            expected_decisions,
-                        )
-                        .await
-                        .map(|json| WindowModelResponse { window_order, json })
+                    let mut attempts = Vec::with_capacity(validation_retries + 1);
+                    for attempt in 1..=(validation_retries + 1) {
+                        let attempt_prompt = processor_prompt_for_attempt(&prompt, attempt);
+                        let completion = endpoint
+                            .complete_json(
+                                PROCESSOR_SYSTEM_PROMPT,
+                                &attempt_prompt,
+                                options,
+                                expected_decisions,
+                            )
+                            .await
+                            .with_context(|| {
+                                format!(
+                                    "memory processor window {window_order} attempt {attempt} failed"
+                                )
+                            })?;
+                        let invalid_finish_reason = completion.requires_stop_finish_reason
+                            && completion.finish_reason.as_deref() != Some("stop");
+                        let finish_reason = completion.finish_reason.clone();
+                        attempts.push(ProcessorAttemptSummary {
+                            attempt,
+                            model: completion.model,
+                            provider: completion.provider,
+                            finish_reason: completion.finish_reason,
+                            prompt_tokens: completion.prompt_tokens,
+                            completion_tokens: completion.completion_tokens,
+                            reasoning_tokens: completion.reasoning_tokens,
+                            reasoning_present: completion.reasoning_present,
+                            cost: completion.cost,
+                        });
+                        if invalid_finish_reason {
+                            if attempt <= validation_retries {
+                                continue;
+                            }
+                            anyhow::bail!(
+                                "memory processor window {window_order} did not finish normally after {attempt} attempts (finish_reason={finish_reason:?})"
+                            );
+                        }
+                        match processor::process_window_response(
+                            &validation_window,
+                            &completion.content,
+                        ) {
+                            Ok(_) => {
+                                return Ok(WindowProcessingResult {
+                                    response: WindowModelResponse {
+                                        window_order,
+                                        json: completion.content,
+                                    },
+                                    attempts,
+                                });
+                            }
+                            Err(_error) if attempt <= validation_retries => continue,
+                            Err(error) => {
+                                return Err(error).with_context(|| {
+                                    format!(
+                                        "memory processor window {window_order} failed validation after {attempt} attempts"
+                                    )
+                                });
+                            }
+                        }
+                    }
+                    unreachable!("processor validation loop always returns")
                 });
             }
             while let Some(result) = tasks.join_next().await {
                 responses.push(result.context("memory processor task panicked")??);
             }
         }
-        responses.sort_by_key(|response| response.window_order);
+        responses.sort_by_key(|result| result.response.window_order);
         Ok(responses)
     }
 }
@@ -739,7 +815,62 @@ fn memory_role(event: &CanonicalEvent) -> MessageRole {
     }
 }
 
-fn redacted_processing_trace(trace: &processor::ProcessingTrace) -> Value {
+fn redacted_processing_trace(
+    trace: &processor::ProcessingTrace,
+    processor_results: &[WindowProcessingResult],
+) -> Value {
+    let attempts = processor_results
+        .iter()
+        .flat_map(|result| result.attempts.iter())
+        .collect::<Vec<_>>();
+    let models = attempts
+        .iter()
+        .map(|attempt| attempt.model.as_str())
+        .collect::<BTreeSet<_>>();
+    let providers = attempts
+        .iter()
+        .filter_map(|attempt| attempt.provider.as_deref())
+        .collect::<BTreeSet<_>>();
+    let prompt_tokens = attempts
+        .iter()
+        .filter_map(|attempt| attempt.prompt_tokens)
+        .sum::<u64>();
+    let completion_tokens = attempts
+        .iter()
+        .filter_map(|attempt| attempt.completion_tokens)
+        .sum::<u64>();
+    let reasoning_tokens = attempts
+        .iter()
+        .filter_map(|attempt| attempt.reasoning_tokens)
+        .sum::<u64>();
+    let reported_costs = attempts
+        .iter()
+        .filter_map(|attempt| attempt.cost)
+        .collect::<Vec<_>>();
+    let complete_reported_cost = (reported_costs.len() == attempts.len() && !attempts.is_empty())
+        .then(|| reported_costs.iter().sum::<f64>());
+    let processor_calls = processor_results
+        .iter()
+        .map(|result| {
+            json!({
+                "window_order": result.response.window_order,
+                "attempts": result.attempts.len(),
+                "calls": result.attempts.iter().map(|attempt| json!({
+                        "attempt": attempt.attempt,
+                        "model": attempt.model,
+                        "provider": attempt.provider,
+                        "finish_reason": attempt.finish_reason,
+                        "usage": {
+                            "prompt_tokens": attempt.prompt_tokens,
+                            "completion_tokens": attempt.completion_tokens,
+                            "reasoning_tokens": attempt.reasoning_tokens,
+                            "reasoning_present": attempt.reasoning_present,
+                        "cost": attempt.cost,
+                    },
+                })).collect::<Vec<_>>(),
+            })
+        })
+        .collect::<Vec<_>>();
     json!({
         "windows": trace.windows.iter().map(|window| json!({
             "window_order": window.window_order,
@@ -759,6 +890,25 @@ fn redacted_processing_trace(trace: &processor::ProcessingTrace) -> Value {
             "selected_op": resolution.selected_op,
         })).collect::<Vec<_>>(),
         "final_message_order": trace.final_message_order,
+        "attempts": attempts.len(),
+        "validation_retries": attempts.len().saturating_sub(processor_results.len()),
+        "model": (models.len() == 1).then(|| models.first().copied()).flatten(),
+        "models": models,
+        "provider": (providers.len() == 1).then(|| providers.first().copied()).flatten(),
+        "providers": providers,
+        "usage": {
+            "prompt_tokens": prompt_tokens,
+            "completion_tokens": completion_tokens,
+            "reasoning_tokens": reasoning_tokens,
+            "cost": complete_reported_cost,
+            "calls": attempts.len(),
+            "call_semantics": "successful_validation_level_responses; transport_retries_without_usage_are_not_counted",
+            "calls_missing_prompt_tokens": attempts.iter().filter(|attempt| attempt.prompt_tokens.is_none()).count(),
+            "calls_missing_completion_tokens": attempts.iter().filter(|attempt| attempt.completion_tokens.is_none()).count(),
+            "calls_missing_reasoning_tokens": attempts.iter().filter(|attempt| attempt.reasoning_tokens.is_none()).count(),
+            "calls_missing_cost": attempts.len().saturating_sub(reported_costs.len()),
+        },
+        "processor_calls": processor_calls,
     })
 }
 
@@ -799,6 +949,24 @@ mod tests {
             "processor": {"backend": "openai_compatible", "endpoint": {"base_url": "http://localhost:8003/v1", "model": "processor"}},
             "retrieval": {"rerank_top_n": 49}
         });
+        assert!(build(Some(&value)).is_err());
+    }
+
+    #[test]
+    fn paper_profile_allows_bounded_validation_retries_without_sampling_drift() {
+        let mut value = json!({
+            "protocol": "paper-v2",
+            "embedding": {"backend": "openai_compatible", "endpoint": {"base_url": "http://localhost:8001/v1", "model": "embed"}},
+            "reranker": {"backend": "openai_compatible", "endpoint": {"base_url": "http://localhost:8002", "model": "reranker"}},
+            "processor": {"backend": "openai_compatible", "endpoint": {"base_url": "http://localhost:8003/v1", "model": "processor"}},
+            "generation": {"validation_retries": 5}
+        });
+        let config: LazyMemConfig = serde_json::from_value(value.clone()).unwrap();
+        config.validate().unwrap();
+        assert_eq!(config.validation_retries(), 5);
+        assert_eq!(config.generation_metadata()["validation_retries"], 5);
+
+        value["generation"]["validation_retries"] = json!(6);
         assert!(build(Some(&value)).is_err());
     }
 
@@ -973,22 +1141,30 @@ mod tests {
         assert!(result.items.is_empty());
         assert!(result.metadata["timing"]["retrieval_ms"].is_number());
         assert_eq!(
-            result.metadata["strategy_benchmark_trace"]["schema_version"],
-            BENCHMARK_TRACE_SCHEMA_VERSION
+            result.metadata["recall_trace"]["schema_version"],
+            RECALL_TRACE_SCHEMA_VERSION
         );
     }
 
     #[tokio::test]
     async fn model_backed_pipeline_runs_end_to_end_against_compatible_endpoints() {
+        use std::sync::{
+            Arc,
+            atomic::{AtomicUsize, Ordering},
+        };
+
         let listener = match TcpListener::bind("127.0.0.1:0").await {
             Ok(listener) => listener,
             Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied => return,
             Err(error) => panic!("bind mock inference server: {error}"),
         };
         let address = listener.local_addr().unwrap();
+        let processor_attempts = Arc::new(AtomicUsize::new(0));
+        let server_processor_attempts = Arc::clone(&processor_attempts);
         let server = tokio::spawn(async move {
             loop {
                 let (mut stream, _) = listener.accept().await.unwrap();
+                let processor_attempts = Arc::clone(&server_processor_attempts);
                 tokio::spawn(async move {
                     let mut request = Vec::new();
                     let mut buffer = [0_u8; 4_096];
@@ -1052,23 +1228,61 @@ mod tests {
                         assert_eq!(body["chat_template_kwargs"]["enable_thinking"], true);
                         let prompt = body["messages"][1]["content"].as_str().unwrap();
                         let (_, raw_window) = prompt.split_once("# History Window\n").unwrap();
+                        let (raw_window, retry_correction) = raw_window
+                            .split_once("\n\n# Retry Correction")
+                            .map_or((raw_window, None), |(window, correction)| {
+                                (window, Some(correction))
+                            });
                         let window: Value = serde_json::from_str(raw_window).unwrap();
                         let messages = ["previous_bridge", "core_messages", "next_bridge"]
                             .into_iter()
                             .flat_map(|section| window[section].as_array().unwrap())
                             .collect::<Vec<_>>();
+                        assert_eq!(
+                            body["response_format"]["json_schema"]["schema"]["minItems"],
+                            messages.len()
+                        );
+                        assert_eq!(
+                            body["response_format"]["json_schema"]["schema"]["maxItems"],
+                            messages.len()
+                        );
+                        assert_eq!(body["response_format"]["json_schema"]["strict"], true);
+                        let attempt = processor_attempts.fetch_add(1, Ordering::SeqCst);
+                        assert_eq!(retry_correction.is_some(), attempt > 0);
                         let decisions = messages
                             .into_iter()
                             .map(|message| {
-                                json!({
-                                    "op": "KEEP",
-                                    "compressed_content": message["content"],
-                                    "reason": "relevant test evidence"
-                                })
+                                if attempt == 1 {
+                                    // Valid JSON and exact cardinality, but an invalid DROP
+                                    // semantic. The window-level validator retries it after
+                                    // first retrying a length-truncated null response.
+                                    json!({
+                                        "op": "DROP",
+                                        "compressed_content": "must be empty for DROP",
+                                        "reason": "deliberately invalid first attempt"
+                                    })
+                                } else {
+                                    json!({
+                                        "op": "KEEP",
+                                        "compressed_content": message["content"],
+                                        "reason": "relevant test evidence"
+                                    })
+                                }
                             })
                             .collect::<Vec<_>>();
+                        let choice = if attempt == 0 {
+                            json!({"finish_reason": "length", "message": {"content": null}})
+                        } else {
+                            json!({"finish_reason": "stop", "message": {"content": serde_json::to_string(&decisions).unwrap()}})
+                        };
                         json!({
-                            "choices": [{"message": {"content": serde_json::to_string(&decisions).unwrap()}}]
+                            "model": "resolved-processor-model",
+                            "choices": [choice],
+                            "usage": {
+                                "prompt_tokens": 10 + attempt,
+                                "completion_tokens": 2 + attempt,
+                                "cost": 0.001 * (attempt + 1) as f64
+                            }
                         })
                     } else {
                         panic!("unexpected request: {request_line}");
@@ -1150,10 +1364,11 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(result.items.len(), 1);
+        assert_eq!(processor_attempts.load(Ordering::SeqCst), 3);
         assert!(result.metadata["timing"]["total_ms"].is_number());
         assert_eq!(
-            result.metadata["strategy_benchmark_trace"]["schema_version"],
-            BENCHMARK_TRACE_SCHEMA_VERSION
+            result.metadata["recall_trace"]["schema_version"],
+            RECALL_TRACE_SCHEMA_VERSION
         );
         match &result.items[0] {
             RecallItem::Memory {
@@ -1174,7 +1389,23 @@ mod tests {
                 );
                 assert_eq!(metadata["generation"]["sampling_controls_applied"], true);
                 assert_eq!(metadata["generation"]["effective_max_concurrency"], 64);
+                assert_eq!(metadata["generation"]["validation_retries"], 2);
                 assert_eq!(metadata["prompt_version"], PROCESSOR_PROMPT_VERSION);
+                assert_eq!(metadata["processing"]["attempts"], 3);
+                assert_eq!(metadata["processing"]["validation_retries"], 2);
+                assert_eq!(metadata["processing"]["model"], "resolved-processor-model");
+                assert_eq!(metadata["processing"]["usage"]["prompt_tokens"], 33);
+                assert_eq!(metadata["processing"]["usage"]["completion_tokens"], 9);
+                assert_eq!(metadata["processing"]["usage"]["calls"], 3);
+                assert_eq!(
+                    metadata["processing"]["processor_calls"][0]["calls"]
+                        .as_array()
+                        .unwrap()
+                        .len(),
+                    3
+                );
+                let cost = metadata["processing"]["usage"]["cost"].as_f64().unwrap();
+                assert!((cost - 0.006).abs() < 1e-12, "unexpected cost: {cost}");
                 assert!(
                     metadata["processing"]
                         .to_string()

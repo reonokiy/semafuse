@@ -13,5 +13,8 @@ SHA-256 79fa87e90f04081343b8c8debecb80a9a6842b76a7aa537dc9fdf651ea698ff4
 
 Upstream project: <https://github.com/snap-research/locomo>
 
-External Mem0/A-MEM packages are not vendored by this directory. Their pinned
-revisions and license notices live under `benchmarks/external_memory/methods`.
+External Mem0 and reusable A-MEM packages are not vendored by this directory.
+The A-MEM paper-original source snapshot is vendored under
+`benchmarks/external_memory/src` because its upstream repository is not an
+installable package. All pinned revisions and license notices live under
+`benchmarks/external_memory/methods`.

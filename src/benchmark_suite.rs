@@ -416,7 +416,7 @@ pub async fn run_longmemeval_suite(options: &SuiteRunOptions) -> Result<SuiteArt
         .map(sha256_file)
         .transpose()?;
     let cargo_lock_sha256 = cargo_lock_sha256();
-    let benchmark_code_sha256 = benchmark_code_sha256();
+    let benchmark_code_sha256 = crate::benchmark_identity::source_sha256();
     let run_key = run_key(
         &suite_bytes,
         &dataset_sha256,
@@ -1741,46 +1741,6 @@ fn sha256_file(path: impl AsRef<Path>) -> Result<String> {
 
 fn cargo_lock_sha256() -> String {
     hex::encode(Sha256::digest(include_bytes!("../Cargo.lock")))
-}
-
-fn benchmark_code_sha256() -> String {
-    let mut digest = Sha256::new();
-    for (path, bytes) in [
-        (
-            "src/benchmark_suite.rs",
-            include_bytes!("benchmark_suite.rs").as_slice(),
-        ),
-        (
-            "src/benchmark.rs",
-            include_bytes!("benchmark.rs").as_slice(),
-        ),
-        (
-            "src/benchmark_baselines.rs",
-            include_bytes!("benchmark_baselines.rs").as_slice(),
-        ),
-        (
-            "src/benchmark_metrics.rs",
-            include_bytes!("benchmark_metrics.rs").as_slice(),
-        ),
-        (
-            "src/benchmark_report.rs",
-            include_bytes!("benchmark_report.rs").as_slice(),
-        ),
-        (
-            "src/longmemeval.rs",
-            include_bytes!("longmemeval.rs").as_slice(),
-        ),
-        (
-            "src/longmemeval_eval.rs",
-            include_bytes!("longmemeval_eval.rs").as_slice(),
-        ),
-    ] {
-        digest.update((path.len() as u64).to_be_bytes());
-        digest.update(path.as_bytes());
-        digest.update((bytes.len() as u64).to_be_bytes());
-        digest.update(bytes);
-    }
-    hex::encode(digest.finalize())
 }
 
 fn run_key(

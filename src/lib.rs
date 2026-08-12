@@ -10,16 +10,26 @@
 
 pub mod adapters;
 /// Isolated JSONL benchmark support that exercises the production strategies.
+#[cfg(feature = "benchmarks")]
 pub mod benchmark;
 /// Deterministic model-free retrieval and oracle baselines.
+#[cfg(feature = "benchmarks")]
 pub mod benchmark_baselines;
+/// Complete compile-time source identity for reproducible benchmark artifacts.
+#[cfg(feature = "benchmarks")]
+#[doc(hidden)]
+pub mod benchmark_identity;
 /// Crash-safe, identity-checked JSONL benchmark journaling.
+#[cfg(feature = "benchmarks")]
 pub mod benchmark_journal;
 /// Retrieval metrics with both standard and LongMemEval-compatible nDCG.
+#[cfg(feature = "benchmarks")]
 pub mod benchmark_metrics;
 /// Fail-closed aggregation and paired bootstrap comparisons.
+#[cfg(feature = "benchmarks")]
 pub mod benchmark_report;
 /// Native modular LongMemEval suite orchestration.
+#[cfg(feature = "benchmarks")]
 pub mod benchmark_suite;
 /// Content-addressed attachment storage and extraction.
 pub mod blob;
@@ -39,14 +49,26 @@ pub mod hooks;
 pub mod importer;
 mod inference;
 /// Label-isolated native loader for the pinned LoCoMo release.
+#[cfg(feature = "benchmarks")]
 pub mod locomo;
+#[cfg(feature = "benchmarks")]
+mod locomo_answer_protocol;
+/// End-to-end LoCoMo memory construction, common answering, and official F1.
+#[cfg(feature = "benchmarks")]
+pub mod locomo_answer_suite;
 /// Frozen official category-aware LoCoMo token-F1 evaluator.
+#[cfg(feature = "benchmarks")]
 pub mod locomo_eval;
 /// Modular retrieval-only LoCoMo paper-v2 comparison suite.
+#[cfg(feature = "benchmarks")]
 pub mod locomo_suite;
+#[cfg(feature = "benchmarks")]
+mod locomo_suite_common;
 /// Label-isolated native loader for the official LongMemEval release.
+#[cfg(feature = "benchmarks")]
 pub mod longmemeval;
 /// Frozen LongMemEval answer and official judge prompt helpers.
+#[cfg(feature = "benchmarks")]
 pub mod longmemeval_eval;
 /// Model Context Protocol server over standard input and output.
 pub mod mcp;

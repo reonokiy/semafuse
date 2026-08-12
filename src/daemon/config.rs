@@ -28,7 +28,7 @@ pub const MAX_SOCKET_PATH_BYTES: usize = 107;
 #[cfg(not(any(target_os = "linux", target_os = "android")))]
 pub const MAX_SOCKET_PATH_BYTES: usize = 103;
 
-/// Strict top-level configuration for `semafused`.
+/// Strict top-level configuration for `semafuse daemon serve`.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Config {

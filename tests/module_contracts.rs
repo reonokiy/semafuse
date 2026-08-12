@@ -274,7 +274,7 @@ async fn memory_and_sqlx_sqlite_implement_the_same_store_contract() {
 
 #[tokio::test]
 async fn opendal_backend_is_content_addressed_and_provider_neutral() {
-    let operator = Operator::new(Memory::default()).unwrap().finish();
+    let operator = Operator::new(Memory::default()).unwrap();
     let store = OpenDalBlobStore::from_operator(operator);
     let first = store
         .put(
@@ -483,8 +483,7 @@ async fn spool_append_during_replay_is_left_for_the_next_generation() {
     assert_eq!(task.await.unwrap().unwrap(), 1);
     assert!(dir.join("hooks.jsonl").is_file());
 
-    let memory_blobs =
-        OpenDalBlobStore::from_operator(Operator::new(Memory::default()).unwrap().finish());
+    let memory_blobs = OpenDalBlobStore::from_operator(Operator::new(Memory::default()).unwrap());
     assert_eq!(
         hooks::replay_spool(&dir, &store, Some(&memory_blobs), &Config::default())
             .await

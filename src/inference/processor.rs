@@ -1,4 +1,5 @@
 use super::{
+    JsonContract,
     codex::run_codex_processor,
     openai::{GenerationOptions, OpenAiEndpoint},
 };
@@ -10,8 +11,7 @@ const DEFAULT_CODEX_MAX_OUTPUT_BYTES: usize = 1_048_576;
 const MAX_CODEX_TIMEOUT_SECS: u64 = 3_600;
 const MAX_CODEX_OUTPUT_BYTES: usize = 16 * 1_048_576;
 
-/// A query-time LazyMem processor that consumes the Appendix G.1 prompt and
-/// must return its strict positional JSON decision array.
+/// A query-time prompt processor for provider-enforced structured generation.
 ///
 /// The tagged configuration deliberately exposes only the supported remote
 /// API and Codex CLI transports. The Codex transport owns its argument vector;
@@ -39,6 +39,23 @@ pub(crate) struct ProcessorBackendIdentity<'a> {
     pub(crate) backend: &'static str,
     pub(crate) transport: &'static str,
     pub(crate) model: &'a str,
+}
+
+/// One processor invocation and the provider telemetry needed to account for
+/// retries. The response text remains private to the validation pipeline and
+/// is never copied into LazyMem metadata.
+#[derive(Debug, Clone)]
+pub(crate) struct ProcessorCompletion {
+    pub(crate) content: String,
+    pub(crate) model: String,
+    pub(crate) provider: Option<String>,
+    pub(crate) finish_reason: Option<String>,
+    pub(crate) requires_stop_finish_reason: bool,
+    pub(crate) prompt_tokens: Option<u64>,
+    pub(crate) completion_tokens: Option<u64>,
+    pub(crate) reasoning_tokens: Option<u64>,
+    pub(crate) reasoning_present: bool,
+    pub(crate) cost: Option<f64>,
 }
 
 fn default_codex_command() -> String {
@@ -84,6 +101,17 @@ impl PromptProcessorBackend {
         }
     }
 
+    pub(crate) fn validate_generation(
+        &self,
+        label: &str,
+        options: &GenerationOptions,
+    ) -> Result<()> {
+        match self {
+            Self::OpenaiCompatible { endpoint } => endpoint.validate_generation(label, options),
+            Self::CodexCli { .. } => Ok(()),
+        }
+    }
+
     pub(crate) fn identity(&self) -> ProcessorBackendIdentity<'_> {
         match self {
             Self::OpenaiCompatible { endpoint } => ProcessorBackendIdentity {
@@ -113,6 +141,7 @@ impl PromptProcessorBackend {
         }
     }
 
+    #[cfg(all(test, unix))]
     pub(crate) async fn chat_json(
         &self,
         system: &str,
@@ -120,31 +149,88 @@ impl PromptProcessorBackend {
         options: GenerationOptions,
         expected_decisions: usize,
     ) -> Result<String> {
-        ensure!(
-            expected_decisions > 0,
-            "processor request must expect at least one decision"
-        );
+        Ok(self
+            .complete_json(system, user, options, expected_decisions)
+            .await?
+            .content)
+    }
+
+    pub(crate) async fn complete_json(
+        &self,
+        system: &str,
+        user: &str,
+        options: GenerationOptions,
+        expected_decisions: usize,
+    ) -> Result<ProcessorCompletion> {
+        self.complete_structured(
+            system,
+            user,
+            options,
+            JsonContract::WindowDecisions {
+                count: expected_decisions,
+            },
+        )
+        .await
+    }
+
+    /// Complete a prompt under a provider-enforced JSON contract. The returned
+    /// content is the contract payload, with any Codex-only transport envelope
+    /// removed, but domain-specific validation remains the caller's job.
+    pub(crate) async fn complete_structured(
+        &self,
+        system: &str,
+        user: &str,
+        options: GenerationOptions,
+        contract: JsonContract,
+    ) -> Result<ProcessorCompletion> {
+        contract.validate()?;
         match self {
-            Self::OpenaiCompatible { endpoint } => endpoint
-                .chat_json(system, user, options)
-                .await
-                .context("OpenAI-compatible processor failed"),
+            Self::OpenaiCompatible { endpoint } => {
+                let completion = endpoint
+                    .complete_json_contract(system, user, options, contract)
+                    .await
+                    .context("OpenAI-compatible processor failed")?;
+                Ok(ProcessorCompletion {
+                    content: completion.content,
+                    model: completion.model.unwrap_or_else(|| endpoint.model.clone()),
+                    provider: completion.provider,
+                    finish_reason: completion.finish_reason,
+                    requires_stop_finish_reason: true,
+                    prompt_tokens: completion.prompt_tokens,
+                    completion_tokens: completion.completion_tokens,
+                    reasoning_tokens: completion.reasoning_tokens,
+                    reasoning_present: completion.reasoning_present,
+                    cost: completion.cost,
+                })
+            }
             Self::CodexCli {
                 model,
                 command,
                 timeout_secs,
                 max_output_bytes,
             } => {
-                run_codex_processor(
+                let content = run_codex_processor(
                     command,
                     model,
                     system,
                     user,
-                    expected_decisions,
+                    contract,
                     *timeout_secs,
                     *max_output_bytes,
                 )
-                .await
+                .await?;
+                Ok(ProcessorCompletion {
+                    content,
+                    model: model.clone(),
+                    provider: None,
+                    finish_reason: None,
+                    requires_stop_finish_reason: false,
+                    prompt_tokens: None,
+                    completion_tokens: None,
+                    reasoning_tokens: None,
+                    reasoning_present: false,
+                    cost: None,
+                })
             }
         }
     }

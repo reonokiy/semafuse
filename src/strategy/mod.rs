@@ -5,8 +5,10 @@
 //! construct replacement state off to the side before an atomic swap.
 
 mod history;
+mod hybrid;
 mod lazymem;
 mod recall;
+mod reconstructive;
 mod registry;
 
 pub use recall::RecallItem;
@@ -42,8 +44,8 @@ pub struct RecallRequest {
     pub query: SearchQuery,
     /// Explicit wall-clock reference used by query-conditioned processors.
     ///
-    /// Passing this through the request keeps benchmark replays deterministic
-    /// and prevents strategies from consulting the current clock internally.
+    /// Passing this through the request keeps recall deterministic and prevents
+    /// strategies from consulting the current clock internally.
     pub query_time_ms: i64,
 }
 
@@ -211,6 +213,7 @@ pub async fn recall_result_at(
 /// coverage quality from generation quality. It still requires the configured
 /// LazyMem embedding and reranker backends and the same fully indexed corpus as
 /// production recall.
+#[cfg(feature = "benchmarks")]
 pub async fn recall_lazymem_retrieval_result_at(
     store: &SqliteStore,
     config: &Config,

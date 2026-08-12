@@ -3,6 +3,9 @@
 Semafuse is a local, coding-agent-agnostic storage and retrieval layer for conversational memory. It currently supports
 Amp, Codex, Claude Code, and OpenCode, and explicitly distinguishes between two ingestion paths:
 
+The current release candidate is `0.1.0-beta.1`; its supported scope and known
+experimental boundaries are recorded in the [changelog](CHANGELOG.md).
+
 - One-time history import: reads existing sessions, normalizes them, and writes them idempotently; repeated imports do not produce duplicate events.
 - Real-time capture: agent lifecycle hooks write JSON events to Semafuse; when the database is temporarily unavailable, events are written to a local spool and replayed later.
 
@@ -49,27 +52,47 @@ cargo doc --no-deps --open
 Install a prebuilt release with mise after a matching GitHub release has been published:
 
 ```bash
-# Latest release
-mise use -g github:reonokiy/semafuse
+# Current beta (mise 2026.7.5 or newer)
+mise use -g "github:reonokiy/semafuse[prerelease=true]@0.1.0-beta.1"
 
-# A specific release
-mise use -g github:reonokiy/semafuse@0.1.0
+# Track the newest beta
+mise use -g "github:reonokiy/semafuse[prerelease=true]"
 ```
 
 Because this repository is private, authenticate mise through the GitHub CLI or set
 `MISE_GITHUB_TOKEN` to a token with read access to the repository. The release workflow
-accepts only a `v<version>` tag matching the Rust package, reruns the same Rust and Web
-quality checks used for pushes and pull requests, and smoke-tests every supported binary.
-Each Linux/macOS archive contains `semafuse`, a models-candle-enabled `semafused`, the
-daemon example config, and the license; the Windows archive contains `semafuse.exe` and
-the license because the daemon transport is Unix-only. Mise exposes the executables found
-in the selected archive and verifies it using the published `SHA256SUMS.txt`.
+starts after a pull request with an unpublished Cargo version merges into `main`. It reruns
+the same Rust, Python, and Web quality checks used for pull requests, builds and
+smoke-tests every supported binary, then creates the matching `v<version>` tag and GitHub
+release. A later merge with the same version skips publishing instead of replacing assets;
+increment the prerelease number for another candidate.
+
+Normal pull-request CI validates the release metadata and target policy without spending
+private-repository runner minutes rebuilding all five release targets after every commit. Run
+the **Release preflight** workflow explicitly against a candidate branch when exact archive
+artifacts are needed before merge. It invokes the same reusable five-platform builder as the
+automatic post-merge release and uploads the dry-run archives without creating a tag.
+Run this preflight for every unpublished version candidate and whenever release packaging or
+its workflow changes; ordinary pull-request commits do not need to spend those runner minutes.
+
+Repository administrators must protect `main` by requiring pull requests and the
+CI workflow's checks. The release workflow also fails closed unless GitHub reports
+that the new `main` commit was introduced by a merged pull request, then requires
+an unpublished version before it builds or publishes anything.
+
+Each archive contains one `semafuse` executable, the changelog, project license,
+and dependency notices. Linux/macOS builds enable models-candle daemon mode and
+also include its example config; Windows builds omit the Unix-only daemon server.
+
+Mise exposes the executable found in the selected archive and verifies it using the
+published `SHA256SUMS.txt`.
 
 To build and install from source instead:
 
 ```bash
 cargo install --path . --locked
-cargo install --path . --locked --bin semafused --no-default-features --features models-candle
+# Include foreground local-model daemon mode on Linux/macOS:
+cargo install --path . --locked --features models-candle
 ```
 
 Rust, Node.js, and pnpm are pinned in `rust-toolchain.toml`, `mise.toml`, and
@@ -82,13 +105,16 @@ mise install
 
 cargo fmt --all -- --check
 cargo clippy --locked --all-targets -- -D warnings
+cargo clippy --locked --all-targets --features benchmarks -- -D warnings
 cargo clippy --locked --all-targets --no-default-features --features daemon -- -D warnings
-cargo clippy --locked --all-targets --no-default-features --features models-candle -- -D warnings
+cargo clippy --locked --all-targets --features models-candle -- -D warnings
 cargo test --locked --all-targets
+cargo test --locked --all-targets --features benchmarks
 cargo test --locked --all-targets --features daemon
-cargo test --locked --all-targets --features models-candle
+cargo test --locked --lib --features models-candle
 RUSTDOCFLAGS="-D warnings" cargo doc --locked --no-deps
-RUSTDOCFLAGS="-D warnings" cargo doc --locked --no-deps --no-default-features --features models-candle
+RUSTDOCFLAGS="-D warnings" cargo doc --locked --no-deps --features benchmarks
+RUSTDOCFLAGS="-D warnings" cargo doc --locked --no-deps --features models-candle
 
 pnpm --dir web install --frozen-lockfile
 pnpm --dir web check
@@ -109,36 +135,39 @@ strategy operations, and `daemon status` connect to their dependencies and then
 exit. The stdio MCP command is the explicit exception because its protocol owns
 stdin/stdout for the lifetime of one client session.
 
-`semafused` is a separate, all-Rust foreground process for services that
-benefit from staying warm. The first built-in service hosts local embedding and
-reranking models, while its versioned service envelope and status registry allow
-other long-lived services to be added later. It has no daemonization,
-`start`, `stop`, or `restart` command; systemd or another supervisor owns
-its lifecycle.
+`semafuse daemon serve` runs the same executable as a separate, all-Rust
+foreground process for services that benefit from staying warm. The first
+built-in service hosts local embedding and reranking models, while its versioned
+service envelope and status registry allow other long-lived services to be
+added later. It has no daemonization, `start`, `stop`, or `restart` command;
+systemd or another supervisor owns its lifecycle.
 
 Benchmark tooling is exposed through the optional `semafuse bench` command
 (`--features benchmarks`). Its `jsonl`, `longmemeval`, `locomo`, and `report`
 subcommands select benchmark workflows; memory strategies themselves remain
-runtime configuration and never create strategy-specific binaries.
+runtime configuration and never create strategy-specific binaries. This is a
+source-built developer harness and is intentionally excluded from the beta
+release archives.
 
 The model service selects its Candle device automatically: CUDA when compiled
 with `models-cuda`, Metal on macOS, and CPU otherwise. macOS builds include an
 Accelerate CPU fallback; explicit `cpu`, `cuda`, and `metal` configuration is
 also available when startup must fail rather than fall back.
 
-Official `semafused` builds target Linux and macOS. Windows keeps the one-shot
-`semafuse` CLI, but its Unix-socket daemon client returns an unsupported error.
+Official daemon-enabled `semafuse` builds target Linux and macOS. Windows keeps
+the one-shot commands, but its Unix-socket daemon client returns an unsupported
+error and `daemon serve` is not compiled in.
 
 The two processes communicate through a same-user Unix-domain socket. The
-`semafuse` client never starts `semafused`, never removes its socket, and
-never falls back from a failed local request to HTTP. Install the optional
-models-enabled daemon separately:
+one-shot client never starts daemon mode, never removes its socket, and never
+falls back from a failed local request to HTTP. Install the models-enabled
+executable with:
 
 ```bash
-cargo install --path . --locked --bin semafused --no-default-features --features models-candle
+cargo install --path . --locked --features models-candle
 ```
 
-See [the semafused guide](docs/semafused.md) for strict local model layout,
+See [the daemon guide](docs/daemon.md) for strict local model layout,
 configuration, foreground execution, and supervisor examples. Inspect an
 already-running process without changing it with:
 
@@ -148,7 +177,8 @@ semafuse daemon status --socket "$XDG_RUNTIME_DIR/semafuse/semafused.sock"
 
 ## License
 
-Semafuse is available under the [MIT License](LICENSE).
+Semafuse is available under the [MIT License](LICENSE). Binary distributions
+also include [third-party dependency notices](THIRD_PARTY_NOTICES.html).
 
 ## Default Paths and Environment Variables
 
@@ -420,6 +450,16 @@ semafuse search "ignored for recent" --mode recent --since 2d
 | --- | --- | --- | --- | --- |
 | `history` | None; reads immutable events directly | `event` items | Configurable `hybrid`, `lexical`, or `recent` | Cheap control/baseline |
 | `lazymem` | Paper-v2 query-time MPM construction | One chronological `memory` item with source IDs and a redacted protocol trace | Qwen3 dense + BM25, RRF, BGE cross-encoder, Top-50, radius-2 windows | Full model-backed LazyMem path and paper protocol |
+| `reconstructive` (experimental) | Query-time source-preserving reconstruction | One chronological verbatim `memory` item plus auditable round traces | Dense + BM25, per-channel seen mask, RRF, reranking, session-local neighbors, optional evidence-gap query refinement | Training-free one-shot, masked, and closed-loop retrieval ablations |
+
+`reconstructive` never replaces source evidence with a model summary. Its
+controller can only decide sufficiency and propose the next retrieval query;
+the final reader receives the selected source events verbatim. The strategy is
+inspired by MemR3 and MemMachine, but is a Semafuse implementation rather than
+an exact reproduction. Typed controller, retrieval, and context settings live
+under `strategies.settings.reconstructive`; reproducible OpenRouter profiles
+and LoCoMo suites are documented in
+[`benchmarks/reconstructive`](benchmarks/reconstructive/README.md).
 
 `lazymem` implements the complete model-backed structure: raw message storage,
 durable event embeddings, parallel dense/BM25 retrieval, RRF, cross-encoder
@@ -565,13 +605,14 @@ semafuse strategy status
 semafuse strategy retry
 semafuse strategy rebuild history
 semafuse strategy rebuild lazymem
+semafuse strategy rebuild reconstructive
 ```
 
 Each import, hook, or spool replay creates persistent deliveries only for newly added raw events. Each strategy
 consumes events in its own checkpoint order and retains a retryable state on failure. `rebuild` reconstructs the target strategy's derived memories
 from the complete raw event history without modifying other strategies or raw events.
 
-Memory strategies are organized as peers under `src/strategy/`. `mod.rs` is the stable façade for dispatch, recall, and rebuild; `registry.rs` contains the ordered module registry; `recall.rs` defines the strategy-neutral `event | memory` output; and each strategy owns its constructor and private typed settings. The model-backed `lazymem` strategy lives in `lazymem.rs`, with retrieval, windowing, processing, profile validation, and prompt construction isolated in `lazymem/` submodules. Model I/O is similarly separated behind the small `inference.rs` façade into HTTP transport, OpenAI-compatible inference, reranking, processor dispatch, and isolated Codex execution. To add a strategy, implement `MemoryStrategy` and add its registration to the registry. Callers remain unchanged.
+Memory strategies are organized as peers under `src/strategy/`. `mod.rs` is the stable façade for dispatch, recall, and rebuild; `registry.rs` contains the ordered module registry; `recall.rs` defines the strategy-neutral `event | memory` output; and each strategy owns its constructor and private typed settings. The model-backed `lazymem` strategy lives in `lazymem.rs`, with retrieval, windowing, processing, profile validation, and prompt construction isolated in `lazymem/` submodules. The source-preserving `reconstructive` strategy similarly isolates its typed configuration, evidence-gap controller, and verbatim renderer under `reconstructive/`, while reusing the shared retrieval primitives. Model I/O is separated behind the small `inference.rs` façade into HTTP transport, OpenAI-compatible inference, reranking, reusable structured-output contracts, processor dispatch, and isolated Codex execution. To add a strategy, implement `MemoryStrategy` and add its registration to the registry. Callers remain unchanged.
 
 ### `session`: Read a Complete Session
 
@@ -699,10 +740,10 @@ semafuse spool replay
 ## Development Verification
 
 The database schema is managed by `migrations/`; unapplied migrations run automatically when the application starts.
-When modifying the schema or SQL queries, install the CLI matching the project's `sqlx 0.8`, update the offline query metadata, and then verify:
+When modifying the schema or SQL queries, install the CLI matching the project's `sqlx 0.9`, update the offline query metadata, and then verify:
 
 ```bash
-cargo install sqlx-cli --version '^0.8' --no-default-features --features sqlite
+cargo install sqlx-cli --version '^0.9' --no-default-features --features sqlite
 export DATABASE_URL=sqlite://./target/sqlx-dev.db
 cargo sqlx database create
 cargo sqlx migrate run
@@ -713,11 +754,10 @@ cargo sqlx prepare
 in build environments without a database connection.
 
 Run the Unix package and models-candle gates in [Build and Install](#build-and-install).
-After they pass, build the same two Rust executables shipped on Unix:
+After they pass, build the same unified Rust executable shipped on Unix:
 
 ```bash
-cargo build --locked --release -p semafuse --bin semafuse
-cargo build --locked --release -p semafuse --bin semafused --no-default-features --features models-candle
+cargo build --locked --release -p semafuse --bin semafuse --features models-candle
 ```
 
 Tests cover import and deduplication for all four agents, cross-agent hook recall, OpenDAL image storage, spool
