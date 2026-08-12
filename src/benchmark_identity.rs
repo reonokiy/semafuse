@@ -32,7 +32,6 @@ const IDENTITY_SOURCES: &[(&str, &[u8])] = &[
     source!("src/benchmark_metrics.rs"),
     source!("src/benchmark_report.rs"),
     source!("src/benchmark_suite.rs"),
-    source!("src/bin/semafused.rs"),
     source!("src/blob.rs"),
     source!("src/config.rs"),
     source!("src/daemon/config.rs"),

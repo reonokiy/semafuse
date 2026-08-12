@@ -3,7 +3,7 @@ name: CI
 on:
   push:
     branches:
-      - "**"
+      - main
   pull_request:
   workflow_call:
 
@@ -60,7 +60,16 @@ jobs:
             --output "$tool_dir/$archive"
           echo "$ACTIONLINT_SHA256  $tool_dir/$archive" | sha256sum --check --strict
           tar --extract --gzip --file "$tool_dir/$archive" --directory "$tool_dir" actionlint
-          "$tool_dir/actionlint" -color .github/workflows/*.yml
+          # actionlint 1.7.12 predates GitHub's supported `concurrency.queue`
+          # key. Keep the exception exact so every other syntax error remains
+          # fatal until actionlint's schema catches up.
+          queue_key_count="$(grep -hEc '^[[:space:]]+queue:' .github/workflows/*.yml \
+            | awk '{ total += $1 } END { print total + 0 }')"
+          [[ "$queue_key_count" -eq 1 ]]
+          grep -Fqx '  queue: max' .github/workflows/release.yml
+          "$tool_dir/actionlint" -color \
+            -ignore 'unexpected key "queue" for "concurrency" section' \
+            .github/workflows/*.yml
       - name: Check advisories, licenses, and sources
         uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2.1.1
         with:
@@ -86,6 +95,37 @@ jobs:
             --output-file "$tool_dir/THIRD_PARTY_NOTICES.html"
           cmp THIRD_PARTY_NOTICES.html "$tool_dir/THIRD_PARTY_NOTICES.html"
 
+  release-preflight-metadata:
+    name: Resolve release preflight
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      version: ${{ steps.metadata.outputs.version }}
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Resolve release metadata
+        id: metadata
+        shell: bash
+        run: |
+          metadata="$(bash scripts/release-metadata.sh)"
+          {
+            echo "version=$(jq -er '.version' <<< "$metadata")"
+          } >> "$GITHUB_OUTPUT"
+
+  release-archives:
+    name: Preflight release archives
+    if: github.event_name == 'pull_request'
+    needs: release-preflight-metadata
+    uses: ./.github/workflows/release-build.yml
+    permissions:
+      contents: read
+    with:
+      version: ${{ needs.release-preflight-metadata.outputs.version }}
+
   rust:
     name: Rust
     runs-on: ubuntu-24.04
@@ -97,6 +137,10 @@ jobs:
           persist-credentials: false
       - name: Report Rust toolchain
         run: rustc --version --verbose
+      - name: Install benchmark Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
       - name: Check formatting
         run: cargo fmt --all -- --check
       - name: Run Clippy
@@ -106,7 +150,7 @@ jobs:
       - name: Run benchmark Clippy
         run: cargo clippy --locked --all-targets --features benchmarks -- -D warnings
       - name: Run models-candle Clippy
-        run: cargo clippy --locked --all-targets --no-default-features --features models-candle -- -D warnings
+        run: cargo clippy --locked --all-targets --features models-candle -- -D warnings
       - name: Run tests
         run: cargo test --locked --all-targets
       - name: Run benchmark tests
@@ -126,7 +170,7 @@ jobs:
       - name: Build models-candle documentation
         env:
           RUSTDOCFLAGS: -D warnings
-        run: cargo doc --locked --no-deps --no-default-features --features models-candle
+        run: cargo doc --locked --no-deps --features models-candle
 
   rust-platforms:
     name: Rust (${{ matrix.runner }})
@@ -147,6 +191,10 @@ jobs:
           persist-credentials: false
       - name: Report Rust toolchain
         run: rustc --version --verbose
+      - name: Install benchmark Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
       - name: Check all targets
         run: cargo check --locked --all-targets
       - name: Run tests
@@ -163,7 +211,7 @@ jobs:
         run: cargo test --locked --all-targets --features daemon
       - name: Check models-candle daemon
         if: matrix.test_models_candle
-        run: cargo check --locked --all-targets --no-default-features --features models-candle
+        run: cargo check --locked --all-targets --features models-candle
       - name: Test models-candle daemon
         if: matrix.test_models_candle
         run: cargo test --locked --lib --features models-candle

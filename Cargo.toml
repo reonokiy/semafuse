@@ -3,7 +3,6 @@ name = "semafuse"
 version = "0.1.0-beta.1"
 edition = "2024"
 rust-version = "1.97.1"
-default-run = "semafuse"
 description = "Local, agent-neutral conversation memory for coding agents"
 license = "MIT"
 repository = "https://github.com/reonokiy/semafuse"
@@ -158,8 +157,3 @@ fastembed = { version = "=5.17.4", default-features = false, features = ["accele
 [dev-dependencies]
 assert_cmd = "2.2"
 predicates = "3.1"
-
-[[bin]]
-name = "semafused"
-path = "src/bin/semafused.rs"
-required-features = ["daemon"]

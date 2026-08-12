@@ -70,6 +70,47 @@ fn command_lookup_ignores_pathext_on_posix() {
     ));
 }
 
+#[cfg(feature = "daemon")]
+#[test]
+fn daemon_serve_is_a_feature_gated_semafuse_subcommand() {
+    use clap::Parser;
+
+    let cli = super::Cli::try_parse_from([
+        "semafuse",
+        "daemon",
+        "serve",
+        "--config",
+        "/tmp/semafuse-daemon.toml",
+    ])
+    .unwrap();
+    assert_eq!(cli.command.name(), "daemon.serve");
+    assert!(matches!(
+        cli.command,
+        super::Commands::Daemon {
+            command: super::DaemonCommands::Serve { .. }
+        }
+    ));
+}
+
+#[cfg(not(feature = "daemon"))]
+#[test]
+fn daemon_serve_is_absent_without_the_server_feature() {
+    use clap::Parser;
+
+    let result = super::Cli::try_parse_from([
+        "semafuse",
+        "daemon",
+        "serve",
+        "--config",
+        "/tmp/semafuse-daemon.toml",
+    ]);
+    let error = match result {
+        Ok(_) => panic!("daemon serve unexpectedly parsed without the daemon feature"),
+        Err(error) => error,
+    };
+    assert_eq!(error.kind(), clap::error::ErrorKind::InvalidSubcommand);
+}
+
 #[cfg(feature = "benchmarks")]
 #[test]
 fn bench_jsonl_is_a_feature_gated_semafuse_subcommand() {

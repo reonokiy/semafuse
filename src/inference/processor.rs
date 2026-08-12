@@ -141,7 +141,7 @@ impl PromptProcessorBackend {
         }
     }
 
-    #[cfg(test)]
+    #[cfg(all(test, unix))]
     pub(crate) async fn chat_json(
         &self,
         system: &str,

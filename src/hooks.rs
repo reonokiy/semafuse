@@ -968,13 +968,15 @@ pub async fn replay_spool(
 }
 
 fn private_open_options() -> OpenOptions {
-    let mut options = OpenOptions::new();
     #[cfg(unix)]
     {
         use std::os::unix::fs::OpenOptionsExt;
+        let mut options = OpenOptions::new();
         options.mode(0o600);
+        options
     }
-    options
+    #[cfg(not(unix))]
+    OpenOptions::new()
 }
 
 fn recover_pending_spool_writes(dir: &Path) -> Result<()> {

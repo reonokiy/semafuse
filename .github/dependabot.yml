@@ -39,6 +39,26 @@ updates:
         patterns:
           - "*"
 
+  - package-ecosystem: pip
+    directories:
+      - /benchmarks/external_memory
+      - /benchmarks/external_memory/methods/amem
+      - /benchmarks/external_memory/methods/amem_paper
+      - /benchmarks/external_memory/methods/mem0_oss
+      - /benchmarks/lazymem
+      - /benchmarks/lmeb
+      - /benchmarks/memoryagentbench
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:20"
+      timezone: Europe/Berlin
+    open-pull-requests-limit: 5
+    groups:
+      python-benchmark-dependencies:
+        patterns:
+          - "*"
+
   - package-ecosystem: github-actions
     directory: /
     schedule:

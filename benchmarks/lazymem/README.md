@@ -338,12 +338,13 @@ the companion harness configuration below sends `[answer]` and `[judge]`
 through the same local Codex CLI. Preserve `codex --version`, the selected
 model, and the copied TOML with the output journal.
 
-### Use the local semafused models service instead of HTTP
+### Use the local daemon models service instead of HTTP
 
 The embedding and reranker can be moved off the HTTP path without moving them
-into each short-lived Semafuse command. Install and start
-[`semafused`](../../docs/semafused.md) separately, using absolute local
-directories for `Qwen/Qwen3-Embedding-0.6B` and
+into each short-lived Semafuse command. Install the models-enabled executable
+and start [`semafuse daemon serve`](../../docs/daemon.md) as a separately
+supervised process, using absolute local directories for
+`Qwen/Qwen3-Embedding-0.6B` and
 `BAAI/bge-reranker-v2-m3`. After it reports ready, inspect its semantic
 fingerprints:
 

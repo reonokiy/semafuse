@@ -67,23 +67,24 @@ smoke-tests every supported binary, then creates the matching `v<version>` tag a
 release. A later merge with the same version skips publishing instead of replacing assets;
 increment the prerelease number for another candidate.
 
-Repository administrators must protect `main` by requiring pull requests and the CI
-workflow's checks. That repository rule prevents direct pushes; the checked-in release
-workflow deliberately gates only on a successful `main` push and an unpublished version.
+Repository administrators must protect `main` by requiring pull requests and the
+CI workflow's checks. The release workflow also fails closed unless GitHub reports
+that the new `main` commit was introduced by a merged pull request, then requires
+an unpublished version before it builds or publishes anything.
 
-Each Linux/macOS archive contains `semafuse`, a models-candle-enabled `semafused`, the
-daemon example config, changelog, project license, and dependency notices; the Windows
-archive contains `semafuse.exe`, changelog, the project license, and dependency
-notices because the daemon transport is Unix-only.
+Each archive contains one `semafuse` executable, the changelog, project license,
+and dependency notices. Linux/macOS builds enable models-candle daemon mode and
+also include its example config; Windows builds omit the Unix-only daemon server.
 
-Mise exposes the executables found in the selected archive and verifies it using the
+Mise exposes the executable found in the selected archive and verifies it using the
 published `SHA256SUMS.txt`.
 
 To build and install from source instead:
 
 ```bash
 cargo install --path . --locked
-cargo install --path . --locked --bin semafused --no-default-features --features models-candle
+# Include foreground local-model daemon mode on Linux/macOS:
+cargo install --path . --locked --features models-candle
 ```
 
 Rust, Node.js, and pnpm are pinned in `rust-toolchain.toml`, `mise.toml`, and
@@ -98,14 +99,14 @@ cargo fmt --all -- --check
 cargo clippy --locked --all-targets -- -D warnings
 cargo clippy --locked --all-targets --features benchmarks -- -D warnings
 cargo clippy --locked --all-targets --no-default-features --features daemon -- -D warnings
-cargo clippy --locked --all-targets --no-default-features --features models-candle -- -D warnings
+cargo clippy --locked --all-targets --features models-candle -- -D warnings
 cargo test --locked --all-targets
 cargo test --locked --all-targets --features benchmarks
 cargo test --locked --all-targets --features daemon
 cargo test --locked --lib --features models-candle
 RUSTDOCFLAGS="-D warnings" cargo doc --locked --no-deps
 RUSTDOCFLAGS="-D warnings" cargo doc --locked --no-deps --features benchmarks
-RUSTDOCFLAGS="-D warnings" cargo doc --locked --no-deps --no-default-features --features models-candle
+RUSTDOCFLAGS="-D warnings" cargo doc --locked --no-deps --features models-candle
 
 pnpm --dir web install --frozen-lockfile
 pnpm --dir web check
@@ -126,12 +127,12 @@ strategy operations, and `daemon status` connect to their dependencies and then
 exit. The stdio MCP command is the explicit exception because its protocol owns
 stdin/stdout for the lifetime of one client session.
 
-`semafused` is a separate, all-Rust foreground process for services that
-benefit from staying warm. The first built-in service hosts local embedding and
-reranking models, while its versioned service envelope and status registry allow
-other long-lived services to be added later. It has no daemonization,
-`start`, `stop`, or `restart` command; systemd or another supervisor owns
-its lifecycle.
+`semafuse daemon serve` runs the same executable as a separate, all-Rust
+foreground process for services that benefit from staying warm. The first
+built-in service hosts local embedding and reranking models, while its versioned
+service envelope and status registry allow other long-lived services to be
+added later. It has no daemonization, `start`, `stop`, or `restart` command;
+systemd or another supervisor owns its lifecycle.
 
 Benchmark tooling is exposed through the optional `semafuse bench` command
 (`--features benchmarks`). Its `jsonl`, `longmemeval`, `locomo`, and `report`
@@ -145,19 +146,20 @@ with `models-cuda`, Metal on macOS, and CPU otherwise. macOS builds include an
 Accelerate CPU fallback; explicit `cpu`, `cuda`, and `metal` configuration is
 also available when startup must fail rather than fall back.
 
-Official `semafused` builds target Linux and macOS. Windows keeps the one-shot
-`semafuse` CLI, but its Unix-socket daemon client returns an unsupported error.
+Official daemon-enabled `semafuse` builds target Linux and macOS. Windows keeps
+the one-shot commands, but its Unix-socket daemon client returns an unsupported
+error and `daemon serve` is not compiled in.
 
 The two processes communicate through a same-user Unix-domain socket. The
-`semafuse` client never starts `semafused`, never removes its socket, and
-never falls back from a failed local request to HTTP. Install the optional
-models-enabled daemon separately:
+one-shot client never starts daemon mode, never removes its socket, and never
+falls back from a failed local request to HTTP. Install the models-enabled
+executable with:
 
 ```bash
-cargo install --path . --locked --bin semafused --no-default-features --features models-candle
+cargo install --path . --locked --features models-candle
 ```
 
-See [the semafused guide](docs/semafused.md) for strict local model layout,
+See [the daemon guide](docs/daemon.md) for strict local model layout,
 configuration, foreground execution, and supervisor examples. Inspect an
 already-running process without changing it with:
 
@@ -744,11 +746,10 @@ cargo sqlx prepare
 in build environments without a database connection.
 
 Run the Unix package and models-candle gates in [Build and Install](#build-and-install).
-After they pass, build the same two Rust executables shipped on Unix:
+After they pass, build the same unified Rust executable shipped on Unix:
 
 ```bash
-cargo build --locked --release -p semafuse --bin semafuse
-cargo build --locked --release -p semafuse --bin semafused --no-default-features --features models-candle
+cargo build --locked --release -p semafuse --bin semafuse --features models-candle
 ```
 
 Tests cover import and deduplication for all four agents, cross-agent hook recall, OpenDAL image storage, spool

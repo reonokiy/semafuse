@@ -202,7 +202,7 @@ enum Commands {
         #[command(subcommand)]
         command: benchmark_cli::BenchmarkCommand,
     },
-    /// Inspect the separately managed semafused process
+    /// Run or inspect the separately managed daemon process
     Daemon {
         #[command(subcommand)]
         command: DaemonCommands,
@@ -282,6 +282,13 @@ enum StrategyCommands {
 
 #[derive(Subcommand)]
 enum DaemonCommands {
+    /// Run the local service daemon in the foreground
+    #[cfg(feature = "daemon")]
+    Serve {
+        /// Strict TOML configuration file
+        #[arg(long, value_name = "PATH")]
+        config: PathBuf,
+    },
     /// Probe a running daemon without changing its services
     Status {
         /// Absolute Unix-domain socket path
@@ -317,7 +324,13 @@ impl Commands {
             Self::Strategy { .. } => "strategy",
             #[cfg(feature = "benchmarks")]
             Self::Bench { .. } => "bench",
-            Self::Daemon { .. } => "daemon.status",
+            #[cfg(feature = "daemon")]
+            Self::Daemon {
+                command: DaemonCommands::Serve { .. },
+            } => "daemon.serve",
+            Self::Daemon {
+                command: DaemonCommands::Status { .. },
+            } => "daemon.status",
             Self::Mcp { .. } => "mcp",
             Self::Doctor { .. } => "doctor",
         }
@@ -1190,67 +1203,84 @@ async fn run(cli: Cli) -> Result<()> {
         }
         #[cfg(feature = "benchmarks")]
         Commands::Bench { command } => benchmark_cli::run(command, json_output).await?,
-        Commands::Daemon {
-            command:
-                DaemonCommands::Status {
-                    socket,
-                    connect_timeout_ms,
-                    request_timeout_ms,
-                },
-        } => {
-            let status = DaemonClient::status_at(
-                socket.clone(),
-                Duration::from_millis(connect_timeout_ms),
-                Duration::from_millis(request_timeout_ms),
-            )
-            .await
-            .context("semafused status probe failed")?;
-            let models = status.models().context("invalid models service status")?;
-            if json_output {
-                print_json(&json!({
-                    "ok": true,
-                    "command": "daemon.status",
-                    "socket": socket,
-                    "status": status,
-                }))?;
-            } else {
-                println!(
-                    "semafused {:?} at {} (version {}).",
-                    status.state,
-                    socket.display(),
-                    status.daemon_version
+        Commands::Daemon { command } => match command {
+            #[cfg(feature = "daemon")]
+            DaemonCommands::Serve { config } => {
+                tracing_subscriber::fmt()
+                    .with_env_filter(
+                        tracing_subscriber::EnvFilter::try_from_default_env()
+                            .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
+                    )
+                    .with_target(false)
+                    .try_init()
+                    .map_err(|error| anyhow::anyhow!("initialize daemon logging: {error}"))?;
+                let config = semafuse::daemon::Config::load(&config)?;
+                let server = semafuse::daemon::Server::from_config(config).await?;
+                tracing::info!(
+                    socket = %server.socket_path().display(),
+                    "starting Semafuse daemon"
                 );
-                println!(
-                    "  Services: {}",
-                    status
-                        .services
-                        .keys()
-                        .cloned()
-                        .collect::<Vec<_>>()
-                        .join(", ")
-                );
-                if let Some(models) = models {
+                server.run_until_shutdown_signal().await?;
+            }
+            DaemonCommands::Status {
+                socket,
+                connect_timeout_ms,
+                request_timeout_ms,
+            } => {
+                let status = DaemonClient::status_at(
+                    socket.clone(),
+                    Duration::from_millis(connect_timeout_ms),
+                    Duration::from_millis(request_timeout_ms),
+                )
+                .await
+                .context("Semafuse daemon status probe failed")?;
+                let models = status.models().context("invalid models service status")?;
+                if json_output {
+                    print_json(&json!({
+                        "ok": true,
+                        "command": "daemon.status",
+                        "socket": socket,
+                        "status": status,
+                    }))?;
+                } else {
                     println!(
-                        "  Models: {:?} (version {})",
-                        models.state, models.service_version
+                        "Semafuse daemon {:?} at {} (version {}).",
+                        status.state,
+                        socket.display(),
+                        status.daemon_version
                     );
-                    if let Some(identity) = models.embedding {
+                    println!(
+                        "  Services: {}",
+                        status
+                            .services
+                            .keys()
+                            .cloned()
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    );
+                    if let Some(models) = models {
                         println!(
-                            "    Embedding: {} ({}, {} dimensions)",
-                            identity.model,
-                            identity.fingerprint,
-                            identity.dimensions.unwrap_or_default()
+                            "  Models: {:?} (version {})",
+                            models.state, models.service_version
                         );
-                    }
-                    if let Some(identity) = models.reranker {
-                        println!(
-                            "    Reranker:  {} ({})",
-                            identity.model, identity.fingerprint
-                        );
+                        if let Some(identity) = models.embedding {
+                            println!(
+                                "    Embedding: {} ({}, {} dimensions)",
+                                identity.model,
+                                identity.fingerprint,
+                                identity.dimensions.unwrap_or_default()
+                            );
+                        }
+                        if let Some(identity) = models.reranker {
+                            println!(
+                                "    Reranker:  {} ({})",
+                                identity.model, identity.fingerprint
+                            );
+                        }
                     }
                 }
             }
-        }
+        },
         Commands::Mcp { db } => {
             let store = SqliteStore::open(&db_path(db)).await?;
             mcp::serve(&store).await?;

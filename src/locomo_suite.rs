@@ -1735,7 +1735,7 @@ model = "test-reranker"
         )
         .unwrap();
         let search_path = env::var_os("PATH");
-        let command = resolve_executable("python3", directory.path(), search_path.as_deref())
+        let command = resolve_executable("python", directory.path(), search_path.as_deref())
             .unwrap()
             .invocation_path;
         let suite = SuiteConfig {
@@ -1996,7 +1996,7 @@ model = "test-reranker"
             return;
         }
         let search_path = env::var_os("PATH");
-        let executable = resolve_executable("python3", &external, search_path.as_deref()).unwrap();
+        let executable = resolve_executable("python", &external, search_path.as_deref()).unwrap();
         let executable_sha256 = sha256_file(&executable.identity_target).unwrap();
         let method = ResolvedExternalMethod {
             id: "fake".into(),
@@ -2009,7 +2009,7 @@ model = "test-reranker"
             reader_tokenizer_model: None,
             reader_tokenizer_revision: None,
             command: vec![
-                "python3".into(),
+                "python".into(),
                 "-m".into(),
                 "semafuse_external_memory.worker".into(),
             ],

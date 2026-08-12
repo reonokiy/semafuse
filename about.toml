@@ -11,8 +11,7 @@ accepted = [
 ]
 
 # Match the five targets built by the release workflow. The notice is generated
-# with `--features models-candle`, which is the union of the default `semafuse`
-# build and the `semafused --no-default-features --features models-candle` build.
+# with `--features models-candle`, matching the unified Unix release binary.
 targets = [
     "x86_64-unknown-linux-gnu",
     "aarch64-unknown-linux-gnu",

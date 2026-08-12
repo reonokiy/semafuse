@@ -8,10 +8,11 @@ on:
 
 concurrency:
   group: release-main
-  cancel-in-progress: false
+  queue: max
 
 permissions:
   contents: read
+  pull-requests: read
 
 env:
   CARGO_TERM_COLOR: always
@@ -23,7 +24,6 @@ jobs:
     timeout-minutes: 10
     outputs:
       assets: ${{ steps.version.outputs.assets }}
-      matrix: ${{ steps.version.outputs.matrix }}
       should_release: ${{ steps.version.outputs.should_release }}
       tag: ${{ steps.version.outputs.tag }}
       version: ${{ steps.version.outputs.version }}
@@ -43,50 +43,37 @@ jobs:
             echo "Releases must run from main; got $GITHUB_REF" >&2
             exit 1
           fi
-          version="$(cargo metadata --locked --no-deps --format-version 1 \
-            | jq -er '[.packages[] | select(.name == "semafuse")] |
-              if length == 1 then .[0].version
-              else error("expected exactly one Semafuse package") end')"
-          tag="v$version"
-          for required_file in \
-            .github/release-targets.json Cargo.lock CHANGELOG.md LICENSE \
-            THIRD_PARTY_NOTICES.html semafused.example.toml
-          do
-            if [[ ! -s "$required_file" ]]; then
-              echo "Required release file is missing or empty: $required_file" >&2
-              exit 1
+          merged_pr=""
+          for attempt in 1 2 3 4 5; do
+            if associated_pulls="$(gh api \
+              "repos/$GITHUB_REPOSITORY/commits/$GITHUB_SHA/pulls?per_page=100")"
+            then
+              merged_pr="$(jq -r --arg repository "$GITHUB_REPOSITORY" '
+                first(.[] | select(
+                  .merged_at != null and
+                  .base.ref == "main" and
+                  .base.repo.full_name == $repository
+                ) | .number) // empty
+              ' <<< "$associated_pulls")"
+            fi
+            if [[ -n "$merged_pr" ]]; then
+              break
+            fi
+            if (( attempt < 5 )); then
+              sleep "$((attempt * 2))"
             fi
           done
-          if ! grep -Fqx "## $version" CHANGELOG.md; then
-            echo "CHANGELOG.md has no section for version $version." >&2
+          if [[ -z "$merged_pr" ]]; then
+            echo "Main commit was not introduced by a merged pull request." >&2
             exit 1
           fi
-          matrix="$(jq -cer '
-            if (.include | type) != "array" or (.include | length) != 5 then
-              error("release matrix must contain exactly five targets")
-            elif any(.include[];
-              (.runner | type) != "string" or
-              (.target | type) != "string" or
-              (.archive != "tar.gz" and .archive != "zip")
-            ) then
-              error("release matrix contains an invalid target")
-            elif any(.include[];
-              ((.runner | startswith("windows-")) and .archive != "zip") or
-              ((.runner | startswith("windows-") | not) and .archive != "tar.gz")
-            ) then
-              error("release matrix archive type does not match its runner")
-            elif ([.include[].target] | unique | length) != (.include | length) then
-              error("release matrix target names must be unique")
-            else
-              .
-            end
-          ' .github/release-targets.json)"
-          assets="$(jq -cn --arg tag "$tag" --argjson matrix "$matrix" '
-            $matrix.include | map("semafuse-\($tag)-\(.target).\(.archive)")
-          ')"
+          echo "Verified merged pull request #$merged_pr for $GITHUB_SHA."
+          metadata="$(bash scripts/release-metadata.sh)"
+          assets="$(jq -cer '.assets' <<< "$metadata")"
+          version="$(jq -er '.version' <<< "$metadata")"
+          tag="$(jq -er '.tag' <<< "$metadata")"
           {
             echo "assets=$assets"
-            echo "matrix=$matrix"
             echo "version=$version"
             echo "tag=$tag"
           } >> "$GITHUB_OUTPUT"
@@ -190,104 +177,16 @@ jobs:
       contents: read
 
   build:
-    name: Build ${{ matrix.target }}
+    name: Build release archives
     needs:
       - prepare
       - quality
     if: needs.prepare.outputs.should_release == 'true'
-    timeout-minutes: 90
-    strategy:
-      fail-fast: false
-      matrix: ${{ fromJSON(needs.prepare.outputs.matrix) }}
-    runs-on: ${{ matrix.runner }}
-    steps:
-      - name: Check out source
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - name: Install Rust
-        shell: bash
-        run: |
-          rustup target add "${{ matrix.target }}"
-          rustc --version --verbose
-      - name: Build semafuse release binary
-        shell: bash
-        run: cargo build --locked --release --target "${{ matrix.target }}" -p semafuse --bin semafuse
-      - name: Build semafused release binary
-        if: matrix.archive == 'tar.gz'
-        shell: bash
-        run: cargo build --locked --release --target "${{ matrix.target }}" -p semafuse --bin semafused --no-default-features --features models-candle
-      - name: Smoke-test semafuse
-        shell: bash
-        env:
-          RELEASE_VERSION: ${{ needs.prepare.outputs.version }}
-        run: |
-          binary="target/${{ matrix.target }}/release/semafuse"
-          if [[ "$RUNNER_OS" == "Windows" ]]; then
-            binary="${binary}.exe"
-          fi
-          actual_version="$("$binary" --version)"
-          actual_version="${actual_version%$'\r'}"
-          [[ "$actual_version" == "semafuse $RELEASE_VERSION" ]]
-      - name: Smoke-test semafused
-        if: matrix.archive == 'tar.gz'
-        shell: bash
-        env:
-          RELEASE_VERSION: ${{ needs.prepare.outputs.version }}
-        run: |
-          binary="target/${{ matrix.target }}/release/semafused"
-          [[ "$("$binary" --version)" == "semafused $RELEASE_VERSION" ]]
-      - name: Package Unix binary
-        if: matrix.archive == 'tar.gz'
-        shell: bash
-        run: |
-          archive="semafuse-${{ needs.prepare.outputs.tag }}-${{ matrix.target }}.tar.gz"
-          staging="target/release-package"
-          mkdir -p dist "$staging"
-          cp "target/${{ matrix.target }}/release/semafuse" "$staging/"
-          cp "target/${{ matrix.target }}/release/semafused" "$staging/"
-          cp semafused.example.toml "$staging/"
-          cp LICENSE "$staging/"
-          cp CHANGELOG.md "$staging/"
-          cp THIRD_PARTY_NOTICES.html "$staging/"
-          tar -C "$staging" -czf "dist/$archive" \
-            semafuse semafused semafused.example.toml LICENSE CHANGELOG.md THIRD_PARTY_NOTICES.html
-          expected_contents="$(printf '%s\n' \
-            CHANGELOG.md LICENSE THIRD_PARTY_NOTICES.html semafuse semafused semafused.example.toml \
-            | LC_ALL=C sort)"
-          actual_contents="$(tar -tzf "dist/$archive" | LC_ALL=C sort)"
-          [[ "$actual_contents" == "$expected_contents" ]]
-      - name: Package Windows binary
-        if: matrix.archive == 'zip'
-        shell: pwsh
-        run: |
-          $archive = "semafuse-${{ needs.prepare.outputs.tag }}-${{ matrix.target }}.zip"
-          $staging = "target\release-package"
-          New-Item -ItemType Directory -Force dist | Out-Null
-          New-Item -ItemType Directory -Force $staging | Out-Null
-          Copy-Item "target\${{ matrix.target }}\release\semafuse.exe" $staging
-          Copy-Item LICENSE $staging
-          Copy-Item CHANGELOG.md $staging
-          Copy-Item THIRD_PARTY_NOTICES.html $staging
-          $expectedContents = @(
-            "CHANGELOG.md"
-            "LICENSE"
-            "THIRD_PARTY_NOTICES.html"
-            "semafuse.exe"
-          ) | Sort-Object
-          $actualContents = (Get-ChildItem $staging -File).Name | Sort-Object
-          if (Compare-Object $expectedContents $actualContents) {
-            throw "Windows release package contents differ from the expected manifest"
-          }
-          Compress-Archive -Path "$staging\*" -DestinationPath "dist\$archive"
-      - name: Upload packaged binary
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: release-${{ matrix.target }}
-          path: dist/*
-          if-no-files-found: error
-          compression-level: 0
-          retention-days: 7
+    uses: ./.github/workflows/release-build.yml
+    permissions:
+      contents: read
+    with:
+      version: ${{ needs.prepare.outputs.version }}
 
   release:
     name: Publish GitHub release
@@ -357,7 +256,22 @@ jobs:
                   ) | .id) // empty')"
               if [[ -n "$draft_id" ]]; then
                 echo "Deleting incomplete draft release $draft_id after publication failure." >&2
-                gh api --method DELETE "repos/$GITHUB_REPOSITORY/releases/$draft_id"
+                if gh api --method DELETE "repos/$GITHUB_REPOSITORY/releases/$draft_id"; then
+                  if remaining_release_id="$(gh api --paginate --slurp \
+                    "repos/$GITHUB_REPOSITORY/releases?per_page=100" \
+                    | jq -r --arg tag "$RELEASE_TAG" \
+                      'first(.[][] | select(.tag_name == $tag) | .id) // empty')" && \
+                    tag_target="$(gh api \
+                    "repos/$GITHUB_REPOSITORY/git/ref/tags/$RELEASE_TAG" \
+                    --jq '.object.sha' 2>/dev/null)"
+                  then
+                    if [[ -z "$remaining_release_id" && "$tag_target" == "$GITHUB_SHA" ]]; then
+                      echo "Deleting the workflow-owned orphan tag $RELEASE_TAG." >&2
+                      gh api --method DELETE \
+                        "repos/$GITHUB_REPOSITORY/git/refs/tags/$RELEASE_TAG"
+                    fi
+                  fi
+                fi
               fi
             fi
             exit "$status"

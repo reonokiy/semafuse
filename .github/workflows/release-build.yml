@@ -1,0 +1,142 @@
+name: Release build
+
+on:
+  workflow_call:
+    inputs:
+      version:
+        description: Cargo package version expected from the binary
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+
+jobs:
+  build:
+    name: Build ${{ matrix.target }}
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            target: x86_64-unknown-linux-gnu
+            archive: tar.gz
+          - runner: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+            archive: tar.gz
+          - runner: macos-15-intel
+            target: x86_64-apple-darwin
+            archive: tar.gz
+          - runner: macos-15
+            target: aarch64-apple-darwin
+            archive: tar.gz
+          - runner: windows-2025
+            target: x86_64-pc-windows-msvc
+            archive: zip
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install Rust target
+        env:
+          RELEASE_TARGET: ${{ matrix.target }}
+        shell: bash
+        run: |
+          rustup target add "$RELEASE_TARGET"
+          rustc --version --verbose
+      - name: Build Windows semafuse release binary
+        if: matrix.archive == 'zip'
+        env:
+          RELEASE_TARGET: ${{ matrix.target }}
+        shell: bash
+        run: cargo build --locked --release --target "$RELEASE_TARGET" -p semafuse --bin semafuse
+      - name: Build daemon-enabled semafuse release binary
+        if: matrix.archive == 'tar.gz'
+        env:
+          RELEASE_TARGET: ${{ matrix.target }}
+        shell: bash
+        run: cargo build --locked --release --target "$RELEASE_TARGET" -p semafuse --bin semafuse --features models-candle
+      - name: Smoke-test semafuse
+        shell: bash
+        env:
+          RELEASE_TARGET: ${{ matrix.target }}
+          RELEASE_VERSION: ${{ inputs.version }}
+        run: |
+          binary="target/$RELEASE_TARGET/release/semafuse"
+          if [[ "$RUNNER_OS" == "Windows" ]]; then
+            binary="${binary}.exe"
+          fi
+          actual_version="$("$binary" --version)"
+          actual_version="${actual_version%$'\r'}"
+          [[ "$actual_version" == "semafuse $RELEASE_VERSION" ]]
+      - name: Smoke-test daemon command
+        if: matrix.archive == 'tar.gz'
+        env:
+          RELEASE_TARGET: ${{ matrix.target }}
+        shell: bash
+        run: |
+          binary="target/$RELEASE_TARGET/release/semafuse"
+          "$binary" daemon serve --help >/dev/null
+      - name: Package Unix binary
+        if: matrix.archive == 'tar.gz'
+        env:
+          RELEASE_TARGET: ${{ matrix.target }}
+          RELEASE_VERSION: ${{ inputs.version }}
+        shell: bash
+        run: |
+          archive="semafuse-v$RELEASE_VERSION-$RELEASE_TARGET.tar.gz"
+          staging="target/release-package"
+          mkdir -p dist "$staging"
+          cp "target/$RELEASE_TARGET/release/semafuse" "$staging/"
+          cp semafuse-daemon.example.toml "$staging/"
+          cp LICENSE "$staging/"
+          cp CHANGELOG.md "$staging/"
+          cp THIRD_PARTY_NOTICES.html "$staging/"
+          tar -C "$staging" -czf "dist/$archive" \
+            semafuse semafuse-daemon.example.toml LICENSE CHANGELOG.md THIRD_PARTY_NOTICES.html
+          expected_contents="$(printf '%s\n' \
+            CHANGELOG.md LICENSE THIRD_PARTY_NOTICES.html semafuse semafuse-daemon.example.toml \
+            | LC_ALL=C sort)"
+          actual_contents="$(tar -tzf "dist/$archive" | LC_ALL=C sort)"
+          [[ "$actual_contents" == "$expected_contents" ]]
+      - name: Package Windows binary
+        if: matrix.archive == 'zip'
+        env:
+          RELEASE_TARGET: ${{ matrix.target }}
+          RELEASE_VERSION: ${{ inputs.version }}
+        shell: pwsh
+        run: |
+          $archive = "semafuse-v$env:RELEASE_VERSION-$env:RELEASE_TARGET.zip"
+          $staging = "target\release-package"
+          New-Item -ItemType Directory -Force dist | Out-Null
+          New-Item -ItemType Directory -Force $staging | Out-Null
+          Copy-Item "target\$env:RELEASE_TARGET\release\semafuse.exe" $staging
+          Copy-Item LICENSE $staging
+          Copy-Item CHANGELOG.md $staging
+          Copy-Item THIRD_PARTY_NOTICES.html $staging
+          $expectedContents = @(
+            "CHANGELOG.md"
+            "LICENSE"
+            "THIRD_PARTY_NOTICES.html"
+            "semafuse.exe"
+          ) | Sort-Object
+          $actualContents = (Get-ChildItem $staging -File).Name | Sort-Object
+          if (Compare-Object $expectedContents $actualContents) {
+            throw "Windows release package contents differ from the expected manifest"
+          }
+          Compress-Archive -Path "$staging\*" -DestinationPath "dist\$archive"
+      - name: Upload packaged binary
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: release-${{ matrix.target }}
+          path: dist/*
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 7

@@ -1,5 +1,5 @@
-//! `semafused` is the foreground, long-lived process for local Semafuse
-//! services.
+//! `semafuse daemon serve` is the foreground, long-lived process mode for local
+//! Semafuse services.
 //!
 //! It intentionally contains no daemonization or process-management commands.
 //! A supervisor owns the process lifecycle; clients communicate over a local

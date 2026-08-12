@@ -1,6 +1,7 @@
 //! Shared LoCoMo benchmark configuration, method resolution, and artifact types.
 
 use crate::{
+    adapters::executable::resolve_executable_in,
     benchmark::{BenchmarkMessage as RunnerMessage, BenchmarkQuestion as RunnerQuestion},
     benchmark_baselines::Message as BaselineMessage,
     config::{self as semafuse_config, Config},
@@ -593,6 +594,7 @@ fn configured_path(base: &Path, path: &Path) -> PathBuf {
     }
 }
 
+#[derive(Debug)]
 pub(crate) struct ResolvedExecutable {
     pub(crate) invocation_path: PathBuf,
     pub(crate) identity_target: PathBuf,
@@ -603,7 +605,20 @@ pub(crate) fn resolve_executable(
     relative_base: &Path,
     search_path: Option<&std::ffi::OsStr>,
 ) -> Result<ResolvedExecutable> {
+    resolve_executable_for_platform(program, relative_base, search_path, cfg!(windows))
+}
+
+fn resolve_executable_for_platform(
+    program: &str,
+    relative_base: &Path,
+    search_path: Option<&std::ffi::OsStr>,
+    windows: bool,
+) -> Result<ResolvedExecutable> {
     ensure!(!program.trim().is_empty(), "external command[0] is empty");
+    // LoCoMo hashes and later launches this path directly. Windows command
+    // scripts require a cmd.exe wrapper, so they are deliberately excluded
+    // from this native-worker contract.
+    let path_ext = windows.then_some(std::ffi::OsStr::new(".EXE"));
     let relative_base = if relative_base.is_absolute() {
         relative_base.to_path_buf()
     } else {
@@ -613,31 +628,42 @@ pub(crate) fn resolve_executable(
     };
     let program_path = Path::new(program);
     let candidate = if program_path.is_absolute() || program_path.components().count() > 1 {
-        configured_path(&relative_base, program_path)
+        let configured = configured_path(&relative_base, program_path);
+        resolve_executable_in(&configured.to_string_lossy(), None, path_ext, windows).with_context(
+            || format!("external executable {} was not found", configured.display()),
+        )?
     } else {
         let search_path = search_path
             .with_context(|| format!("PATH is not set while resolving executable {program}"))?;
-        env::split_paths(search_path)
-            .map(|directory| {
-                let directory = if directory.is_absolute() {
+        let normalized_search_path =
+            env::join_paths(env::split_paths(search_path).map(|directory| {
+                if directory.is_absolute() {
                     directory
                 } else {
                     relative_base.join(directory)
-                };
-                directory.join(program_path)
-            })
-            .find(|path| is_executable_file(path))
+                }
+            }))
+            .context("normalize PATH while resolving external executable")?;
+        resolve_executable_in(program, Some(&normalized_search_path), path_ext, windows)
             .with_context(|| format!("executable {program} was not found on PATH"))?
     };
     ensure!(
-        is_executable_file(&candidate),
+        !windows
+            || candidate
+                .extension()
+                .and_then(std::ffi::OsStr::to_str)
+                .is_some_and(|extension| extension.eq_ignore_ascii_case("exe")),
+        "external executable must be a native .exe file on Windows"
+    );
+    ensure!(
+        is_executable_file(&candidate, windows),
         "external executable must be an executable regular file"
     );
     let identity_target = candidate
         .canonicalize()
         .with_context(|| format!("resolve external executable {}", candidate.display()))?;
     ensure!(
-        is_executable_file(&identity_target),
+        is_executable_file(&identity_target, windows),
         "external executable must be an executable regular file"
     );
     Ok(ResolvedExecutable {
@@ -646,12 +672,15 @@ pub(crate) fn resolve_executable(
     })
 }
 
-fn is_executable_file(path: &Path) -> bool {
+fn is_executable_file(path: &Path, windows: bool) -> bool {
     let Ok(metadata) = fs::metadata(path) else {
         return false;
     };
     if !metadata.is_file() {
         return false;
+    }
+    if windows {
+        return true;
     }
     #[cfg(unix)]
     {
@@ -661,6 +690,47 @@ fn is_executable_file(path: &Path) -> bool {
     #[cfg(not(unix))]
     {
         true
+    }
+}
+
+#[cfg(test)]
+mod executable_resolution_tests {
+    use super::*;
+    use tempfile::tempdir;
+
+    #[test]
+    fn windows_resolution_selects_native_exe_from_relative_search_paths() {
+        let directory = tempdir().unwrap();
+        let bin = directory.path().join("bin");
+        fs::create_dir(&bin).unwrap();
+        fs::write(bin.join("python.CMD"), b"command script").unwrap();
+        let executable = bin.join("PyThOn.ExE");
+        fs::write(&executable, b"test executable").unwrap();
+        let search_path = env::join_paths([Path::new("bin")]).unwrap();
+
+        let resolved =
+            resolve_executable_for_platform("python", directory.path(), Some(&search_path), true)
+                .unwrap();
+
+        assert_eq!(resolved.invocation_path, executable);
+        assert_eq!(resolved.identity_target, executable.canonicalize().unwrap());
+    }
+
+    #[test]
+    fn windows_resolution_rejects_an_explicit_command_script() {
+        let directory = tempdir().unwrap();
+        let script = directory.path().join("python.CMD");
+        fs::write(&script, b"command script").unwrap();
+
+        let error =
+            resolve_executable_for_platform(script.to_str().unwrap(), directory.path(), None, true)
+                .unwrap_err();
+
+        assert!(
+            error
+                .to_string()
+                .contains("must be a native .exe file on Windows")
+        );
     }
 }
 

@@ -326,7 +326,9 @@ fn process_error_detail(stderr: &[u8], stdout: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use serde_json::{Value, json};
+    #[cfg(unix)]
+    use serde_json::Value;
+    use serde_json::json;
 
     #[test]
     fn codex_schema_uses_a_fixed_strict_transport_envelope() {

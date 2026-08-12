@@ -10,12 +10,12 @@ First test release of Semafuse.
   retention, and MCP workflows for Amp, Codex, Claude Code, and OpenCode.
 - Modular `history`, `lazymem`, and experimental `reconstructive` memory
   strategies behind one recall interface.
-- Separate Unix `semafused` model service with Candle-backed embedding and
-  reranking support.
+- One `semafuse` executable for both one-shot commands and the separately
+  supervised Unix daemon, with Candle-backed embedding and reranking support.
 - Optional, source-built benchmark harnesses for JSONL, LongMemEval, LoCoMo,
   and report generation.
-- Five-platform `semafuse` release archives; Unix archives also contain the
-  models-enabled `semafused` binary.
+- Five-platform single-binary `semafuse` release archives; Unix builds include
+  models-enabled daemon mode.
 
 ### Beta boundaries
 
@@ -30,4 +30,4 @@ First test release of Semafuse.
   journals may contain dataset-derived text and must remain private.
 - Stored histories and attachments are plaintext unless the host filesystem or
   volume provides encryption.
-- `semafused` and its client transport are supported on Linux and macOS only.
+- Daemon mode and its client transport are supported on Linux and macOS only.

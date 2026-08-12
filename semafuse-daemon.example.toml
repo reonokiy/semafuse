@@ -1,5 +1,5 @@
 # TOML does not expand environment variables. Replace the UID and every model
-# path below with absolute paths valid for the account running semafused.
+# path below with absolute paths valid for the account running the daemon.
 
 [daemon]
 socket_path = "/run/user/1000/semafuse/semafused.sock"
