@@ -712,8 +712,21 @@ mod executable_resolution_tests {
             resolve_executable_for_platform("python", directory.path(), Some(&search_path), true)
                 .unwrap();
 
-        assert_eq!(resolved.invocation_path, executable);
-        assert_eq!(resolved.identity_target, executable.canonicalize().unwrap());
+        assert!(
+            resolved
+                .invocation_path
+                .extension()
+                .and_then(std::ffi::OsStr::to_str)
+                .is_some_and(|extension| extension.eq_ignore_ascii_case("exe"))
+        );
+        assert_eq!(
+            fs::read(&resolved.invocation_path).unwrap(),
+            b"test executable"
+        );
+        assert_eq!(
+            resolved.identity_target,
+            resolved.invocation_path.canonicalize().unwrap()
+        );
     }
 
     #[test]
