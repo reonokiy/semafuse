@@ -239,20 +239,33 @@ jobs:
           RELEASE_VERSION: ${{ needs.prepare.outputs.version }}
         shell: bash
         run: |
-          cleanup_failed_draft() {
-            status=$?
-            trap - EXIT
-            if (( status != 0 )); then
-              set +e
-              draft_id="$(gh api --paginate --slurp \
+          find_owned_draft() {
+            for attempt in 1 2 3 4 5; do
+              if draft_id="$(gh api --paginate --slurp \
                 "repos/$GITHUB_REPOSITORY/releases?per_page=100" \
-                | jq -r --arg tag "$RELEASE_TAG" --arg target "$GITHUB_SHA" \
+                | jq -er --arg tag "$RELEASE_TAG" --arg target "$GITHUB_SHA" \
                   --arg owner "$release_owner" \
                   'first(.[][] | select(
                     .draft and .tag_name == $tag and .target_commitish == $target and
                     ((.body // "") | contains($owner))
                   ) | .id) // empty')"
-              if [[ -n "$draft_id" ]]; then
+              then
+                printf '%s\n' "$draft_id"
+                return 0
+              fi
+              if (( attempt < 5 )); then
+                sleep "$attempt"
+              fi
+            done
+            return 1
+          }
+
+          cleanup_failed_draft() {
+            status=$?
+            trap - EXIT
+            if (( status != 0 )); then
+              set +e
+              if draft_id="$(find_owned_draft)"; then
                 echo "Deleting incomplete draft release $draft_id after publication failure." >&2
                 if gh api --method DELETE "repos/$GITHUB_REPOSITORY/releases/$draft_id"; then
                   if remaining_release_id="$(gh api --paginate --slurp \
@@ -315,16 +328,10 @@ jobs:
             "${create_flags[@]}" \
             --title "Semafuse $RELEASE_TAG"
 
-          owned_draft_id="$(gh api --paginate --slurp \
-            "repos/$GITHUB_REPOSITORY/releases?per_page=100" \
-            | jq -er --arg tag "$RELEASE_TAG" --arg target "$GITHUB_SHA" \
-              --arg owner "$release_owner" \
-              '[.[][] | select(
-                .draft and .tag_name == $tag and .target_commitish == $target and
-                ((.body // "") | contains($owner))
-              )] | if length == 1 then .[0].id else error(
-                "expected exactly one draft owned by this workflow run"
-              ) end')"
+          if ! owned_draft_id="$(find_owned_draft)"; then
+            echo "Could not find the draft created by this workflow after retrying." >&2
+            exit 1
+          fi
 
           published_release="$(gh api --method PATCH \
             "repos/$GITHUB_REPOSITORY/releases/$owned_draft_id" \
