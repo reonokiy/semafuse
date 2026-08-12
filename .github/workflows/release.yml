@@ -84,10 +84,12 @@ jobs:
           assets="$(jq -cn --arg tag "$tag" --argjson matrix "$matrix" '
             $matrix.include | map("semafuse-\($tag)-\(.target).\(.archive)")
           ')"
-          echo "assets=$assets" >> "$GITHUB_OUTPUT"
-          echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
-          echo "version=$version" >> "$GITHUB_OUTPUT"
-          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          {
+            echo "assets=$assets"
+            echo "matrix=$matrix"
+            echo "version=$version"
+            echo "tag=$tag"
+          } >> "$GITHUB_OUTPUT"
           if git show-ref --verify --quiet "refs/tags/$tag"; then
             tag_commit="$(git rev-parse "$tag^{commit}")"
             if ! git merge-base --is-ancestor "$tag_commit" "$GITHUB_SHA"; then
