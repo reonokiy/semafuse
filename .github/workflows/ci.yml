@@ -1,9 +1,6 @@
 name: CI
 
 on:
-  push:
-    branches:
-      - main
   pull_request:
   workflow_call:
 
@@ -46,6 +43,18 @@ jobs:
               if actual != expected:
                   raise SystemExit(f"{name} targets differ from .github/release-targets.json")
           PY
+      - name: Validate release metadata contract
+        shell: bash
+        run: |
+          metadata="$(bash scripts/release-metadata.sh)"
+          jq -e '
+            . as $metadata |
+            ($metadata.version | type) == "string" and
+            $metadata.version != "" and
+            $metadata.tag == ("v" + $metadata.version) and
+            ($metadata.assets | length) == 5 and
+            all($metadata.assets[]; startswith("semafuse-" + $metadata.tag + "-"))
+          ' <<< "$metadata" >/dev/null
       - name: Lint GitHub Actions workflows
         env:
           ACTIONLINT_VERSION: 1.7.12
@@ -95,37 +104,6 @@ jobs:
             --output-file "$tool_dir/THIRD_PARTY_NOTICES.html"
           cmp THIRD_PARTY_NOTICES.html "$tool_dir/THIRD_PARTY_NOTICES.html"
 
-  release-preflight-metadata:
-    name: Resolve release preflight
-    if: github.event_name == 'pull_request'
-    runs-on: ubuntu-24.04
-    timeout-minutes: 5
-    outputs:
-      version: ${{ steps.metadata.outputs.version }}
-    steps:
-      - name: Check out source
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - name: Resolve release metadata
-        id: metadata
-        shell: bash
-        run: |
-          metadata="$(bash scripts/release-metadata.sh)"
-          {
-            echo "version=$(jq -er '.version' <<< "$metadata")"
-          } >> "$GITHUB_OUTPUT"
-
-  release-archives:
-    name: Preflight release archives
-    if: github.event_name == 'pull_request'
-    needs: release-preflight-metadata
-    uses: ./.github/workflows/release-build.yml
-    permissions:
-      contents: read
-    with:
-      version: ${{ needs.release-preflight-metadata.outputs.version }}
-
   rust:
     name: Rust
     runs-on: ubuntu-24.04
@@ -141,6 +119,11 @@ jobs:
         uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.12"
+      - name: Restore Rust dependency cache
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          cache-bin: false
+          key: linux-quality
       - name: Check formatting
         run: cargo fmt --all -- --check
       - name: Run Clippy
@@ -195,6 +178,11 @@ jobs:
         uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.12"
+      - name: Restore Rust dependency cache
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          cache-bin: false
+          key: platform-${{ matrix.runner }}
       - name: Check all targets
         run: cargo check --locked --all-targets
       - name: Run tests

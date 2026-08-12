@@ -1,0 +1,39 @@
+name: Release preflight
+
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: release-preflight-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  prepare:
+    name: Resolve release candidate
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      version: ${{ steps.metadata.outputs.version }}
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Resolve release metadata
+        id: metadata
+        shell: bash
+        run: |
+          metadata="$(bash scripts/release-metadata.sh)"
+          echo "version=$(jq -er '.version' <<< "$metadata")" >> "$GITHUB_OUTPUT"
+
+  build:
+    name: Build candidate archives
+    needs: prepare
+    uses: ./.github/workflows/release-build.yml
+    permissions:
+      contents: read
+    with:
+      version: ${{ needs.prepare.outputs.version }}

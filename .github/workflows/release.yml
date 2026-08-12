@@ -170,8 +170,6 @@ jobs:
 
   quality:
     name: Run quality checks
-    needs: prepare
-    if: needs.prepare.outputs.should_release == 'true'
     uses: ./.github/workflows/ci.yml
     permissions:
       contents: read

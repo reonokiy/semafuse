@@ -62,10 +62,18 @@ mise use -g "github:reonokiy/semafuse[prerelease=true]"
 Because this repository is private, authenticate mise through the GitHub CLI or set
 `MISE_GITHUB_TOKEN` to a token with read access to the repository. The release workflow
 starts after a pull request with an unpublished Cargo version merges into `main`. It reruns
-the same Rust, Python, and Web quality checks used for pushes and pull requests, builds and
+the same Rust, Python, and Web quality checks used for pull requests, builds and
 smoke-tests every supported binary, then creates the matching `v<version>` tag and GitHub
 release. A later merge with the same version skips publishing instead of replacing assets;
 increment the prerelease number for another candidate.
+
+Normal pull-request CI validates the release metadata and target policy without spending
+private-repository runner minutes rebuilding all five release targets after every commit. Run
+the **Release preflight** workflow explicitly against a candidate branch when exact archive
+artifacts are needed before merge. It invokes the same reusable five-platform builder as the
+automatic post-merge release and uploads the dry-run archives without creating a tag.
+Run this preflight for every unpublished version candidate and whenever release packaging or
+its workflow changes; ordinary pull-request commits do not need to spend those runner minutes.
 
 Repository administrators must protect `main` by requiring pull requests and the
 CI workflow's checks. The release workflow also fails closed unless GitHub reports
