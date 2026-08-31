@@ -8,5 +8,5 @@ dependencies = []
 lmeb-harness = "lmeb_harness.cli:main"
 
 [build-system]
-requires = ["setuptools>=68"]
+requires = ["setuptools>=84.0.0"]
 build-backend = "setuptools.build_meta"
